@@ -128,6 +128,7 @@ class Engine:
         from .shipwright import ShipwrightRunner
         from .assistant import RecipeAssistant
         self.romm = RomM(self.data)
+        self.match_lock = threading.Lock()
         self.lifecycle = Lifecycle(self)
         self.preservation = Preservation(self)
         self.shipwright = ShipwrightRunner(self)
@@ -351,7 +352,31 @@ class Engine:
                     "game": payload.get("game") or reference.get("name"),
                     "filename_prefix": payload.get("filename_prefix"),
                     "cover_policy": payload.get("cover_policy", "preserve")}
+        if identity["cover_policy"] == "custom":
+            identity["url_cover"] = payload.get("url_cover")
         return self.update_project(project_id, {"metadata": identity})
+
+    def choose_cover(self, project_id, payload):
+        """Apply one picked cover to every Linux and Windows import of this project in RomM."""
+        project = self.store.get("projects", project_id)
+        metadata = dict(project.get("metadata") or {})
+        prefix = payload.get("filename_prefix") or metadata.get("filename_prefix") or project.get("library_basename")
+        if not prefix:
+            raise Invalid("Enter the package filename prefix, or publish a build first")
+        metadata.update(game=metadata.get("game") or project["name"], filename_prefix=prefix,
+                        cover_policy="custom", url_cover=payload.get("url_cover"))
+        project = self.update_project(project_id, {"metadata": metadata})
+        result = {"project": project, "matched": None, "warning": None}
+        try:
+            result["matched"] = self.match_imports_now()["matched"]
+        except Exception:
+            result["warning"] = "Cover saved. RomM could not be updated yet; Portkeeper retries every minute. Check the token has roms.write."
+        return result
+
+    def match_imports_now(self):
+        from .romm_identity import ImportIdentities
+        with self.match_lock:
+            return ImportIdentities(self.romm, self.data, self.store).sync()
 
     def claim(self, project_id):
         with self.lock:
@@ -984,7 +1009,8 @@ class Engine:
             while not self.stop.is_set():
                 if self.romm.public_config().get("configured"):
                     try:
-                        result = matcher.sync()
+                        with self.match_lock:
+                            result = matcher.sync()
                         self.save_setting("romm_import_matching", {"checked_at": now(), **result})
                     except Exception:
                         # Do not expose credentials or remote response bodies in the status.

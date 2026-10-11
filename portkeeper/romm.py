@@ -158,6 +158,35 @@ def _normalize_record(record):
             'files': [_normalize_file(item) for item in record.get('files', []) if isinstance(item, dict)]}
 
 
+def artwork_url(value):
+    """A remote cover the user picked; RomM downloads it, Portkeeper only previews it."""
+    if not isinstance(value, str) or not value or len(value) > 2048 or any(ord(c) < 33 for c in value):
+        raise Invalid('Choose a cover image from the search results')
+    parts = urllib.parse.urlsplit(value)
+    if parts.scheme != 'https' or not parts.hostname or parts.username or parts.password:
+        raise Invalid('Cover art must be an HTTPS image link')
+    return value
+
+
+class _HttpsRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        artwork_url(newurl)
+        return super().redirect_request(request, fp, code, msg, headers, newurl)
+
+
+def _fetch_image(url, limit=10 * 1024 * 1024):
+    request = urllib.request.Request(artwork_url(url), headers={'User-Agent': 'Portkeeper/0.2', 'Accept': 'image/*'})
+    try:
+        with urllib.request.build_opener(_HttpsRedirect()).open(request, timeout=20) as response:
+            content_type = response.headers.get_content_type()
+            body = response.read(limit + 1)
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise Invalid('Cover art could not be loaded') from None
+    if content_type not in ('image/png', 'image/jpeg', 'image/webp') or not body or len(body) > limit:
+        raise Invalid('Cover art must be a PNG, JPEG or WebP image up to 10 MiB')
+    return content_type, body
+
+
 def _cover_url(server_url, path):
     url = urllib.parse.urljoin(server_url, path)
     if _origin(url) != _origin(server_url):
@@ -175,6 +204,7 @@ class RomM:
         self.cache = self.data_dir / 'cache' / 'romm'
         self.lock = threading.RLock()
         self.cover_cache = {}
+        self.offered_art = {}
 
     def _config(self):
         if not self.secrets.exists():
@@ -299,6 +329,61 @@ class RomM:
                 self.cover_cache.clear()
             self.cover_cache[key] = (time.monotonic(), content_type, body)
         return content_type, body
+
+    def search_covers(self, query):
+        """Search RomM's cover providers (SteamGridDB, Steam), the same picker RomM itself uses."""
+        if not isinstance(query, str) or not query.strip() or len(query) > 200 or any(ord(c) < 32 for c in query):
+            raise Invalid('Enter a game title of at most 200 characters to search covers')
+        try:
+            result = self._json('search/cover?' + urllib.parse.urlencode({'search_term': query.strip()}))
+        except Invalid as error:
+            if 'HTTP 500' in str(error):
+                raise Invalid('RomM has no cover art provider enabled. Add a SteamGridDB API key to RomM.') from None
+            raise
+        if not isinstance(result, list):
+            raise Invalid('RomM returned an invalid cover search response')
+        covers = []
+        for game in result:
+            if not isinstance(game, dict) or not isinstance(game.get('resources'), list):
+                continue
+            for item in game['resources']:
+                if not isinstance(item, dict) or item.get('type', 'static') != 'static':
+                    continue
+                try:
+                    url, thumb = artwork_url(item.get('url')), artwork_url(item.get('thumb') or item.get('url'))
+                except Invalid:
+                    continue
+                covers.append({'game': str(game.get('name') or '')[:200], 'provider': str(game.get('provider') or 'sgdb')[:20],
+                               'url': url, 'thumb': thumb, 'width': item.get('width') if isinstance(item.get('width'), int) else None,
+                               'height': item.get('height') if isinstance(item.get('height'), int) else None,
+                               'author': str(item.get('author') or '')[:100]})
+                if len(covers) >= 60:
+                    break
+            if len(covers) >= 60:
+                break
+        with self.lock:
+            if len(self.offered_art) > 2000:
+                self.offered_art.clear()
+            for cover in covers:
+                self.offered_art[cover['thumb']] = self.offered_art[cover['url']] = True
+        return {'query': query.strip(), 'covers': covers}
+
+    def artwork_preview(self, url):
+        """Proxy a picked or offered cover so the page never loads third-party images directly."""
+        with self.lock:
+            cached = self.cover_cache.get(('art', url))
+            if cached and time.monotonic() - cached[0] < 3600:
+                return cached[1], cached[2]
+        content_type, body = _fetch_image(url)
+        with self.lock:
+            if len(self.cover_cache) >= 100:
+                self.cover_cache.clear()
+            self.cover_cache[('art', url)] = (time.monotonic(), content_type, body)
+        return content_type, body
+
+    def offered(self, url):
+        with self.lock:
+            return url in self.offered_art
 
     def detail(self, rom_id):
         result = self._json('roms/' + str(_positive(rom_id)))

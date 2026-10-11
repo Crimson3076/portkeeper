@@ -106,6 +106,14 @@ class Handler(BaseHTTPRequestHandler):
             elif method == "GET" and path == "/api/romm/search":
                 query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
                 self.json(200, self.engine.romm.search(query.get("q", [""])[0]))
+            elif method == "GET" and path == "/api/romm/covers":
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                self.json(200, self.engine.romm.search_covers(query.get("q", [""])[0]))
+            elif method == "GET" and path == "/api/romm/cover-preview":
+                url = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("url", [""])[0]
+                if not self.engine.romm.offered(url):
+                    raise Invalid("Search covers first; only offered artwork can be previewed")
+                self.image(*self.engine.romm.artwork_preview(url))
             elif method == "GET" and re.fullmatch(r"/api/romm/roms/[0-9]+", path):
                 self.json(200, self.engine.romm.detail(int(path.split("/")[4])))
             elif method == "POST" and path == "/api/romm/inspect":
@@ -131,13 +139,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(200, self.engine.update_project(path.split("/")[3], self.body()))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/cover", path) and method == "GET":
                 project = self.engine.store.get("projects", path.split("/")[3])
-                rom_id = (project.get("metadata") or {}).get("romm_rom_id")
-                if not rom_id:
+                metadata = project.get("metadata") or {}
+                rom_id = metadata.get("romm_rom_id")
+                if metadata.get("cover_policy") == "custom" and metadata.get("url_cover"):
+                    self.image(*self.engine.romm.artwork_preview(metadata["url_cover"]))
+                elif not rom_id:
                     self.json(404, {"error": "Link a RomM entry to display its cover"})
                 else:
                     content_type, body = self.engine.romm.cover(rom_id)
                     self.respond_headers(200, content_type, len(body), cache_control="private, max-age=60")
                     self.wfile.write(body)
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/cover", path) and method == "POST":
+                self.json(200, self.engine.choose_cover(path.split("/")[3], self.body()))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/metadata-link", path) and method == "POST":
                 self.json(200, self.engine.link_metadata(path.split("/")[3], self.body()))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/check", path) and method == "POST":
@@ -210,6 +223,10 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as error:
             print(f"Request failed: {type(error).__name__}: {error}", flush=True)
             self.json(500, {"error": "Operation failed; see the local server log"})
+
+    def image(self, content_type, body):
+        self.respond_headers(200, content_type, len(body), cache_control="private, max-age=60")
+        self.wfile.write(body)
 
     def download(self, path, expected_hash, filename):
         archive = Path(path).resolve()

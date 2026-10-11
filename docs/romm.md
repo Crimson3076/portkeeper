@@ -37,3 +37,20 @@ proxies the current stored cover, including custom uploads, using its existing
 connector token. Tokens and remote artwork URLs are never embedded in the page.
 Images are limited to PNG/JPEG/WebP up to 10 MiB; previews refresh within a minute.
 Projects without a linked entry or cover retain their initials.
+
+### Find cover art once for every platform
+
+Open a game's Overview and select **Find cover art**. Portkeeper searches through
+RomM's own cover search (`/api/search/cover`), so it shows the same SteamGridDB and
+Steam results as RomM's cover picker. RomM needs a SteamGridDB API key for this.
+
+Pick a cover and select **Apply to Windows and Linux**. Portkeeper sends that cover
+to every Linux and Windows ZIP whose filename starts with the game's package prefix,
+right away and on every later import, so a new build never needs its cover picked
+again. A linked RomM entry gets the chosen cover too; its name and metadata match
+stay as you left them. Choosing a cover does not require an IGDB ID. Each entry is
+updated once per chosen cover, so a later manual change in RomM is not overwritten
+until you pick a different cover here. The token needs `roms.write`.
+
+Previews of search results are proxied by the server; only covers the search
+returned can be previewed, and only HTTPS PNG/JPEG/WebP images are accepted.

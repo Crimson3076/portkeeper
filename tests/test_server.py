@@ -166,6 +166,15 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
         cover.assert_called_once_with(10)
 
+    def test_cover_preview_only_proxies_offered_artwork(self):
+        status, _, body = self.request("GET", "/api/romm/cover-preview?url=https%3A%2F%2Finternal.example%2Fx.png")
+        self.assertEqual(status, 400)
+        self.assertIn("Search covers first", json.loads(body)["error"])
+        self.engine.romm.offered_art["https://cdn.example/t.png"] = True
+        with patch.object(self.engine.romm, "artwork_preview", return_value=("image/png", b"\x89PNG")):
+            status, headers, body = self.request("GET", "/api/romm/cover-preview?url=https%3A%2F%2Fcdn.example%2Ft.png")
+        self.assertEqual((status, headers["Content-Type"], body), (200, "image/png", b"\x89PNG"))
+
 
 if __name__ == "__main__":
     unittest.main()

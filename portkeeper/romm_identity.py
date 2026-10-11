@@ -6,12 +6,12 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from .romm import _OriginRedirect, _origin, _atomic_json, _cover_url
+from .romm import _OriginRedirect, _origin, _atomic_json, _cover_url, artwork_url
 from .safety import Invalid
 
 
 def validate_identity(identity):
-    if not isinstance(identity, dict) or any(k not in {"filename_prefix", "game", "igdb_id", "romm_rom_id", "cover_policy"} for k in identity):
+    if not isinstance(identity, dict) or any(k not in {"filename_prefix", "game", "igdb_id", "romm_rom_id", "cover_policy", "url_cover"} for k in identity):
         raise Invalid("Invalid game metadata link")
     result = dict(identity)
     for key in ("filename_prefix", "game"):
@@ -23,10 +23,15 @@ def validate_identity(identity):
     for key in ('igdb_id', 'romm_rom_id'):
         if key in result and (type(result[key]) is not int or result[key] < 1):
             raise Invalid("Metadata IDs must be positive integers")
-    if not result.get('igdb_id'):
+    policy = result.get('cover_policy', 'preserve')
+    if not result.get('igdb_id') and policy != 'custom':
         raise Invalid("Enter an IGDB game ID or reuse a matched RomM entry")
-    if result.get('cover_policy', 'preserve') not in ('preserve', 'romm'):
-        raise Invalid("Choose whether to keep covers or reuse RomM artwork")
+    if policy not in ('preserve', 'romm', 'custom'):
+        raise Invalid("Choose whether to keep covers, reuse RomM artwork or apply a chosen cover")
+    if policy == 'custom':
+        result['url_cover'] = artwork_url(result.get('url_cover'))
+    else:
+        result.pop('url_cover', None)
     if result.get('cover_policy') == 'romm' and not result.get('romm_rom_id'):
         raise Invalid("Link a RomM entry to reuse its artwork")
     return result
@@ -69,10 +74,11 @@ class ImportIdentities:
             artwork_type = None
             if identity.get('romm_rom_id'):
                 reference = self.romm._json('roms/' + str(identity['romm_rom_id']))
-                if not reference.get('igdb_id'):
+                if not reference.get('igdb_id') and identity.get('cover_policy') != 'custom':
                     continue  # Wait for the user's manual match; never guess.
-                identity['igdb_id'] = reference['igdb_id']
-                if self.store:
+                if reference.get('igdb_id'):
+                    identity['igdb_id'] = reference['igdb_id']
+                if self.store and reference.get('igdb_id'):
                     for project in self.store.all('projects'):
                         metadata = project.get('metadata') or {}
                         if metadata.get('romm_rom_id') == identity['romm_rom_id'] and metadata.get('igdb_id') != reference['igdb_id']:
@@ -87,8 +93,9 @@ class ImportIdentities:
                             artwork = response.read(10 * 1024 * 1024 + 1)
                         if artwork_type not in ('image/png', 'image/jpeg', 'image/webp') or len(artwork) > 10 * 1024 * 1024:
                             raise Invalid('Invalid or oversized RomM cover')
-            prefix, game, igdb_id = identity['filename_prefix'], identity['game'], identity['igdb_id']
-            if not isinstance(prefix, str) or not prefix or '/' in prefix or not isinstance(game, str) or not game or type(igdb_id) is not int or igdb_id < 1:
+            prefix, game, igdb_id = identity['filename_prefix'], identity['game'], identity.get('igdb_id')
+            custom = identity.get('cover_policy') == 'custom'
+            if not isinstance(prefix, str) or not prefix or '/' in prefix or not isinstance(game, str) or not game or not ((custom and igdb_id is None) or (type(igdb_id) is int and igdb_id >= 1)):
                 raise Invalid('Invalid registered game identity')
             offset = 0
             while True:
@@ -100,16 +107,23 @@ class ImportIdentities:
                     filename = record.get('fs_name', '')
                     if record.get('platform_slug') not in ('linux', 'win') or not filename.casefold().startswith(prefix.casefold() + '-') or not filename.lower().endswith('.zip'):
                         continue
-                    if reference and record['id'] == identity['romm_rom_id']:
-                        continue  # The reference belongs to the user; never overwrite their edits.
+                    # The reference belongs to the user; never overwrite their edits. A cover
+                    # chosen in Portkeeper is the one exception, so every platform shares it.
+                    is_reference = bool(reference) and record['id'] == identity['romm_rom_id']
+                    if is_reference and not custom:
+                        continue
                     cover = identity.get('url_cover', '') if identity.get('cover_policy', 'legacy') != 'preserve' else ''
                     art_key = hashlib.sha256(artwork).hexdigest() if artwork else cover
                     receipt_key = str(record['id'])
                     current_name = record.get('name', filename)
-                    name = current_name if current_name.startswith(game + ' — ') else game + ' — ' + current_name
-                    if record.get('igdb_id') == igdb_id and current_name == name and (not cover or record.get('url_cover') == cover) and (not artwork or receipts.get(receipt_key) == art_key):
+                    target_igdb = record.get('igdb_id') if is_reference or igdb_id is None else igdb_id
+                    name = current_name if is_reference or igdb_id is None or current_name.startswith(game + ' — ') else game + ' — ' + current_name
+                    cover_done = not cover or record.get('url_cover') == cover or (custom and receipts.get(receipt_key) == art_key)
+                    if record.get('igdb_id') == target_igdb and current_name == name and cover_done and (not artwork or receipts.get(receipt_key) == art_key):
                         continue
-                    data = {'igdb_id': str(igdb_id), 'name': name, 'summary': record.get('summary') or ''}
+                    data = {'name': name, 'summary': record.get('summary') or ''}
+                    if target_igdb:
+                        data['igdb_id'] = str(target_igdb)
                     if cover:
                         data['url_cover'] = cover
                     body = urllib.parse.urlencode(data).encode()
@@ -128,9 +142,9 @@ class ImportIdentities:
                     opener = urllib.request.build_opener(_OriginRedirect(_origin(config['url'])))
                     with opener.open(request, timeout=60) as response:
                         updated = json.load(response)
-                    if updated.get('igdb_id') != igdb_id:
+                    if target_igdb and updated.get('igdb_id') != target_igdb:
                         raise Invalid('RomM did not retain the registered game identity')
-                    if artwork:
+                    if artwork or custom:
                         receipts[receipt_key] = art_key
                         _atomic_json(self.receipts, receipts)
                     matched += 1
