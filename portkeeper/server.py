@@ -25,11 +25,11 @@ class Handler(BaseHTTPRequestHandler):
         # Avoid logging query strings or local input/recipe content.
         print(f"{self.log_date_time_string()} {self.command} {urllib.parse.urlsplit(self.path).path} {args[1] if len(args) > 1 else ''}", flush=True)
 
-    def respond_headers(self, status, content_type, length, disposition=None):
+    def respond_headers(self, status, content_type, length, disposition=None, cache_control="no-store"):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(length))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache_control)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
@@ -129,6 +129,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(202, self.engine.demo())
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}", path) and method == "PATCH":
                 self.json(200, self.engine.update_project(path.split("/")[3], self.body()))
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/cover", path) and method == "GET":
+                project = self.engine.store.get("projects", path.split("/")[3])
+                rom_id = (project.get("metadata") or {}).get("romm_rom_id")
+                if not rom_id:
+                    self.json(404, {"error": "Link a RomM entry to display its cover"})
+                else:
+                    content_type, body = self.engine.romm.cover(rom_id)
+                    self.respond_headers(200, content_type, len(body), cache_control="private, max-age=60")
+                    self.wfile.write(body)
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/metadata-link", path) and method == "POST":
                 self.json(200, self.engine.link_metadata(path.split("/")[3], self.body()))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/check", path) and method == "POST":

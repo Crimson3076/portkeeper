@@ -151,6 +151,21 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("checksum changed", json.loads(body)["error"])
 
+    def test_project_cover_is_proxied_without_exposing_credentials(self):
+        project = self.engine.create_project({"name": "Port", "repo": "example/port", "targets": ["linux"]})
+        path = f"/api/projects/{project['id']}/cover"
+        status, _, _ = self.request("GET", path)
+        self.assertEqual(status, 404)
+        self.engine.store.update("projects", project['id'], metadata={"romm_rom_id": 10})
+        with patch.object(self.engine.romm, "cover", return_value=("image/png", b"cover-bytes")) as cover:
+            status, headers, body = self.request("GET", path)
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b"cover-bytes")
+        self.assertEqual(headers["Content-Type"], "image/png")
+        self.assertEqual(headers["Cache-Control"], "private, max-age=60")
+        self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+        cover.assert_called_once_with(10)
+
 
 if __name__ == "__main__":
     unittest.main()
