@@ -15,13 +15,13 @@ class CoverTests(unittest.TestCase):
             body = b'\x89PNG\r\n\x1a\ncover'
             response = io.BytesIO(body)
             response.headers = Message(); response.headers['Content-Type'] = 'image/png'
-            with patch.object(romm, '_config', return_value={'url':'http://localhost:8091','token':'private-token'}), patch.object(romm, '_json', return_value={'path_cover_large':'/assets/custom.png'}), patch('portkeeper.romm.urllib.request.build_opener') as factory:
+            with patch.object(romm, '_config', return_value={'url':'http://localhost:8091','token':'private-token'}), patch.object(romm, '_json', return_value={'path_cover_large':'/assets/custom.png?ts=2026-10-11 19:27:18'}), patch('portkeeper.romm.urllib.request.build_opener') as factory:
                 opener=factory.return_value; opener.open.return_value=response
                 self.assertEqual(romm.cover(10), ('image/png',body))
                 self.assertEqual(romm.cover(10), ('image/png',body))
                 self.assertEqual(opener.open.call_count, 1)
                 request=opener.open.call_args.args[0]
-                self.assertEqual(request.full_url, 'http://localhost:8091/assets/custom.png')
+                self.assertEqual(request.full_url, 'http://localhost:8091/assets/custom.png?ts=2026-10-11%2019:27:18')
                 self.assertEqual(request.get_header('Authorization'), 'Bearer private-token')
 
     def test_missing_external_and_nonimage_covers_are_rejected(self):
