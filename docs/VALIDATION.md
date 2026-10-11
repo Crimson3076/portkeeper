@@ -10,7 +10,7 @@ node --check static/app.js
 docker compose config --quiet
 ```
 
-GitHub CI is configured for Python 3.11 and 3.13 with warnings treated as errors, and frontend syntax checking. It uses SHA-pinned official [checkout](https://github.com/actions/checkout/releases/tag/v7.0.1), [setup-python](https://github.com/actions/setup-python/releases/tag/v7.0.0), and [setup-node](https://github.com/actions/setup-node/releases/tag/v7.1.0) actions. Configured CI has not yet been observed running on the destination repository.
+GitHub CI is configured for Python 3.11 and 3.13 with warnings treated as errors, and frontend syntax checking. It uses SHA-pinned official [checkout](https://github.com/actions/checkout/releases/tag/v7.0.1), [setup-python](https://github.com/actions/setup-python/releases/tag/v7.0.0), and [setup-node](https://github.com/actions/setup-node/releases/tag/v7.1.0) actions. The first [repository CI run](https://github.com/Crimson3076/portkeeper/actions/runs/38115481118) passed all three jobs: Python 3.11, Python 3.13, and frontend syntax.
 
 The automated suite exercises capture/assembly/publication, input hashes, archive confinement, target overrides, failure preservation and retry, local HTTP handling, RomM request/configuration behavior with fixtures, profile guards, packaging, lifecycle/retention, preservation reports, and local-assistant proposal validation. Mocked external responses do not establish live interoperability.
 
