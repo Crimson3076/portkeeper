@@ -366,6 +366,14 @@ class Engine:
         metadata.update(game=metadata.get("game") or project["name"], filename_prefix=prefix,
                         cover_policy="custom", url_cover=payload.get("url_cover"))
         project = self.update_project(project_id, {"metadata": metadata})
+        # Platform-specific projects sharing one import prefix must agree on artwork.
+        # Otherwise a later registration can silently override the user's selection.
+        from .romm_identity import validate_identity
+        for related in self.store.all("projects"):
+            identity = related.get("metadata") or {}
+            if related["id"] != project_id and identity.get("filename_prefix", "").lower() == prefix.lower() and identity.get("igdb_id") == metadata.get("igdb_id"):
+                shared = {**identity, "cover_policy": "custom", "url_cover": metadata["url_cover"]}
+                self.store.update("projects", related["id"], metadata=validate_identity(shared))
         result = {"project": project, "matched": None, "warning": None}
         try:
             result["matched"] = self.match_imports_now()["matched"]

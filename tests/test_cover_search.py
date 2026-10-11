@@ -92,6 +92,21 @@ class CoverSearchTests(unittest.TestCase):
         self.assertEqual(by_id[11]['url_cover'], cover)
         self.assertIsNone(records[12]['igdb_id'])
 
+    def test_chosen_cover_is_shared_by_separate_platform_projects(self):
+        from portkeeper.engine import Engine
+        with tempfile.TemporaryDirectory() as directory:
+            engine = Engine(Path(directory) / "data")
+            try:
+                identity = {"filename_prefix": "Bloodborne", "game": "Bloodborne", "igdb_id": 7334}
+                linux = engine.create_project({"name": "Bloodborne", "repo": "example/linux", "targets": ["linux"], "metadata": identity})
+                windows = engine.create_project({"name": "Bloodborne Windows", "repo": "example/windows", "targets": ["windows"], "metadata": identity})
+                with patch.object(engine, "match_imports_now", return_value={"matched": 2}):
+                    engine.choose_cover(windows["id"], {"url_cover": "https://cdn2.steamgriddb.com/grid/port.png"})
+                self.assertEqual(engine.store.get("projects", linux["id"])["metadata"]["url_cover"], engine.store.get("projects", windows["id"])["metadata"]["url_cover"])
+                self.assertEqual(engine.store.get("projects", linux["id"])["metadata"]["cover_policy"], "custom")
+            finally:
+                engine.close()
+
     def test_choose_cover_saves_without_metadata_and_applies_now(self):
         from portkeeper.engine import Engine
         with tempfile.TemporaryDirectory() as d:

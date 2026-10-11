@@ -1,6 +1,8 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
+const projectPageElement = $("project-page");
+const projectPageHome = projectPageElement.parentElement;
 const targetLabels = { linux: "Linux / Steam Deck", windows: "Windows", handheld: "Handheld", capture: "Source" };
 const targetGlyphs = { linux: "◈", windows: "▦", handheld: "▤", capture: "◇" };
 const captureRecipe = { version: 1, mode: "capture", payload: { kind: "source" }, notes: "Preserve tagged upstream source. Add a tested recipe to build a package." };
@@ -16,6 +18,10 @@ let recipes = [];
 let profiles = [];
 let activityView = "jobs";
 let librarySearch = "", libraryPlatform = "", libraryStage = "";
+let libraryLayout = ["workspace", "collection", "list"].includes(readPreference("portkeeper.library-layout")) ? readPreference("portkeeper.library-layout") : "workspace";
+let workspaceProjectId = readPreference("portkeeper.selected-game");
+const rommImports = new Map();
+const rommImportsLoading = new Set();
 let settingsView = "romm";
 let route = { page: "library", projectId: null, tab: "overview" };
 let selectedJobId = null;
@@ -36,7 +42,7 @@ let wizardSerial = 0;
 let desktopNotifications = readPreference("portkeeper.desktop-notifications") === "true";
 
 function readPreference(key) { try { return localStorage.getItem(key); } catch (_) { return null; } }
-function savePreference(key, value) { try { localStorage.setItem(key, value); } catch (_) { /* Browser storage is optional. */ } }
+function savePreference(key, value) { try { localStorage.setItem(key, value); return true; } catch (_) { return false; } }
 function el(tag, className, content) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -141,7 +147,48 @@ function projectCover(project, className) {
 }
 function projectSource(project) { return project.demo ? el("span", "repo-link", "Synthetic sample files") : repoLink(project.repo); }
 function projectById(id) { return state.projects.find((project) => String(project.id) === String(id)); }
-function projectArtifacts(id) { return newestFirst(state.artifacts.filter((artifact) => String(artifact.project_id) === String(id))); }
+function relatedProjects(project) {
+  const identity = project?.metadata;
+  if (!identity?.filename_prefix) return project ? [project] : [];
+  return state.projects.filter((item) => item.metadata?.filename_prefix?.toLowerCase() === identity.filename_prefix.toLowerCase() && item.metadata?.igdb_id === identity.igdb_id);
+}
+function libraryGames() {
+  const seen = new Set(), games = [];
+  state.projects.forEach((project) => {
+    if (seen.has(project.id)) return;
+    const related = relatedProjects(project); related.forEach((item) => seen.add(item.id));
+    games.push(related.find((item) => !/ windows$/i.test(item.name)) || project);
+  });
+  return games.sort((a,b) => a.name.localeCompare(b.name));
+}
+function projectArtifacts(id) {
+  const ids = new Set(relatedProjects(projectById(id)).map((project) => String(project.id)));
+  return newestFirst(state.artifacts.filter((artifact) => ids.has(String(artifact.project_id))));
+}
+function importKey(project) { return project.metadata?.filename_prefix || project.library_basename || project.id; }
+function importedPackages(project) { return rommImports.get(importKey(project))?.items || []; }
+function hasDownloads(project) { return projectArtifacts(project.id).length > 0 || importedPackages(project).length > 0; }
+function gameNeedsAttention(project) { return relatedProjects(project).some((item) => item.last_error || ["needs_rom", "missing_inputs", "needs_attention", "failed", "blocked", "unsupported_version"].includes(item.status)) || importedPackages(project).some((rom) => /\bfailed\b/i.test(rom.summary || "")); }
+function gameTargets(project) { return [...new Set([...relatedProjects(project).flatMap((item) => item.targets || []), ...projectArtifacts(project.id).map((item) => item.target), ...importedPackages(project).map((rom) => rom.platform_slug === "win" ? "windows" : "linux")])]; }
+async function loadImports(project) {
+  const key = importKey(project);
+  if (!rommReady() || !project.metadata?.filename_prefix || rommImportsLoading.has(key) || Date.now() - (rommImports.get(key)?.checkedAt || 0) < 60000) return;
+  rommImportsLoading.add(key);
+  try {
+    const prefixes = [...new Set([project.metadata.filename_prefix, ...relatedProjects(project).map((item) => item.library_basename).filter(Boolean)])];
+    const responses = await Promise.all(prefixes.map((prefix) => api(`/api/romm/search?q=${encodeURIComponent(prefix)}`)));
+    const records = responses.flatMap((response) => response.items || []).filter((rom) => ["linux", "win"].includes(rom.platform_slug) && rom.files?.some((file) => prefixes.some((prefix) => file.name?.toLowerCase().startsWith(prefix.toLowerCase() + "-")) && /\.zip$/i.test(file.name)));
+    rommImports.set(key, {checkedAt: Date.now(), items: [...new Map(records.map((rom) => [rom.id, rom])).values()]});
+  } catch (_) { rommImports.set(key, {checkedAt: Date.now(), items: rommImports.get(key)?.items || [], error: true}); }
+  finally { rommImportsLoading.delete(key); lastRender = null; render(); }
+}
+function gameAvailability(project) {
+  if (gameNeedsAttention(project)) return "Needs attention";
+  if (hasDownloads(project)) return "Downloads available";
+  if (rommImportsLoading.has(importKey(project))) return "Checking RomM…";
+  if (rommImports.get(importKey(project))?.error) return "RomM check unavailable";
+  return project.recipe?.mode === "capture" ? "Build setup needed" : "No downloads yet";
+}
 function projectJobs(id) { return newestFirst(state.jobs.filter((job) => String(job.project_id) === String(id))); }
 function jobActive(job) { return activeStatuses.has(job.status) && !job.finished_at; }
 function projectActiveJob(project) { const jobs = projectJobs(project.id).filter(jobActive); return jobs.find((job) => job.status !== "queued") || jobs[0]; }
@@ -201,18 +248,25 @@ function renderRoute() {
   if (location.hash === "#storage") settingsView = "storage";
   ["library", "activity", "settings", "project"].forEach((page) => { $(`${page}-page`).hidden = route.page !== page; });
   document.querySelectorAll(".nav-link").forEach((link) => { const active = link.dataset.page === (route.page === "project" ? "library" : route.page); link.classList.toggle("active", active); if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current"); });
-  $("breadcrumb").textContent = route.page === "project" ? "WORKER DETAILS" : { library: "YOUR LIBRARY", activity: "WORKSPACE ACTIVITY", settings: "WORKSPACE SETTINGS" }[route.page];
+  $("breadcrumb").textContent = route.page === "project" ? "GAME DETAILS" : { library: "YOUR LIBRARY", activity: "WORKSPACE ACTIVITY", settings: "WORKSPACE SETTINGS" }[route.page];
   renderSettingsTabs();
   if (route.page === "project") renderProject();
   if (route.page === "activity") renderActivity();
 }
+function restoreProjectPage() { if (projectPageElement.parentElement !== projectPageHome) projectPageHome.insertBefore(projectPageElement, projectPageHome.querySelector("footer")); }
 function renderLibrary() {
-  $("summary-projects").textContent = state.summary.projects ?? state.projects.length;
-  $("summary-artifacts").textContent = state.summary.artifacts ?? state.artifacts.length;
-  const attention = state.summary.needs_attention ?? state.projects.filter((project) => project.last_error || ["needs_rom", "needs_attention", "failed"].includes(project.status)).length;
+  restoreProjectPage();
+  const games = libraryGames();
+  $("library-page").dataset.layout = libraryLayout;
+  games.forEach((project) => { void loadImports(project); });
+  $("summary-projects").textContent = games.length;
+  $("summary-artifacts").textContent = games.reduce((count, project) => count + new Set([...projectArtifacts(project.id).map((artifact) => artifact.target), ...importedPackages(project).map((rom) => rom.platform_slug === "win" ? "windows" : "linux")]).size, 0);
+  const attention = games.filter(gameNeedsAttention).length;
   $("summary-attention").textContent = attention;
   $("attention-summary").classList.toggle("attention-active", attention > 0);
-  const grid = $("project-grid"); grid.replaceChildren();
+  const grid = $("project-grid"); grid.replaceChildren(); grid.className = `project-grid layout-${libraryLayout}`;
+  const workspaceActive = libraryLayout === "workspace" && ["library", "project"].includes(route.page);
+  if (workspaceActive) $("library-page").hidden = false;
   $("library-results").textContent = "0 games";
   if (!state.projects.length) {
     const empty = emptyState("▦", "A home for your next playthrough", "Connect your RomM library, choose a game, and preserve its updates.");
@@ -220,13 +274,31 @@ function renderLibrary() {
     empty.append(button("Set up your first game →", "button primary", openWizard), button("Explore with a synthetic demo", "text-button", () => navigateSettings("demo")));
     grid.append(empty); return;
   }
-  const matches = state.projects.filter((project) => {
-    const hasPackages = projectArtifacts(project.id).length > 0;
-    const needsAttention = Boolean(project.last_error) || ["needs_rom", "missing_inputs", "needs_attention", "failed", "blocked", "unsupported_version"].includes(project.status);
-    return `${project.name} ${project.repo || ""}`.toLowerCase().includes(librarySearch.toLowerCase()) && (!libraryPlatform || (project.targets || []).includes(libraryPlatform)) && (!libraryStage || (libraryStage === "packages" ? hasPackages : libraryStage === "source" ? !hasPackages && project.recipe?.mode === "capture" : needsAttention));
+  const matches = games.filter((project) => {
+    const hasPackages = hasDownloads(project);
+    const needsAttention = gameNeedsAttention(project);
+    return `${project.name} ${project.repo || ""}`.toLowerCase().includes(librarySearch.toLowerCase()) && (!libraryPlatform || gameTargets(project).includes(libraryPlatform)) && (!libraryStage || (libraryStage === "packages" ? hasPackages : libraryStage === "source" ? project.recipe?.mode === "capture" : needsAttention));
   });
-  $("library-results").textContent = `${matches.length} of ${state.projects.length} games`;
+  $("library-results").textContent = `${matches.length} of ${games.length} games`;
   if (!matches.length) grid.append(emptyState("⌕", "No games match", "Try another search or choose All platforms and All games."));
+  if (workspaceActive && matches.length) {
+    const chosen = projectById(route.projectId) || projectById(workspaceProjectId) || matches.find((item) => item.profile) || matches[0];
+    const selected = matches.find((item) => relatedProjects(item).some((member) => member.id === chosen.id)) || matches[0];
+    workspaceProjectId = selected.id;
+    if (!route.projectId) route.projectId = selected.id;
+    const sidebar = el("nav", "workspace-game-list"); sidebar.setAttribute("aria-label", "Choose a game");
+    matches.forEach((project) => {
+      const choose = button("", "workspace-game-button", () => { workspaceProjectId = project.id; savePreference("portkeeper.selected-game", project.id); navigateProject(project.id); });
+      choose.setAttribute("aria-pressed", String(project.id === selected.id));
+      const cover = projectCover(project, "workspace-game-cover");
+      if (cover) choose.append(cover);
+      choose.append(el("span", "", [el("strong", "", project.name), el("small", "", gameAvailability(project))]));
+      sidebar.append(choose);
+    });
+    const main = el("div", "workspace-game-main", projectPageElement);
+    grid.append(sidebar, main); projectPageElement.hidden = false; renderProject(); return;
+  }
+  projectPageElement.hidden = route.page !== "project";
   matches.forEach((project) => {
     const artifacts = projectArtifacts(project.id);
     const newest = artifacts[0];
@@ -239,9 +311,9 @@ function renderLibrary() {
       avatar.replaceChildren(cover); avatar.classList.add("has-cover");
       cover.addEventListener("error", () => { avatar.classList.remove("has-cover"); avatar.textContent = initials; }, {once: true});
     }
-    const top = el("div", "project-card-top", [el("div", "project-title-row", [avatar, el("div", "project-title-block", [title, projectSource(project)])]), el("div", "project-state-row", [statusBadge(projectStatus(project)), ...(project.demo ? [el("span", "validation-label", "Demo")] : [])]), el("div", "project-targets", (project.targets || []).map(targetPill)), el("div", "project-meta", [meta("Latest package", newest?.version || "No package yet"), meta("Preferred package", good?.version || "Not selected"), meta("Preserved source", project.latest_version || "Not captured yet")])]);
+    const top = el("div", "project-card-top", [el("div", "project-title-row", [avatar, el("div", "project-title-block", [title, projectSource(project)])]), el("div", "project-state-row", [statusBadge(gameNeedsAttention(project) ? "needs_attention" : hasDownloads(project) ? "ready" : "capture_only", gameAvailability(project)), ...(project.demo ? [el("span", "validation-label", "Demo")] : [])]), el("div", "project-targets", gameTargets(project).map(targetPill)), el("div", "project-meta", [meta("Latest build", newest?.version || "See RomM downloads"), meta("In RomM", `${importedPackages(project).length} platform entries`)])]);
     const active = projectActiveJob(project);
-    const description = project.recipe?.mode === "capture" ? "Update tracking only. Automatic package builds are not configured." : newest ? "Portable packages available. Check each platform’s test status below." : "No package yet. Open this game to prepare a build.";
+    const description = hasDownloads(project) ? "Open this game for platform downloads and testing notes." : project.recipe?.mode === "capture" ? "Update tracking is enabled. Automatic build setup is needed." : "Open this game to prepare its first download.";
     top.append(el("p", "compact-note", description));
     if (newest) {
       const platforms = el("div", "package-platforms");
@@ -295,6 +367,7 @@ function renderSettingsTabs() {
   document.querySelectorAll("[data-settings-tab]").forEach((node) => { const selected = node.dataset.settingsTab === settingsView; node.classList.toggle("selected", selected); node.setAttribute("aria-selected", String(selected)); $(`settings-${node.dataset.settingsTab}`).hidden = !selected; });
 }
 function renderSettings() {
+  document.querySelectorAll('[name="library-layout"]').forEach((node) => { node.checked = node.value === libraryLayout; });
   const config = rommConfig();
   const connected = config.connected || config.last_test?.ok || config.last_test?.success;
   $("romm-connection-status").replaceWith(Object.assign(statusBadge(connected ? "ready" : rommReady() ? "watching" : "needs_rom", connected ? "Connection verified" : rommReady() ? "Token saved" : "Not connected"), { id: "romm-connection-status" }));
@@ -330,10 +403,10 @@ function renderNotificationPreference() {
   $("browser-notification-state").textContent = !supported ? "This browser does not support desktop notifications. The in-app inbox is available." : Notification.permission === "denied" ? "Browser permission is blocked. Enable it in your browser’s site settings if you want desktop notifications." : desktopNotifications && allowed ? "Enabled for this browser while Portkeeper is open." : "Disabled for this browser. Your inbox still records updates.";
 }
 function render() {
-  const fingerprint = JSON.stringify([state, [...busy], route, activityView, settingsView]);
+  const fingerprint = JSON.stringify([state, [...busy], route, activityView, settingsView, libraryLayout]);
   if (fingerprint === lastRender) return;
   lastRender = fingerprint;
-  $("nav-project-count").textContent = state.projects.length;
+  $("nav-project-count").textContent = libraryGames().length;
   const unread = state.notifications.filter(notificationUnread).length;
   [$("nav-notification-count"), $("inbox-count")].forEach((node) => { node.textContent = unread; node.hidden = !unread; });
   renderLibrary(); renderActivity(); renderSettings();
@@ -357,6 +430,7 @@ function processNotifications() {
   });
 }
 async function refresh(manual = false) {
+  if (manual) { rommImports.clear(); lastRender = null; }
   if (refreshing) return;
   refreshing = true;
   try {
@@ -405,14 +479,17 @@ function renderProject() {
   document.querySelectorAll("[data-project-tab]").forEach((node) => { const selected = node.dataset.projectTab === route.tab; node.classList.toggle("selected", selected); node.setAttribute("aria-selected", String(selected)); });
   content.setAttribute("aria-labelledby", `project-${route.tab}-tab`);
   if (!project) { heading.append(el("div", "", [el("h1", "", "Game unavailable"), el("p", "", "Return to the library to choose a game.")])); return; }
-  const title = el("div", "", [el("div", "eyebrow", project.profile ? "VERIFIED PROFILE" : project.demo ? "SYNTHETIC DEMO" : "CUSTOM PROJECT"), el("h1", "", project.name), projectSource(project), el("div", "project-targets", (project.targets || []).map(targetPill))]);
+  const title = el("div", "project-title-detail", [el("h1", "", project.name), projectSource(project), el("div", "project-targets", gameTargets(project).map(targetPill))]);
+  const cover = projectCover(project, "project-hero-cover");
+  if (cover) title.prepend(cover);
   const working = Boolean(projectActiveJob(project)) || busy.has(`check-${project.id}`) || busy.has(`build-${project.id}`);
   const actions = el("div", "project-header-actions", statusBadge(projectStatus(project)));
   if (!project.demo) actions.append(button("Check update", "button secondary small", () => checkProject(project.id), working));
   if (project.profile) actions.append(button("Test build", "button primary small", () => testBuild(project.id), working));
   else if (project.recipe?.mode !== "capture") actions.append(button("Build package", "button primary small", () => buildProject(project.id), working || !project.capture_id));
-  heading.append(title, actions);
-  if (route.tab === "overview") renderOverview(project, content);
+  heading.append(title, statusBadge(gameNeedsAttention(project) ? "needs_attention" : hasDownloads(project) ? "ready" : "capture_only", gameAvailability(project)));
+  if (route.tab === "overview") { renderOverview(project, content); content.querySelector(".update-details .detail-card")?.append(actions); }
+  else heading.append(actions);
   if (route.tab === "versions") renderVersions(project, content);
   if (route.tab === "activity") renderProjectActivity(project, content);
   if (route.tab === "advanced") renderAdvanced(project, content, openJobs);
@@ -422,12 +499,27 @@ function renderOverview(project, content) {
   const grid = el("div", "detail-grid"), left = el("div"), right = el("div");
   const artifacts = projectArtifacts(project.id), latest = artifacts[0];
   const current = artifacts.filter((artifact) => artifact.published);
-  const packageCard = el("section", "detail-card", el("h2", "", "Portable packages"));
-  if (latest) {
-    packageCard.append(el("div", "detail-facts", [meta("Latest package", latest.version), meta("Validation", validationLevel(latest).replace(/_/g, " ")), meta("In local library", current.length ? current.map((artifact) => `${artifact.version} (${targetLabels[artifact.target] || artifact.target})`).join(", ") : "No package selected", true)]), validationLabel(latest), el("p", "compact-note", "A package is ready to download. Gameplay is confirmed only when you record your own play test."), el("div", "inline-actions", [artifactDownload(latest), button("Browse all versions →", "text-button", () => navigateProject(project.id, "versions"))]));
-  } else packageCard.append(el("p", "detail-empty", project.profile ? "Your selected ROM and the verified profile will be used for the first test build." : "No packages yet. Preserved source is kept independently of your build results."));
-  if (project.recipe?.mode === "capture") packageCard.append(el("p", "quiet-note", "This game tracks and preserves upstream updates. It does not automatically build a playable package. Manually imported games can be found in RomM."), button("Open RomM →", "button secondary small", () => { const url = state.romm?.url; if (url && /^https?:\/\//.test(url)) window.open(url, "_blank", "noopener,noreferrer"); else navigateSettings("romm"); }));
-  if (artifacts.length > 1) packageCard.append(el("div", "package-platforms", [...new Set(artifacts.map((artifact) => artifact.target))].map((target) => { const artifact = artifacts.find((item) => item.target === target); return el("div", "package-platform-row", [targetPill(target), validationLabel(artifact), artifactDownload(artifact, "table-action", "Download →")]); })));
+  const packageCard = el("section", "detail-card downloads-card", el("h2", "", "Choose your platform"));
+  const imports = importedPackages(project);
+  const targets = gameTargets(project);
+  targets.forEach((target) => {
+    const artifact = artifacts.find((item) => item.target === target);
+    const roms = imports.filter((rom) => rom.platform_slug === (target === "windows" ? "win" : target === "linux" ? "linux" : target));
+    const row = el("div", "download-platform-row");
+    const info = el("div", "download-platform-info", [el("h3", "", targetLabels[target] || target)]);
+    if (artifact) info.append(el("p", "field-help", artifact.version), validationLabel(artifact));
+    else if (roms.length) info.append(el("p", "field-help", "Imported into RomM · Testing notes below"));
+    else info.append(el("p", "field-help", rommImportsLoading.has(importKey(project)) ? "Checking your RomM library…" : rommImports.get(importKey(project))?.error ? "RomM could not be checked. Refresh to retry." : "No download recorded yet"));
+    const actions = el("div", "inline-actions");
+    if (artifact) actions.append(artifactDownload(artifact, "button primary small", "Download ZIP"));
+    roms.forEach((rom) => { const link = el("a", "button secondary small", "Open in RomM"); link.href = `${rommConfig().url}/rom/${rom.id}`; link.target = "_blank"; link.rel = "noopener noreferrer"; actions.append(link); });
+    row.append(info, actions); packageCard.append(row);
+    if (!artifact && roms.some((rom) => rom.summary)) {
+      const notes = el("details", "import-testing-notes", [el("summary", "", `${targetLabels[target] || target}: testing & launch notes`), ...roms.filter((rom) => rom.summary).map((rom) => el("p", "field-help", rom.summary))]);
+      packageCard.append(notes);
+    }
+  });
+  packageCard.append(el("p", "compact-note", "Download availability does not confirm gameplay. A launch check confirms startup only."));
   left.append(packageCard);
   const job = projectActiveJob(project) || projectJobs(project.id)[0];
   const progress = el("section", "detail-card", [el("h2", "", projectActiveJob(project) ? "Build in progress" : "Latest game run")]);
@@ -436,7 +528,9 @@ function renderOverview(project, content) {
     if (job.status === "failed") progress.append(el("div", "inline-actions", button("Retry failed step", "button secondary small", () => retryJob(job.id), busy.has(`retry-${job.id}`))));
     progress.append(el("div", "inline-actions", button("View activity →", "text-button", () => navigateProject(project.id, "activity"))));
   } else progress.append(el("p", "detail-empty", "Check for an update or start a test build to begin."));
-  left.append(progress);
+  const updateDetails = el("details", "update-details", [el("summary", "", "Updates & latest build activity"), progress]);
+  updateDetails.open = Boolean(projectActiveJob(project)) || job?.status === "failed";
+  left.append(updateDetails);
   const game = el("section", "detail-card", [el("h2", "", "Game files & schedule")]);
   const source = project.rom_source || {};
   game.append(el("div", "detail-facts", [meta("Game input", source.member || source.filename || source.path || (project.demo ? "Synthetic fixtures" : "Recipe-defined local files"), true), meta("ROM revision", source.revision || profiles.find((profile) => profile.id === project.profile)?.supported_roms?.find((rom) => rom.sha1 === source.sha1)?.name || (source.sha1 ? "Hash verified" : "Not selected")), meta("Update schedule", `Every ${project.poll_minutes || 60} min`), meta("After an update", project.auto_build ? "Build automatically" : "Preserve and wait"), meta("Local library copy", project.auto_publish ? "Automatic" : "Manual")]));
@@ -447,7 +541,8 @@ function renderOverview(project, content) {
   const coverPreview = projectCover(project, "project-cover-preview");
   if (coverPreview) metadataCard.insertBefore(coverPreview, metadataCard.children[1]);
   if (identity.romm_rom_id && rommConfig().url) { const link = el("a", "text-button", "Choose metadata & cover in RomM →"); link.href = `${rommConfig().url}/rom/${identity.romm_rom_id}`; link.target = "_blank"; link.rel = "noopener noreferrer"; metadataCard.append(el("div", "inline-actions", link)); }
-  right.append(metadataCard, game, retentionCard(project), preservationCard(project));
+  const setup = el("details", "update-details", [el("summary", "", "Build setup & saved releases"), game, retentionCard(project), preservationCard(project)]);
+  right.append(metadataCard, setup);
   grid.append(left, right); content.append(grid);
 }
 function progressSteps(job, project) {
@@ -990,6 +1085,12 @@ $("refresh").addEventListener("click", () => refresh(true));
 $("metadata-form").addEventListener("submit", saveMetadata);
 $("cover-form").addEventListener("submit", searchCovers);
 $("cover-apply").addEventListener("click", applyCover);
+document.querySelectorAll('[name="library-layout"]').forEach((node) => node.addEventListener("change", () => {
+  if (!node.checked) return;
+  libraryLayout = node.value; const saved = savePreference("portkeeper.library-layout", libraryLayout);
+  $("layout-save-status").textContent = saved ? "Layout saved for this browser." : "Layout selected for this session. Browser storage is unavailable.";
+  lastRender = null; renderRoute(); render();
+}));
 $("project-form").addEventListener("submit", submitProject);
 $("recipe-form").addEventListener("submit", submitRecipe);
 $("recipe-auto-build").addEventListener("change", syncAutoPublish);
