@@ -1,0 +1,27 @@
+services:
+  portkeeper:
+    build: .
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - portkeeper-data:/data
+      - ./game-inputs:/inputs:ro,z
+      - portkeeper-library:/library
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=512m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cpus: 4
+    mem_limit: 4g
+    pids_limit: 512
+    # The image enables only the fixed reviewed profile runner.
+    # For RomM, replace portkeeper-library with its writable ports directory.
+    # Arbitrary Docker recipes stay disabled; no Docker socket is mounted.
+volumes:
+  portkeeper-data:
+  portkeeper-library:

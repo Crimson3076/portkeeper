@@ -1,0 +1,65 @@
+--- a/soh/assets/tools/torch-cli/main.cpp
++++ b/soh/assets/tools/torch-cli/main.cpp
+@@ -6,9 +6,13 @@
+ 
+ #include <algorithm>
+ #include <cstdio>
++#include <cstdint>
+ #include <cstdlib>
+ #include <filesystem>
++#include <fstream>
++#include <iterator>
+ #include <string>
++#include <utility>
+ #include <vector>
+ 
+ #include "TorchExtract.h"
+@@ -50,6 +54,35 @@
+     }
+ 
+     return roms;
++}
++
++// The release changed Extract to accept ROM bytes; keep this build-time entry point
++// consistent with the game by reading and converting the dump to big-endian order.
++static std::vector<uint8_t> ReadRom(const std::string& path) {
++    std::ifstream input(path, std::ios::binary);
++    if (!input) {
++        fprintf(stderr, "could not open ROM: %s\n", path.c_str());
++        return {};
++    }
++    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
++    if (bytes.size() < 4 || bytes.size() % 4 != 0) {
++        fprintf(stderr, "invalid ROM size: %s\n", path.c_str());
++        return {};
++    }
++    if (bytes[0] == 0x37 && bytes[1] == 0x80 && bytes[2] == 0x40 && bytes[3] == 0x12) {
++        for (size_t i = 0; i < bytes.size(); i += 2) {
++            std::swap(bytes[i], bytes[i + 1]);
++        }
++    } else if (bytes[0] == 0x40 && bytes[1] == 0x12 && bytes[2] == 0x37 && bytes[3] == 0x80) {
++        for (size_t i = 0; i < bytes.size(); i += 4) {
++            std::swap(bytes[i], bytes[i + 3]);
++            std::swap(bytes[i + 1], bytes[i + 2]);
++        }
++    } else if (!(bytes[0] == 0x80 && bytes[1] == 0x37 && bytes[2] == 0x12 && bytes[3] == 0x40)) {
++        fprintf(stderr, "unrecognized N64 ROM header: %s\n", path.c_str());
++        return {};
++    }
++    return bytes;
+ }
+ 
+ int main(int argc, char** argv) {
+@@ -98,7 +131,11 @@
+ 
+     for (const auto& rom : roms) {
+         // A fresh extraction per ROM; torch names the archive from config.yml.
+-        const std::string archive = SohTorch::Extract(rom, src, dest, version, nullptr);
++        std::vector<uint8_t> bytes = ReadRom(rom);
++        if (bytes.empty()) {
++            return 1;
++        }
++        const std::string archive = SohTorch::Extract(std::move(bytes), src, dest, version, nullptr);
+         if (archive.empty()) {
+             fprintf(stderr, "failed to extract %s\n", rom.c_str());
+             return 1;
