@@ -10,7 +10,7 @@ from .safety import Invalid, checksum, confined, verify_tree
 from .storage import now
 
 
-VALIDATION_LEVELS = ("packaged", "launch_checked", "user_confirmed_playable")
+VALIDATION_LEVELS = ("packaged", "launch_checked", "user_confirmed_playable", "failed")
 NOTIFICATION_KINDS = ("ready", "build_failed", "needs_input", "upstream_unavailable")
 
 
@@ -35,7 +35,7 @@ class Lifecycle:
     def validate(self, artifact_id, level, notes="", evidence=None):
         """Record a review; never infer gameplay from successful packaging."""
         if level not in VALIDATION_LEVELS:
-            raise Invalid("Validation must be packaged, launch_checked, or user_confirmed_playable")
+            raise Invalid("Choose a valid package test result")
         if not isinstance(notes, str) or len(notes) > 4000:
             raise Invalid("Validation notes must be text up to 4000 characters")
         if evidence is not None and not isinstance(evidence, (str, dict)):
@@ -55,6 +55,10 @@ class Lifecycle:
             self._archive_directory(artifact, verify_hash=True)
             event = {"level": level, "notes": notes.strip(), "evidence": evidence, "recorded_at": now()}
             history = artifact.get("validation_history", []) + [event]
+            if level in ("packaged", "failed"):
+                project = self.store.get("projects", artifact['project_id'])
+                if project.get('known_good', {}).get(artifact['target']) == artifact_id:
+                    self.clear_known_good(project['id'], artifact['target'])
             return self.store.update("artifacts", artifact_id, validation_level=level,
                                      validation=event, validation_history=history[-100:])
 
@@ -62,7 +66,7 @@ class Lifecycle:
         with self.lock:
             artifact = self.store.get("artifacts", artifact_id)
             level = artifact.get("validation_level", "packaged")
-            if level not in VALIDATION_LEVELS[1:]:
+            if level not in ("launch_checked", "user_confirmed_playable"):
                 raise Invalid("Record a launch check or gameplay confirmation before selecting a known-good package")
             self._archive_directory(artifact, verify_hash=True)
             project = self.store.get("projects", artifact["project_id"])
