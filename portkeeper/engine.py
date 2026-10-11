@@ -145,6 +145,7 @@ class Engine:
         self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="portkeeper")
         self.busy = set()
         self.scheduler = None
+        self.identity_scheduler = None
         for job in self.store.all("jobs"):
             if job["status"] in ("queued", "running", "building", "checking"):
                 self.store.update("jobs", job["id"], status="failed", error="Service restarted during this job. Retry explicitly.", finished_at=now())
@@ -156,6 +157,8 @@ class Engine:
         self.stop.set()
         if self.scheduler:
             self.scheduler.join(timeout=5)
+        if self.identity_scheduler:
+            self.identity_scheduler.join(timeout=5)
         self.executor.shutdown(wait=True, cancel_futures=False)
 
     def state(self):
@@ -956,3 +959,19 @@ class Engine:
             return
         self.scheduler = threading.Thread(target=poll, daemon=True, name="portkeeper-scheduler")
         self.scheduler.start()
+        # Matching is independent of builds and runs after RomM's asynchronous file scan.
+        def match_imports():
+            from .romm_identity import ImportIdentities
+            matcher = ImportIdentities(self.romm, self.data)
+            while not self.stop.is_set():
+                if matcher.path.is_file() and self.romm.public_config().get("configured"):
+                    try:
+                        result = matcher.sync()
+                        self.save_setting("romm_import_matching", {"checked_at": now(), **result})
+                    except Exception:
+                        # Do not expose credentials or remote response bodies in the status.
+                        self.save_setting("romm_import_matching", {"checked_at": now(), "error": "Import matching failed. Check RomM connection and roms.write permission."})
+                if self.stop.wait(60):
+                    return
+        self.identity_scheduler = threading.Thread(target=match_imports, daemon=True, name="portkeeper-romm-matching")
+        self.identity_scheduler.start()
