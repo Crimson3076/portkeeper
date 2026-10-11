@@ -14,6 +14,21 @@ from portkeeper.engine import Engine
 from portkeeper.server import Handler, make_server
 
 
+class AllowedHostTests(unittest.TestCase):
+    def test_allowed_host_entries_may_include_a_port_or_scheme(self):
+        with tempfile.TemporaryDirectory() as temp:
+            engine = Engine(Path(temp) / "data")
+            self.addCleanup(engine.close)
+            try:
+                server = make_server(engine, port=0, allowed_hosts=[
+                    "192.168.0.83:8787", " Tower ", "http://tower.local:8787/", "[fd00::5]:8787", ""])
+            except PermissionError:
+                self.skipTest("Sandbox forbids localhost sockets")
+            server.server_close()
+        self.assertTrue({"192.168.0.83", "tower", "tower.local", "fd00::5"} <= server.allowed_hosts)
+        self.assertNotIn("", server.allowed_hosts)
+
+
 class HttpIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

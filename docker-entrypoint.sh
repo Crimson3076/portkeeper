@@ -25,4 +25,9 @@ if [ "$(id -u)" = "0" ]; then
     exec setpriv --reuid="$PUID" --regid="$PGID" --clear-groups -- "$@"
 fi
 
+# Started with --user (Compose, or Unraid with --user 99:100): run as-is.
+# Arbitrary UIDs have no passwd entry, so give tools a writable HOME.
+if [ ! -w "${HOME:-/}" ]; then
+    export HOME=/tmp
+fi
 exec "$@"

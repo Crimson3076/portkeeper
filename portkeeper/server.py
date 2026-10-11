@@ -228,7 +228,10 @@ class Handler(BaseHTTPRequestHandler):
 def make_server(engine, host="127.0.0.1", port=8787, allowed_hosts=()):
     server = ThreadingHTTPServer((host, port), partial(Handler, engine=engine))
     server.allowed_hosts = {"localhost", "127.0.0.1", "::1"}
-    server.allowed_hosts.update(name.strip().strip("[]").lower() for name in allowed_hosts if name.strip())
+    for name in allowed_hosts:
+        name = name.strip()
+        if name:  # Accept "host", "host:port", "[v6]:port" or a URL.
+            server.allowed_hosts.add(urllib.parse.urlsplit(name if "//" in name else "//" + name).hostname or name.lower())
     if host not in ("0.0.0.0", "::"):
         server.allowed_hosts.add(host)
     return server
