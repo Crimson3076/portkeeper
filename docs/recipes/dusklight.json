@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "mode": "assemble",
+  "inputs": [],
+  "payload": {
+    "kind": "release",
+    "asset_patterns": {
+      "linux": "^Dusklight-v[0-9.]+-linux-x86_64\\.AppImage$",
+      "windows": "^Dusklight-v[0-9.]+-win32-x86_64\\.zip$",
+      "handheld": "^Dusklight-v[0-9.]+-linux-arm64\\.AppImage$"
+    },
+    "single_file_name": "Dusklight.AppImage"
+  },
+  "steps": [],
+  "expected_files": [
+    "Dusklight.AppImage"
+  ],
+  "target_overrides": {
+    "windows": {
+      "expected_files": [
+        "dusklight.exe",
+        "res/icon.png"
+      ]
+    }
+  },
+  "notes": "Official Dusklight release builds. Point Dusklight at your own Twilight Princess disc image (.iso or .rvz) on first launch; game data is not packaged."
+}

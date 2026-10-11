@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import tarfile
 import threading
 import time
 import urllib.error
@@ -569,8 +570,16 @@ class Engine:
             archive = Path(capture["root"]) / entry["file"]
             if checksum(archive) != entry["sha256"]:
                 raise Invalid("Archived release asset checksum changed")
-            # Releases keep their directory layout; recipe paths refer to that layout.
-            safe_extract(archive, destination)
+            if zipfile.is_zipfile(archive) or tarfile.is_tarfile(archive):
+                # Releases keep their directory layout; recipe paths refer to that layout.
+                safe_extract(archive, destination)
+            else:
+                # A single-file release such as an AppImage is packaged as-is, under a stable
+                # name when the recipe sets one so expected_files survive version bumps.
+                output = confined(destination, payload.get("single_file_name") or entry["name"])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(archive, output)
+                output.chmod(0o755)
         return entry["sha256"]
 
     def _build_one(self, project, capture, job):

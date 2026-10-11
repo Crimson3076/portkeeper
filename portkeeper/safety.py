@@ -100,6 +100,10 @@ def validate_recipe(recipe, allow_overrides=True):
             re.compile(pattern)
         except re.error as error:
             raise Invalid(f"Invalid asset pattern: {error}") from error
+    if "single_file_name" in payload:
+        name = relative(payload["single_file_name"])
+        if str(name) == "portkeeper-manifest.json":
+            raise Invalid("single_file_name must not replace the manifest")
     expected = recipe.get("expected_files", [])
     if not isinstance(expected, list) or len(expected) > 100:
         raise Invalid("expected_files must be a list of paths")

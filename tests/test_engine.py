@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from portkeeper.engine import Busy, Engine
-from portkeeper.safety import Invalid, TARGETS, checksum
+from portkeeper.safety import Invalid, TARGETS, checksum, validate_recipe
 from portkeeper.storage import Store, now
 
 
@@ -124,6 +124,28 @@ class EngineTests(unittest.TestCase):
                 self.assertTrue(manifest["demo"])
                 self.assertIn("no launch", manifest["validation"])
                 self.assertIn(b"NOT A ROM", bundle.read("assets/demo-assets.bin"))
+
+    def test_single_file_release_assets_are_packaged_under_a_stable_name(self):
+        appimage = b"\x7fELF synthetic AppImage"
+        asset = self.github.current["assets"][0]
+        asset["name"], asset["size"] = "Game-v1-linux-x86_64.AppImage", len(appimage)
+        self.github.payloads[asset["browser_download_url"]] = appimage
+        recipe = {"version": 1, "mode": "assemble", "inputs": [], "expected_files": ["Game.AppImage"],
+                  "payload": {"kind": "release", "single_file_name": "Game.AppImage",
+                              "asset_patterns": {"linux": r"^Game-v[0-9]+-linux-x86_64\.AppImage$"}}}
+        project = self.capture(self.engine.create_project(
+            {"name": "Single file", "repo": "example/game", "targets": ["linux"], "recipe": recipe}))
+        [job] = self.build(project, ["linux"])
+        self.assertEqual(job["status"], "ready", job.get("error"))
+        with zipfile.ZipFile(self.artifact_for(project)["file"]) as bundle:
+            self.assertEqual(bundle.read("Game.AppImage"), appimage)
+            self.assertTrue(bundle.getinfo("Game.AppImage").external_attr >> 16 & 0o100)
+
+    def test_single_file_name_must_stay_inside_the_package(self):
+        for name in ("../escape", "/abs", "portkeeper-manifest.json", ""):
+            with self.subTest(name=name), self.assertRaises(Invalid):
+                validate_recipe({"version": 1, "mode": "assemble", "inputs": [], "expected_files": ["x"],
+                                 "payload": {"kind": "release", "single_file_name": name}})
 
     def test_capture_deduplicates_and_builds_target_specific_assets(self):
         project = self.capture(self.create_project())
