@@ -11,6 +11,7 @@ import re
 import stat
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -163,6 +164,7 @@ class RomM:
         self.secrets = self.data_dir / 'secrets' / 'romm.json'
         self.cache = self.data_dir / 'cache' / 'romm'
         self.lock = threading.RLock()
+        self.cover_cache = {}
 
     def _config(self):
         if not self.secrets.exists():
@@ -258,6 +260,37 @@ class RomM:
             raise Invalid('RomM returned an invalid ROM list')
         return {'items': [_normalize_record(item) for item in items if isinstance(item, dict)],
                 'total': result.get('total', len(items)) if isinstance(result, dict) else len(items), 'offset': offset, 'limit': limit}
+
+    def cover(self, rom_id):
+        rom_id = _positive(rom_id)
+        config = self._config()
+        key = (config.get('url'), rom_id)
+        with self.lock:
+            cached = self.cover_cache.get(key)
+            if cached and time.monotonic() - cached[0] < 60:
+                return cached[1], cached[2]
+        record = self._json('roms/' + str(rom_id))
+        path = record.get('path_cover_large') or record.get('path_cover_small')
+        if not path:
+            raise Invalid('This RomM entry has no cover yet')
+        url = urllib.parse.urljoin(config.get('url', ''), path)
+        if _origin(url) != _origin(config.get('url', '')):
+            raise Invalid('Cover must be served by the configured RomM server')
+        request = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + config.get('token', '')})
+        opener = urllib.request.build_opener(_OriginRedirect(_origin(url)))
+        try:
+            with opener.open(request, timeout=20) as response:
+                content_type = response.headers.get_content_type()
+                body = response.read(10 * 1024 * 1024 + 1)
+        except (urllib.error.URLError, TimeoutError, OSError):
+            raise Invalid('RomM cover could not be loaded') from None
+        if content_type not in ('image/png', 'image/jpeg', 'image/webp') or not body or len(body) > 10 * 1024 * 1024:
+            raise Invalid('RomM returned an invalid or oversized cover')
+        with self.lock:
+            if len(self.cover_cache) >= 100:
+                self.cover_cache.clear()
+            self.cover_cache[key] = (time.monotonic(), content_type, body)
+        return content_type, body
 
     def detail(self, rom_id):
         result = self._json('roms/' + str(_positive(rom_id)))

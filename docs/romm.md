@@ -29,3 +29,11 @@ PNG/JPEG/WebP, including on future platform builds. Custom artwork copies are li
 to 10 MiB and fetched only from the configured RomM origin. Matching retains package
 versions and validation notes. Project settings override legacy registrations with
 the same filename prefix. The token still needs `roms.write`.
+
+### Cover previews
+
+Linked RomM covers appear on library cards and in the game's Overview. The server
+proxies the current stored cover, including custom uploads, using its existing
+connector token. Tokens and remote artwork URLs are never embedded in the page.
+Images are limited to PNG/JPEG/WebP up to 10 MiB; previews refresh within a minute.
+Projects without a linked entry or cover retain their initials.

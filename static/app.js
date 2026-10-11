@@ -125,6 +125,15 @@ function repoLink(repo) {
   if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo || "")) { node.href = `https://github.com/${repo}`; node.target = "_blank"; node.rel = "noopener noreferrer"; }
   return node;
 }
+function projectCover(project, className) {
+  if (!project.metadata?.romm_rom_id) return null;
+  const image = el("img", className);
+  image.src = `/api/projects/${encodeURIComponent(project.id)}/cover?rom=${encodeURIComponent(project.metadata.romm_rom_id)}`;
+  image.alt = `${project.name} cover art`;
+  image.loading = "lazy"; image.decoding = "async";
+  image.addEventListener("error", () => image.remove(), {once: true});
+  return image;
+}
 function projectSource(project) { return project.demo ? el("span", "repo-link", "Synthetic sample files") : repoLink(project.repo); }
 function projectById(id) { return state.projects.find((project) => String(project.id) === String(id)); }
 function projectArtifacts(id) { return newestFirst(state.artifacts.filter((artifact) => String(artifact.project_id) === String(id))); }
@@ -219,6 +228,12 @@ function renderLibrary() {
     const good = artifacts.find((artifact) => knownGood(artifact, project));
     const title = button(project.name, "project-name", () => navigateProject(project.id));
     const avatar = el("div", "project-avatar", String(project.name || "P").split(/\s+/).map((word) => word[0]).slice(0, 2).join("").toUpperCase());
+    const cover = projectCover(project, "project-cover-thumb");
+    if (cover) {
+      const initials = avatar.textContent;
+      avatar.replaceChildren(cover); avatar.classList.add("has-cover");
+      cover.addEventListener("error", () => { avatar.classList.remove("has-cover"); avatar.textContent = initials; }, {once: true});
+    }
     const top = el("div", "project-card-top", [el("div", "project-title-row", [avatar, el("div", "project-title-block", [title, projectSource(project)])]), el("div", "project-state-row", [statusBadge(projectStatus(project)), ...(project.demo ? [el("span", "validation-label", "Demo")] : [])]), el("div", "project-targets", (project.targets || []).map(targetPill)), el("div", "project-meta", [meta("Latest package", newest?.version || "No package yet"), meta("Preferred package", good?.version || "Not selected"), meta("Preserved source", project.latest_version || "Not captured yet")])]);
     const active = projectActiveJob(project);
     const description = project.recipe?.mode === "capture" ? "Update tracking only. Automatic package builds are not configured." : newest ? "Portable packages available. Check each platform’s test status below." : "No package yet. Open this game to prepare a build.";
@@ -424,6 +439,8 @@ function renderOverview(project, content) {
   if (project.last_error && !projectActiveJob(project)) game.append(el("p", "project-error", project.last_error));
   const identity = project.metadata || {};
   const metadataCard = el("section", "detail-card", [el("h2", "", "Game metadata & artwork"), el("p", "detail-note", "Link the original game or a port-specific IGDB entry. Choose custom port artwork in RomM once, then reuse it for later builds."), el("div", "detail-facts", [meta("Game", identity.game || "Not linked"), meta("IGDB ID", identity.igdb_id || "Not linked"), meta("Artwork", identity.cover_policy === "romm" ? "Follow linked RomM cover" : "Keep current covers")]), button("Edit metadata link", "button secondary small", () => openMetadata(project.id))]);
+  const coverPreview = projectCover(project, "project-cover-preview");
+  if (coverPreview) metadataCard.insertBefore(coverPreview, metadataCard.children[1]);
   if (identity.romm_rom_id && rommConfig().url) { const link = el("a", "text-button", "Choose metadata & cover in RomM →"); link.href = `${rommConfig().url}/rom/${identity.romm_rom_id}`; link.target = "_blank"; link.rel = "noopener noreferrer"; metadataCard.append(el("div", "inline-actions", link)); }
   right.append(metadataCard, game, retentionCard(project), preservationCard(project));
   grid.append(left, right); content.append(grid);
