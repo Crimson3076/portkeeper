@@ -622,12 +622,12 @@ async function searchCovers(event) {
     const covers = result.covers || [];
     $("cover-status").textContent = covers.length ? `${covers.length} covers found. Pick one to apply.` : "No covers found. Try a shorter or different title.";
     covers.forEach((cover) => {
-      const option = el("button", "cover-option"); option.type = "button"; option.setAttribute("role", "option"); option.setAttribute("aria-selected", "false");
+      const option = el("button", "cover-option"); option.type = "button"; option.setAttribute("aria-pressed", "false");
       const image = el("img"); image.src = `/api/romm/cover-preview?url=${encodeURIComponent(cover.thumb)}`; image.alt = `${cover.game} cover`; image.loading = "lazy"; image.decoding = "async";
       option.append(image, el("span", "", cover.game), el("span", "", [cover.width && cover.height ? `${cover.width}×${cover.height}` : cover.provider, cover.author ? ` · ${cover.author}` : ""].join("")));
       option.addEventListener("click", () => {
-        $("cover-results").querySelectorAll(".cover-option").forEach((node) => node.setAttribute("aria-selected", "false"));
-        option.setAttribute("aria-selected", "true"); coverChoice = cover.url; $("cover-apply").disabled = false;
+        $("cover-results").querySelectorAll(".cover-option").forEach((node) => node.setAttribute("aria-pressed", "false"));
+        option.setAttribute("aria-pressed", "true"); coverChoice = cover.url; $("cover-apply").disabled = false;
       });
       $("cover-results").append(option);
     });
@@ -643,7 +643,8 @@ async function applyCover() {
     const result = await api(`/api/projects/${coverProjectId}/cover`, {method: "POST", body});
     $("cover-dialog").close(); await refresh();
     if (result.warning) toast(result.warning, true);
-    else toast(result.matched ? `Cover applied to ${result.matched} RomM ${result.matched === 1 ? "entry" : "entries"}. New imports get it automatically.` : "Cover saved. Linux and Windows imports get it once RomM scans them.");
+    else if (result.matched) toast(`Cover applied to ${result.matched} RomM ${result.matched === 1 ? "entry" : "entries"}. New imports get it automatically.`);
+    else toast("Cover saved. Linux and Windows imports get it once RomM scans them.");
   } catch (error) { $("cover-error").textContent = error.message; $("cover-apply").disabled = false; }
 }
 async function saveMetadata(event) {
