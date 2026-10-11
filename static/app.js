@@ -609,7 +609,7 @@ function openCoverSearch(id) {
   ["cover-prefix", "cover-prefix-label", "cover-prefix-help"].forEach((node) => { $(node).hidden = Boolean(knownPrefix); });
   $("cover-results").replaceChildren(); $("cover-status").textContent = ""; $("cover-error").textContent = "";
   $("cover-apply").disabled = true; $("cover-dialog").showModal();
-  if (rommConfig().url) searchCovers();
+  if (rommConfig().url) void searchCovers();
   else $("cover-error").textContent = "Connect RomM in Settings first; cover search runs through your RomM server.";
 }
 async function searchCovers(event) {
