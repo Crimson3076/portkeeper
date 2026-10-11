@@ -15,6 +15,7 @@ let state = { projects: [], jobs: [], artifacts: [], notifications: [], profiles
 let recipes = [];
 let profiles = [];
 let activityView = "jobs";
+let librarySearch = "", libraryPlatform = "", libraryStage = "";
 let settingsView = "romm";
 let route = { page: "library", projectId: null, tab: "overview" };
 let selectedJobId = null;
@@ -103,7 +104,7 @@ function newestFirst(items) { return items.slice().sort((a, b) => (Date.parse(b.
 function statusBadge(status, override) {
   const value = String(status || "idle").toLowerCase();
   const labels = {
-    idle: "Waiting", ready: "Packaged", watching: "Watching", captured: "Source preserved", archived: "Preserved", succeeded: "Complete", success: "Complete", completed: "Complete", published: "In local library", built: "Packaged", unchanged: "Up to date",
+    idle: "Waiting", ready: "Packaged", watching: "Watching", captured: "Source preserved", archived: "Source preserved", succeeded: "Complete", success: "Complete", completed: "Complete", published: "In local library", built: "Packaged", unchanged: "Up to date",
     failed: "Needs attention", error: "Needs attention", needs_attention: "Needs attention", blocked: "Needs attention", needs_rom: "Needs a ROM", missing_inputs: "Needs game files", capture_only: "Source only", unsupported_version: "Recipe update needed",
     queued: "Queued", running: "Working", checking: "Checking upstream", capturing: "Preserving source", preserving: "Preserving source", downloading_rom: "Downloading ROM", extracting: "Extracting game assets", packaging_linux: "Packaging Linux", packaging_windows: "Packaging Windows", building: "Building package", preserving_source: "Preserving source", preserving_assets: "Preserving releases", capturing_dependencies: "Preserving dependencies", building_extractor: "Building extractor", preparing: "Preparing inputs", validating: "Validating package", complete: "Complete"
   };
@@ -167,7 +168,7 @@ function rommConfig() { return state.romm || state.settings?.romm || {}; }
 function rommReady() { const config = rommConfig(); return Boolean(config.url && (config.token_configured || config.has_token)); }
 function notificationTitle(notification) {
   const names = { ready: "Package ready", build_failed: "Build needs attention", needs_input: "Game input required", upstream_unavailable: "Upstream unavailable" };
-  const title = notification.title || names[notification.kind] || "Worker update";
+  const title = notification.title || names[notification.kind] || "Game update";
   return notification.project_name ? `${notification.project_name} · ${title}` : title;
 }
 function notificationUnread(notification) { return notification.unread !== undefined ? Boolean(notification.unread) : !(notification.read || notification.read_at); }
@@ -197,28 +198,46 @@ function renderLibrary() {
   $("summary-attention").textContent = attention;
   $("attention-summary").classList.toggle("attention-active", attention > 0);
   const grid = $("project-grid"); grid.replaceChildren();
+  $("library-results").textContent = "0 games";
   if (!state.projects.length) {
-    const empty = emptyState("▦", "A home for your next playthrough", "Connect your RomM library, choose a project, and let a worker preserve its updates.");
+    const empty = emptyState("▦", "A home for your next playthrough", "Connect your RomM library, choose a game, and preserve its updates.");
     empty.append(el("div", "onboarding-steps", [el("span", "", [el("b", "", "1"), "Connect RomM"]), el("span", "", [el("b", "", "2"), "Select a game"]), el("span", "", [el("b", "", "3"), "Test a build"])]));
-    empty.append(button("Set up your first worker →", "button primary", openWizard), button("Explore with a synthetic demo", "text-button", () => navigateSettings("demo")));
+    empty.append(button("Set up your first game →", "button primary", openWizard), button("Explore with a synthetic demo", "text-button", () => navigateSettings("demo")));
     grid.append(empty); return;
   }
-  state.projects.forEach((project) => {
+  const matches = state.projects.filter((project) => {
+    const hasPackages = projectArtifacts(project.id).length > 0;
+    const needsAttention = Boolean(project.last_error) || ["needs_rom", "missing_inputs", "needs_attention", "failed", "blocked", "unsupported_version"].includes(project.status);
+    return `${project.name} ${project.repo || ""}`.toLowerCase().includes(librarySearch.toLowerCase()) && (!libraryPlatform || (project.targets || []).includes(libraryPlatform)) && (!libraryStage || (libraryStage === "packages" ? hasPackages : libraryStage === "source" ? !hasPackages && project.recipe?.mode === "capture" : needsAttention));
+  });
+  $("library-results").textContent = `${matches.length} of ${state.projects.length} games`;
+  if (!matches.length) grid.append(emptyState("⌕", "No games match", "Try another search or choose All platforms and All games."));
+  matches.forEach((project) => {
     const artifacts = projectArtifacts(project.id);
     const newest = artifacts[0];
     const good = artifacts.find((artifact) => knownGood(artifact, project));
     const title = button(project.name, "project-name", () => navigateProject(project.id));
     const avatar = el("div", "project-avatar", String(project.name || "P").split(/\s+/).map((word) => word[0]).slice(0, 2).join("").toUpperCase());
-    const top = el("div", "project-card-top", [el("div", "project-title-row", [avatar, el("div", "project-title-block", [title, projectSource(project)])]), el("div", "project-state-row", [statusBadge(projectStatus(project)), ...(project.demo ? [el("span", "validation-label", "Demo")] : [])]), el("div", "project-targets", (project.targets || []).map(targetPill)), el("div", "project-meta", [meta("Latest package", newest?.version || "No package yet"), meta("Known good", good?.version || "Not selected"), meta("Preserved source", project.latest_version || "Not captured yet")])]);
+    const top = el("div", "project-card-top", [el("div", "project-title-row", [avatar, el("div", "project-title-block", [title, projectSource(project)])]), el("div", "project-state-row", [statusBadge(projectStatus(project)), ...(project.demo ? [el("span", "validation-label", "Demo")] : [])]), el("div", "project-targets", (project.targets || []).map(targetPill)), el("div", "project-meta", [meta("Latest package", newest?.version || "No package yet"), meta("Preferred package", good?.version || "Not selected"), meta("Preserved source", project.latest_version || "Not captured yet")])]);
     const active = projectActiveJob(project);
+    const description = project.recipe?.mode === "capture" ? "Update tracking only. Automatic package builds are not configured." : newest ? "Portable packages available. Check each platform’s test status below." : "No package yet. Open this game to prepare a build.";
+    top.append(el("p", "compact-note", description));
+    if (newest) {
+      const platforms = el("div", "package-platforms");
+      [...new Set(artifacts.map((artifact) => artifact.target))].forEach((target) => {
+        const artifact = artifacts.find((item) => item.target === target);
+        platforms.append(el("div", "package-platform-row", [targetPill(target), validationLabel(artifact), artifactDownload(artifact, "table-action", "Download →")]));
+      });
+      top.append(platforms);
+    }
     if (project.last_error && !active) top.append(el("p", "project-error", project.last_error));
-    const bottom = el("div", "project-card-bottom", [el("span", "card-update-time", active ? "Worker is running" : project.last_checked ? `Checked ${timeAgo(project.last_checked).toLowerCase()}` : "Not checked yet"), button("Open worker →", "button secondary small", () => navigateProject(project.id))]);
+    const bottom = el("div", "project-card-bottom", [el("span", "card-update-time", active ? "Game is running" : project.last_checked ? `Checked ${timeAgo(project.last_checked).toLowerCase()}` : "Not checked yet"), button("Open game →", "button secondary small", () => navigateProject(project.id))]);
     grid.append(el("article", "project-card", [top, bottom]));
   });
 }
 function jobRow(job) {
   const project = projectById(job.project_id);
-  const actions = el("div", "table-actions", button("View worker →", "table-action", () => navigateProject(job.project_id, "activity", job.id)));
+  const actions = el("div", "table-actions", button("View game →", "table-action", () => navigateProject(job.project_id, "activity", job.id)));
   if (job.status === "failed") actions.append(button("Retry step", "table-action", () => retryJob(job.id), busy.has(`retry-${job.id}`)));
   return el("tr", "", [el("td", "", [el("span", "table-title", job.project_name || project?.name || "Project"), el("span", "table-detail", `${job.version || "Update check"} · ${targetLabels[job.target] || job.target || "Source"}`)]), el("td", "", statusBadge(jobStage(job))), el("td", "", dateLabel(job.created_at)), el("td", "", actions)]);
 }
@@ -231,8 +250,8 @@ function renderActivity() {
   Object.entries(tabs).forEach(([key, node]) => { node.classList.toggle("selected", activityView === key); node.setAttribute("aria-selected", String(activityView === key)); });
   $("jobs-count").textContent = state.jobs.length; $("artifacts-count").textContent = state.artifacts.length; $("notifications-count").textContent = state.notifications.filter(notificationUnread).length;
   const content = $("activity-content"); content.setAttribute("aria-labelledby", tabs[activityView].id);
-  if (activityView === "jobs") content.replaceChildren(state.jobs.length ? table(["Worker / version", "Current step", "Started", ""], newestFirst(state.jobs).slice(0, 60).map(jobRow)) : emptyState("◷", "The pipeline is quiet", "A worker’s update checks and builds will appear here."));
-  if (activityView === "packages") content.replaceChildren(state.artifacts.length ? table(["Worker / package", "Validation", "Size", ""], newestFirst(state.artifacts).map(packageRow)) : emptyState("▱", "Your first package is ahead", "Completed packages will appear here with their validation level."));
+  if (activityView === "jobs") content.replaceChildren(state.jobs.length ? table(["Game / version", "Current step", "Started", ""], newestFirst(state.jobs).slice(0, 60).map(jobRow)) : emptyState("◷", "The pipeline is quiet", "A game’s update checks and builds will appear here."));
+  if (activityView === "packages") content.replaceChildren(state.artifacts.length ? table(["Game / package", "Validation", "Size", ""], newestFirst(state.artifacts).map(packageRow)) : emptyState("▱", "Your first package is ahead", "Completed packages will appear here with their validation level."));
   if (activityView === "notifications") renderNotifications(content);
 }
 function renderNotifications(parent) {
@@ -245,7 +264,7 @@ function renderNotifications(parent) {
     const failure = /fail|error|unavailable|attention/.test(notification.kind || notification.type || "");
     const main = el("div", "notification-body", [el("h3", "", notificationTitle(notification)), el("p", "", notification.message || notification.body || ""), el("span", "notification-time", dateLabel(notification.created_at))]);
     const actions = el("div", "notification-actions");
-    if (notification.project_id) actions.append(button("Open worker →", "table-action", () => { if ($("inbox-dialog").open) $("inbox-dialog").close(); navigateProject(notification.project_id); }));
+    if (notification.project_id) actions.append(button("Open game →", "table-action", () => { if ($("inbox-dialog").open) $("inbox-dialog").close(); navigateProject(notification.project_id); }));
     if (notificationUnread(notification)) actions.append(button("Mark read", "table-action", () => markRead(notification.id), busy.has(`read-${notification.id}`)));
     main.append(actions);
     parent.append(el("div", `notification-item${notificationUnread(notification) ? " unread" : ""}`, [el("span", `notification-symbol${failure ? " error" : ""}`, failure ? "!" : "✓"), main]));
@@ -364,7 +383,7 @@ function renderProject() {
   heading.replaceChildren(); content.replaceChildren();
   document.querySelectorAll("[data-project-tab]").forEach((node) => { const selected = node.dataset.projectTab === route.tab; node.classList.toggle("selected", selected); node.setAttribute("aria-selected", String(selected)); });
   content.setAttribute("aria-labelledby", `project-${route.tab}-tab`);
-  if (!project) { heading.append(el("div", "", [el("h1", "", "Worker unavailable"), el("p", "", "Return to the library to choose a worker.")])); return; }
+  if (!project) { heading.append(el("div", "", [el("h1", "", "Game unavailable"), el("p", "", "Return to the library to choose a game.")])); return; }
   const title = el("div", "", [el("div", "eyebrow", project.profile ? "VERIFIED PROFILE" : project.demo ? "SYNTHETIC DEMO" : "CUSTOM PROJECT"), el("h1", "", project.name), projectSource(project), el("div", "project-targets", (project.targets || []).map(targetPill))]);
   const working = Boolean(projectActiveJob(project)) || busy.has(`check-${project.id}`) || busy.has(`build-${project.id}`);
   const actions = el("div", "project-header-actions", statusBadge(projectStatus(project)));
@@ -382,13 +401,15 @@ function renderOverview(project, content) {
   const grid = el("div", "detail-grid"), left = el("div"), right = el("div");
   const artifacts = projectArtifacts(project.id), latest = artifacts[0];
   const current = artifacts.filter((artifact) => artifact.published);
-  const packageCard = el("section", "detail-card", el("h2", "", "Your next playthrough"));
+  const packageCard = el("section", "detail-card", el("h2", "", "Portable packages"));
   if (latest) {
     packageCard.append(el("div", "detail-facts", [meta("Latest package", latest.version), meta("Validation", validationLevel(latest).replace(/_/g, " ")), meta("In local library", current.length ? current.map((artifact) => `${artifact.version} (${targetLabels[artifact.target] || artifact.target})`).join(", ") : "No package selected", true)]), validationLabel(latest), el("p", "compact-note", "A package is ready to download. Gameplay is confirmed only when you record your own play test."), el("div", "inline-actions", [artifactDownload(latest), button("Browse all versions →", "text-button", () => navigateProject(project.id, "versions"))]));
   } else packageCard.append(el("p", "detail-empty", project.profile ? "Your selected ROM and the verified profile will be used for the first test build." : "No packages yet. Preserved source is kept independently of your build results."));
+  if (project.recipe?.mode === "capture") packageCard.append(el("p", "quiet-note", "This game tracks and preserves upstream updates. It does not automatically build a playable package. Manually imported games can be found in RomM."), button("Open RomM →", "button secondary small", () => { const url = state.romm?.url; if (url && /^https?:\/\//.test(url)) window.open(url, "_blank", "noopener,noreferrer"); else navigateSettings("romm"); }));
+  if (artifacts.length > 1) packageCard.append(el("div", "package-platforms", [...new Set(artifacts.map((artifact) => artifact.target))].map((target) => { const artifact = artifacts.find((item) => item.target === target); return el("div", "package-platform-row", [targetPill(target), validationLabel(artifact), artifactDownload(artifact, "table-action", "Download →")]); })));
   left.append(packageCard);
   const job = projectActiveJob(project) || projectJobs(project.id)[0];
-  const progress = el("section", "detail-card", [el("h2", "", projectActiveJob(project) ? "Build in progress" : "Latest worker run")]);
+  const progress = el("section", "detail-card", [el("h2", "", projectActiveJob(project) ? "Build in progress" : "Latest game run")]);
   if (job) {
     progress.append(statusBadge(jobStage(job)), progressSteps(job, project), el("p", "progress-caption", job.error || `${job.version || "Update check"} · ${dateLabel(job.created_at)}`));
     if (job.status === "failed") progress.append(el("div", "inline-actions", button("Retry failed step", "button secondary small", () => retryJob(job.id), busy.has(`retry-${job.id}`))));
@@ -515,7 +536,7 @@ function renderProjectActivity(project, content) {
   if (!jobs.length) { content.append(emptyState("◷", "No runs yet", "Check for an update or start a test build. This view shows meaningful steps; diagnostics are in Advanced.")); return; }
   const panel = el("div", "activity-panel");
   jobs.forEach((job) => {
-    const main = el("div", "job-item-main", [el("div", "job-item-top", [el("h3", "", job.version || "Update check"), targetPill(job.target || "capture"), statusBadge(jobStage(job))]), el("p", "", job.error || job.message || (job.status === "succeeded" ? "Worker step completed." : "Follow the current step above."))]);
+    const main = el("div", "job-item-main", [el("div", "job-item-top", [el("h3", "", job.version || "Update check"), targetPill(job.target || "capture"), statusBadge(jobStage(job))]), el("p", "", job.error || job.message || (job.status === "succeeded" ? "Game step completed." : "Follow the current step above."))]);
     const actions = el("div", "inline-actions", button("View diagnostics →", "table-action", () => navigateProject(project.id, "advanced", job.id)));
     if (job.status === "failed") actions.prepend(button("Retry failed step", "table-action", () => retryJob(job.id), busy.has(`retry-${job.id}`)));
     main.append(actions); panel.append(el("article", "job-item", [main, el("span", "job-date", dateLabel(job.created_at))]));
@@ -524,7 +545,7 @@ function renderProjectActivity(project, content) {
 }
 function renderAdvanced(project, content, openJobs) {
   const stack = el("div", "advanced-stack");
-  const configuration = el("section", "detail-card", [el("h2", "", "Recipe & automation"), el("p", "detail-note", project.profile ? "This worker uses fixed, reviewed build instructions for its supported release. Automation settings are editable; changing trusted build execution requires a profile update. New unsupported releases are preserved for review." : "A custom recipe controls required inputs, outputs, and the build runner.")]);
+  const configuration = el("section", "detail-card", [el("h2", "", "Recipe & automation"), el("p", "detail-note", project.profile ? "This game uses fixed, reviewed build instructions for its supported release. Automation settings are editable; changing trusted build execution requires a profile update. New unsupported releases are preserved for review." : "A custom recipe controls required inputs, outputs, and the build runner.")]);
   configuration.append(el("div", "detail-facts", [meta("Recipe mode", project.recipe?.mode || "capture"), meta("Automatic build", project.auto_build ? "Enabled" : "Disabled"), meta("Automatic local library copy", project.auto_publish ? "Enabled" : "Disabled"), meta("Polling interval", `${project.poll_minutes || 60} minutes`)]), button("Edit recipe & automation", "button secondary small", () => openRecipe(project.id)));
   const json = el("details", "diagnostics-list"); json.append(el("summary", "table-action", "View saved recipe JSON"), el("pre", "json-preview", JSON.stringify(project.recipe || captureRecipe, null, 2))); configuration.append(json); stack.append(configuration);
   const assistant = el("section", "detail-card", [el("h2", "", "Ask for a recipe proposal"), el("p", "detail-note", project.profile ? "A local model can draft notes for this verified profile. Its reviewed build instructions remain fixed; proposals are reviewed before saving." : "Describe a required change or a build error. A local model can draft a proposal; you review the JSON before saving it.")]);
@@ -534,7 +555,7 @@ function renderAdvanced(project, content, openJobs) {
   const configured = Boolean(assistantConfig.endpoint && assistantConfig.model);
   assistant.append(el("div", "inline-actions", [button(busy.has(`proposal-${project.id}`) ? "Drafting proposal…" : "Draft proposal", "button secondary small", () => draftProposal(project.id), !configured || busy.has(`proposal-${project.id}`)), button("Assistant settings →", "text-button", () => navigateSettings("assistant"))]));
   if (!configured) assistant.append(el("p", "field-help", "Configure your local Ollama endpoint and model in Settings first.")); stack.append(assistant);
-  const diagnostic = el("section", "detail-card", [el("h2", "", "Build diagnostics"), el("p", "detail-note", "Detailed logs and errors for troubleshooting a worker step.")]);
+  const diagnostic = el("section", "detail-card", [el("h2", "", "Build diagnostics"), el("p", "detail-note", "Detailed logs and errors for troubleshooting a game step.")]);
   const jobs = projectJobs(project.id); const logs = el("div", "diagnostics-list");
   jobs.forEach((job) => { const details = el("details", "job-panel"); details.dataset.jobId = job.id; details.open = openJobs.has(String(job.id)) || String(job.id) === String(selectedJobId); details.append(el("summary", "", [targetPill(job.target || "capture"), el("span", "", job.version || "Update check"), statusBadge(jobStage(job)), el("span", "job-date", dateLabel(job.created_at))]), el("pre", "", (Array.isArray(job.logs) ? job.logs.join("\n") : String(job.logs || "Waiting for log output…")) + (job.error ? `\n\nError: ${job.error}` : ""))); logs.append(details); });
   diagnostic.append(jobs.length ? logs : el("p", "detail-empty", "No diagnostics yet.")); stack.append(diagnostic);
@@ -562,7 +583,7 @@ function renderWizard() {
   if (wizard.step > 1) actions.append(button("← Back", "button subtle left-action", () => { wizard.step--; $("wizard-error").textContent = ""; renderWizard(); }, wizardBusy));
   else actions.append(button("Custom project", "text-button left-action", () => { $("worker-dialog").close(); openCustomProject(); }, wizardBusy));
   if (wizard.step === 1) {
-    content.append(el("h3", "wizard-section-title", "Connect your game library"), el("p", "wizard-description", "Use a RomM Client API Token so workers can find and download the game files you choose."));
+    content.append(el("h3", "wizard-section-title", "Connect your game library"), el("p", "wizard-description", "Use a RomM Client API Token so games can find and download the game files you choose."));
     const url = input("wizard-romm-url", "url", wizard.url, "https://romm.example.com"); url.autocomplete = "url"; url.addEventListener("input", () => { wizard.url = url.value; }); field(content, "RomM server URL", url);
     const token = input("wizard-romm-token", "password", wizard.token, rommReady() ? "Saved token · leave blank to keep" : "Paste a RomM token"); token.autocomplete = "new-password"; token.addEventListener("input", () => { wizard.token = token.value; }); field(content, "Client API token", token, "A token with library read and download permission is enough. It is saved only on the Portkeeper server.");
     if (rommReady()) content.append(statusBadge("watching", "A token is already saved"));
@@ -612,21 +633,21 @@ function renderWizard() {
     const choices = el("div", "target-options");
     profileTargets(wizardProfile()).forEach((target) => { const check = input(`wizard-target-${target}`, "checkbox", target); check.checked = wizard.targets.includes(target); check.addEventListener("change", () => { wizard.targets = [...choices.querySelectorAll("input:checked")].map((node) => node.value); }); choices.append(el("label", "", [check, profileTargetLabel(wizardProfile(), target)])); }); devices.append(choices); content.append(devices);
     if (wizardProfile()?.unsupported_devices?.length) content.append(el("p", "field-help", `This profile does not support ${wizardProfile().unsupported_devices.join(", ")}.`));
-    const name = input("wizard-project-name", "text", wizard.name); name.maxLength = 100; name.addEventListener("input", () => { wizard.name = name.value; }); field(content, "Worker name", name);
+    const name = input("wizard-project-name", "text", wizard.name); name.maxLength = 100; name.addEventListener("input", () => { wizard.name = name.value; }); field(content, "Game name", name);
     const minutes = input("wizard-poll-minutes", "number", wizard.pollMinutes); minutes.min = "1"; minutes.max = "10080"; minutes.addEventListener("input", () => { wizard.pollMinutes = Number(minutes.value); }); field(content, "Check for updates every (minutes)", minutes);
     const auto = input("wizard-auto-build", "checkbox"); auto.checked = wizard.autoBuild; auto.addEventListener("change", () => { wizard.autoBuild = auto.checked; publish.disabled = !auto.checked; if (!auto.checked) { wizard.autoPublish = false; publish.checked = false; } }); content.append(el("label", "checkbox-line", [auto, "Build automatically after a compatible update"]));
     const publish = input("wizard-auto-publish", "checkbox"); publish.checked = wizard.autoPublish; publish.disabled = !wizard.autoBuild; publish.addEventListener("change", () => { wizard.autoPublish = publish.checked; }); content.append(el("label", "checkbox-line", [publish, "Copy successful packages into the local library automatically"]));
     content.append(el("p", "field-help", "RomM API upload is planned for a later update. Original ROMs stay unchanged."));
-    actions.append(button("Review test build →", "button primary", () => { if (!wizard.targets.length) { $("wizard-error").textContent = "Choose at least one device."; return; } if (!wizard.name.trim()) { $("wizard-error").textContent = "Give the worker a name."; return; } if (!Number.isInteger(wizard.pollMinutes) || wizard.pollMinutes < 1 || wizard.pollMinutes > 10080) { $("wizard-error").textContent = "Use an interval from 1 to 10,080 minutes."; return; } wizard.step = 5; $("wizard-error").textContent = ""; renderWizard(); }, wizardBusy));
+    actions.append(button("Review test build →", "button primary", () => { if (!wizard.targets.length) { $("wizard-error").textContent = "Choose at least one device."; return; } if (!wizard.name.trim()) { $("wizard-error").textContent = "Give the game a name."; return; } if (!Number.isInteger(wizard.pollMinutes) || wizard.pollMinutes < 1 || wizard.pollMinutes > 10080) { $("wizard-error").textContent = "Use an interval from 1 to 10,080 minutes."; return; } wizard.step = 5; $("wizard-error").textContent = ""; renderWizard(); }, wizardBusy));
   }
   if (wizard.step === 5) {
     content.append(el("h3", "wizard-section-title", "Let’s make the first package"), el("p", "wizard-description", "Portkeeper will preserve the upstream release, reuse your verified ROM download, extract the game assets, and archive a ZIP for each device."));
     const revision = wizard.candidate?.revision || wizard.candidate?.name || "Supported ROM revision";
-    content.append(el("div", "review-grid", [meta("Worker", wizard.name), meta("Verified project", wizardProfile()?.name || wizard.profile), meta("Game revision", revision, true), meta("Game file", wizard.candidate?.member || wizard.filename, true), meta("Packages", wizard.targets.map((target) => targetLabels[target] || target).join(" · "), true), meta("Update schedule", `${wizard.pollMinutes} minutes`), meta("Future builds", wizard.autoBuild ? "Automatic" : "Manual")]));
+    content.append(el("div", "review-grid", [meta("Game", wizard.name), meta("Verified project", wizardProfile()?.name || wizard.profile), meta("Game revision", revision, true), meta("Game file", wizard.candidate?.member || wizard.filename, true), meta("Packages", wizard.targets.map((target) => targetLabels[target] || target).join(" · "), true), meta("Update schedule", `${wizard.pollMinutes} minutes`), meta("Future builds", wizard.autoBuild ? "Automatic" : "Manual")]));
     content.append(el("p", "info-note", "A successful build earns the “Packaged” label. You can record a gameplay confirmation after you try the exact package."));
     const disabled = state.runner?.profile_builds_enabled === false;
     if (disabled) content.append(el("p", "quiet-note", "The verified profile runner is disabled. Start Portkeeper with --enable-profile-builds to enable the test build."));
-    actions.append(button(wizardBusy ? "Creating worker…" : "Create worker & test build →", "button primary", createWizardWorker, wizardBusy || disabled));
+    actions.append(button(wizardBusy ? "Creating game…" : "Create game & test build →", "button primary", createWizardWorker, wizardBusy || disabled));
   }
 }
 function romTitle(rom) { return rom.name || rom.title || rom.fs_name_no_tags || rom.fs_name || `ROM ${rom.id}`; }
@@ -695,8 +716,8 @@ async function createWizardWorker() {
   try {
     const body = { name: wizard.name.trim(), profile: wizard.profile, targets: wizard.targets, poll_minutes: wizard.pollMinutes, auto_build: wizard.autoBuild, auto_publish: wizard.autoPublish, rom_source: { rom_id: wizard.rom.id, filename: wizard.filename, member: wizard.candidate.member, sha1: wizard.candidate.sha1, cache_key: wizard.inspection.cache_key } };
     const result = await api("/api/projects", { method: "POST", body }); const project = result.project || result;
-    if (!project.id) throw new Error("The worker was created, but the server returned no worker ID.");
-    await refresh(); $("worker-dialog").close(); navigateProject(project.id); toast("Worker created. Starting the first test build.");
+    if (!project.id) throw new Error("The game was created, but the server returned no game ID.");
+    await refresh(); $("worker-dialog").close(); navigateProject(project.id); toast("Game created. Starting the first test build.");
     await testBuild(project.id);
   } catch (error) { $("wizard-error").textContent = error.message; }
   finally { wizardBusy = false; renderWizard(); }
@@ -788,7 +809,7 @@ async function applyProposal() {
 
 async function submitRomM(event) {
   event.preventDefault(); if (busy.has("romm-settings")) return; busy.add("romm-settings"); $("romm-save").disabled = true; $("romm-save").textContent = "Connecting…"; $("romm-form-result").textContent = "";
-  try { await saveRomMConnection($("romm-url").value, $("romm-token").value); $("romm-url").dataset.dirty = ""; $("romm-form-result").classList.remove("error"); $("romm-form-result").textContent = "Connection verified. You can now select game files in worker setup."; }
+  try { await saveRomMConnection($("romm-url").value, $("romm-token").value); $("romm-url").dataset.dirty = ""; $("romm-form-result").classList.remove("error"); $("romm-form-result").textContent = "Connection verified. You can now select game files in game setup."; }
   catch (error) { $("romm-form-result").classList.add("error"); $("romm-form-result").textContent = error.message; }
   finally { $("romm-token").value = ""; busy.delete("romm-settings"); $("romm-save").disabled = false; $("romm-save").textContent = "Save & test connection"; await refresh(); }
 }
@@ -804,7 +825,7 @@ async function clearRomMToken() {
 }
 async function submitAssistant(event) {
   event.preventDefault(); const submit = $("assistant-save"); if (submit.disabled) return; submit.disabled = true; $("assistant-result").textContent = "";
-  try { await api("/api/assistant/config", { method: "POST", body: { endpoint: $("assistant-endpoint").value.trim(), model: $("assistant-model").value.trim() } }); $("assistant-result").classList.remove("error"); $("assistant-result").textContent = "Assistant configured. Draft a proposal from a worker’s Advanced tab."; [$("assistant-endpoint"), $("assistant-model")].forEach((node) => { node.dataset.dirty = ""; }); await refresh(); }
+  try { await api("/api/assistant/config", { method: "POST", body: { endpoint: $("assistant-endpoint").value.trim(), model: $("assistant-model").value.trim() } }); $("assistant-result").classList.remove("error"); $("assistant-result").textContent = "Assistant configured. Draft a proposal from a game’s Advanced tab."; [$("assistant-endpoint"), $("assistant-model")].forEach((node) => { node.dataset.dirty = ""; }); await refresh(); }
   catch (error) { $("assistant-result").classList.add("error"); $("assistant-result").textContent = error.message; }
   finally { submit.disabled = false; }
 }
@@ -902,6 +923,7 @@ document.querySelectorAll('[role="tablist"]').forEach((list) => list.addEventLis
   if (next !== null) { event.preventDefault(); tabs[next].focus(); tabs[next].click(); }
 }));
 window.addEventListener("hashchange", () => { renderRoute(); lastRender = null; render(); window.scrollTo(0, 0); });
+[ ["library-search", "input"], ["library-platform", "change"], ["library-stage", "change"] ].forEach(([id, event]) => $(id).addEventListener(event, () => { librarySearch = $("library-search").value.trim(); libraryPlatform = $("library-platform").value; libraryStage = $("library-stage").value; renderLibrary(); }));
 renderRoute(); render();
 Promise.allSettled([refresh(), loadCatalog()]);
 setInterval(() => { if (!document.hidden) refresh(); }, 3000);
