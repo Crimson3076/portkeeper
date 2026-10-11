@@ -11,6 +11,12 @@ from portkeeper.romm_identity import ImportIdentities, validate_identity
 from portkeeper.safety import Invalid
 
 
+def failing(message):
+    def fail(*_args, **_kwargs):
+        raise Invalid(message)
+    return fail
+
+
 class CoverSearchTests(unittest.TestCase):
     def test_search_keeps_static_https_covers_and_remembers_offers(self):
         response = [{'name': 'Twilight Princess', 'provider': 'sgdb', 'resources': [
@@ -32,7 +38,7 @@ class CoverSearchTests(unittest.TestCase):
     def test_missing_provider_is_explained(self):
         with tempfile.TemporaryDirectory() as d:
             romm = RomM(d)
-            with patch.object(romm, '_json', side_effect=Invalid('RomM request failed with HTTP 500')):
+            with patch.object(romm, '_json', side_effect=failing('RomM request failed with HTTP 500')):
                 with self.assertRaisesRegex(Invalid, 'SteamGridDB'): romm.search_covers('Game')
 
     def test_preview_rejects_non_images_and_plain_http(self):
@@ -97,7 +103,7 @@ class CoverSearchTests(unittest.TestCase):
                     result = engine.choose_cover(project['id'], {'url_cover': 'https://cdn.example/c.png', 'filename_prefix': 'Dusklight'})
                 self.assertEqual(result['matched'], 2)
                 self.assertEqual(result['project']['metadata'], {'game': 'Dusklight', 'filename_prefix': 'Dusklight', 'cover_policy': 'custom', 'url_cover': 'https://cdn.example/c.png'})
-                with patch.object(engine, 'match_imports_now', side_effect=Invalid('403')):
+                with patch.object(engine, 'match_imports_now', side_effect=failing('403')):
                     result = engine.choose_cover(project['id'], {'url_cover': 'https://cdn.example/d.png'})
                 self.assertIn('retries', result['warning'])
                 self.assertEqual(engine.store.get('projects', project['id'])['metadata']['url_cover'], 'https://cdn.example/d.png')
