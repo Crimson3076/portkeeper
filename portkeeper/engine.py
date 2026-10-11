@@ -623,6 +623,10 @@ class Engine:
                 package = confined(workspace, recipe.get("output_dir", "out"))
             if not package.is_dir() or package.is_symlink():
                 raise Invalid("Recipe did not produce an output directory")
+            if recipe.get("portable"):
+                from .portable import prepare_dusklight
+                prepare_dusklight(package, job["target"], recipe["portable"]["disc"])
+                log("Prepared portable launcher with bundled disc and local user data")
             verify_tree(package)
             self.stage(jid, "validating", "Validating expected package files")
             for name in recipe["expected_files"]:
