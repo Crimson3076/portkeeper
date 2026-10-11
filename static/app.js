@@ -30,6 +30,8 @@ let metadataProjectId = null;
 let coverProjectId = null;
 let coverChoice = null;
 let validationArtifactId = null;
+let reviewContext = null;
+let activityGameFilter = "", activityTypeFilter = "";
 let retentionReview = null;
 let recipeProposal = null;
 let refreshing = false;
@@ -168,17 +170,31 @@ function projectArtifacts(id) {
 function importKey(project) { return project.metadata?.filename_prefix || project.library_basename || project.id; }
 function importedPackages(project) { return rommImports.get(importKey(project))?.items || []; }
 function hasDownloads(project) { return projectArtifacts(project.id).length > 0 || importedPackages(project).length > 0; }
-function gameNeedsAttention(project) { return relatedProjects(project).some((item) => item.last_error || ["needs_rom", "missing_inputs", "needs_attention", "failed", "blocked", "unsupported_version"].includes(item.status)) || importedPackages(project).some((rom) => /\bfailed\b/i.test(rom.summary || "")); }
+function reviewFor(artifact, rom) {
+  const signature = artifact?.sha256 || rom?.package_signature;
+  return (state.playtests || []).find((test) => test.package.signature === signature && (artifact ? test.package.artifact_id === artifact.id : test.package.romm_rom_id === rom?.id)) || (!artifact ? rom?.review : null);
+}
+function testStatus(artifact, rom) {
+  const review = reviewFor(artifact, rom);
+  if (review) return review.result;
+  const level = artifact ? validationLevel(artifact) : "packaged";
+  return {launch_checked: "starts", user_confirmed_playable: "played", failed: "failed"}[level] || "untested";
+}
+function testStatusBadge(artifact, rom) {
+  const result = testStatus(artifact, rom);
+  return el("span", `validation-label ${result === "played" ? "confirmed" : result === "starts" ? "launch" : result === "failed" ? "failed" : ""}`, testResultLabels[result]);
+}
+function gameNeedsAttention(project) {
+  return relatedProjects(project).some((item) => item.last_error || ["needs_rom", "missing_inputs", "needs_attention", "failed", "blocked", "unsupported_version"].includes(item.status)) || gameTargets(project).some((target) => validationLevel(projectArtifacts(project.id).find((artifact) => artifact.target === target) || {}) === "failed") || importedPackages(project).some((rom) => { const result = reviewFor(null, rom)?.result; return result === "failed" || (!result && /\bfailed\b/i.test(rom.summary || "")); });
+}
 function gameTargets(project) { return [...new Set([...relatedProjects(project).flatMap((item) => item.targets || []), ...projectArtifacts(project.id).map((item) => item.target), ...importedPackages(project).map((rom) => rom.platform_slug === "win" ? "windows" : "linux")])]; }
 async function loadImports(project) {
   const key = importKey(project);
   if (!rommReady() || !project.metadata?.filename_prefix || rommImportsLoading.has(key) || Date.now() - (rommImports.get(key)?.checkedAt || 0) < 60000) return;
   rommImportsLoading.add(key);
   try {
-    const prefixes = [...new Set([project.metadata.filename_prefix, ...relatedProjects(project).map((item) => item.library_basename).filter(Boolean)])];
-    const responses = await Promise.all(prefixes.map((prefix) => api(`/api/romm/search?q=${encodeURIComponent(prefix)}`)));
-    const records = responses.flatMap((response) => response.items || []).filter((rom) => ["linux", "win"].includes(rom.platform_slug) && rom.files?.some((file) => prefixes.some((prefix) => file.name?.toLowerCase().startsWith(prefix.toLowerCase() + "-")) && /\.zip$/i.test(file.name)));
-    rommImports.set(key, {checkedAt: Date.now(), items: [...new Map(records.map((rom) => [rom.id, rom])).values()]});
+    const response = await api(`/api/projects/${project.id}/imports`);
+    rommImports.set(key, {checkedAt: Date.now(), items: response.items || []});
   } catch (_) { rommImports.set(key, {checkedAt: Date.now(), items: rommImports.get(key)?.items || [], error: true}); }
   finally { rommImportsLoading.delete(key); lastRender = null; render(); }
 }
@@ -195,11 +211,12 @@ function projectActiveJob(project) { const jobs = projectJobs(project.id).filter
 function jobStage(job) { return job.status === "failed" ? "failed" : job.stage || job.status; }
 function projectStatus(project) { const active = projectActiveJob(project); return active ? jobStage(active) : project.status; }
 function validationLevel(artifact) { return artifact.validation_level || artifact.validation?.level || (typeof artifact.validation === "string" ? artifact.validation : "packaged"); }
+const testResultLabels = {untested: "Not tested", starts: "Starts successfully", played: "Played successfully", failed: "Doesn’t work"};
 function validationLabel(artifact) {
   const level = validationLevel(artifact);
-  const label = level === "user_confirmed_playable" ? "User confirmed playable" : level === "launch_checked" ? "Launch checked" : "Packaged";
-  const node = el("span", `validation-label ${level === "user_confirmed_playable" ? "confirmed" : level === "launch_checked" ? "launch" : ""}`, label);
-  node.title = level === "user_confirmed_playable" ? "The user confirmed this exact package is playable." : level === "launch_checked" ? "A launch check was recorded. Gameplay is not confirmed." : "Package files were validated. Launch and gameplay are not confirmed.";
+  const label = level === "user_confirmed_playable" ? "Played successfully" : level === "launch_checked" ? "Starts successfully" : level === "failed" ? "Doesn’t work" : "Not tested";
+  const node = el("span", `validation-label ${level === "user_confirmed_playable" ? "confirmed" : level === "launch_checked" ? "launch" : level === "failed" ? "failed" : ""}`, label);
+  node.title = level === "failed" ? "A check found that this exact download does not work. See the recorded notes." : level === "user_confirmed_playable" ? "The user confirmed this exact package is playable." : level === "launch_checked" ? "A launch check was recorded. Gameplay is not confirmed." : "Package files were validated. Launch and gameplay are not confirmed.";
   return node;
 }
 function artifactDownload(artifact, className = "button primary small", label = "↓ Download package") {
@@ -341,9 +358,16 @@ function packageRow(artifact) {
 function renderActivity() {
   const tabs = { jobs: $("jobs-tab"), packages: $("packages-tab"), notifications: $("notifications-tab") };
   Object.entries(tabs).forEach(([key, node]) => { node.classList.toggle("selected", activityView === key); node.setAttribute("aria-selected", String(activityView === key)); });
-  $("jobs-count").textContent = state.jobs.length; $("artifacts-count").textContent = state.artifacts.length; $("notifications-count").textContent = state.notifications.filter(notificationUnread).length;
+  $("jobs-count").textContent = unifiedActivity().length; $("artifacts-count").textContent = state.artifacts.length; $("notifications-count").textContent = state.notifications.filter(notificationUnread).length;
   const content = $("activity-content"); content.setAttribute("aria-labelledby", tabs[activityView].id);
-  if (activityView === "jobs") content.replaceChildren(state.jobs.length ? table(["Game / version", "Current step", "Started", ""], newestFirst(state.jobs).slice(0, 60).map(jobRow)) : emptyState("◷", "The pipeline is quiet", "A game’s update checks and builds will appear here."));
+  $("activity-filters").hidden = activityView !== "jobs";
+  const filter = $("activity-game-filter"); filter.replaceChildren(el("option", "", "All games")); filter.firstChild.value = "";
+  libraryGames().forEach((game) => { const option = el("option", "", game.name); option.value = game.id; filter.append(option); }); filter.value = activityGameFilter;
+  if (activityView === "jobs") {
+    const family = activityGameFilter ? new Set(relatedProjects(projectById(activityGameFilter)).map((project) => project.id)) : null;
+    const events = unifiedActivity().filter((event) => (!family || family.has(event.project_id)) && (!activityTypeFilter || event.kind === activityTypeFilter));
+    content.replaceChildren(events.length ? el("div", "activity-timeline", events.map(activityEvent)) : emptyState("◷", "No activity matches", "Imports, tests, builds and update checks will appear here. Try All games and All activity."));
+  }
   if (activityView === "packages") content.replaceChildren(state.artifacts.length ? table(["Game / package", "Validation", "Size", ""], newestFirst(state.artifacts).map(packageRow)) : emptyState("▱", "Your first package is ahead", "Completed packages will appear here with their validation level."));
   if (activityView === "notifications") renderNotifications(content);
 }
@@ -507,12 +531,16 @@ function renderOverview(project, content) {
     const roms = imports.filter((rom) => rom.platform_slug === (target === "windows" ? "win" : target === "linux" ? "linux" : target));
     const row = el("div", "download-platform-row");
     const info = el("div", "download-platform-info", [el("h3", "", targetLabels[target] || target)]);
-    if (artifact) info.append(el("p", "field-help", artifact.version), validationLabel(artifact));
-    else if (roms.length) info.append(el("p", "field-help", "Imported into RomM · Testing notes below"));
+    if (artifact) info.append(el("p", "field-help", artifact.version), testStatusBadge(artifact, null));
+    else if (roms.length) info.append(el("p", "field-help", "Imported into RomM"), testStatusBadge(null, roms[0]));
     else info.append(el("p", "field-help", rommImportsLoading.has(importKey(project)) ? "Checking your RomM library…" : rommImports.get(importKey(project))?.error ? "RomM could not be checked. Refresh to retry." : "No download recorded yet"));
     const actions = el("div", "inline-actions");
     if (artifact) actions.append(artifactDownload(artifact, "button primary small", "Download ZIP"));
     roms.forEach((rom) => { const link = el("a", "button secondary small", "Open in RomM"); link.href = `${rommConfig().url}/rom/${rom.id}`; link.target = "_blank"; link.rel = "noopener noreferrer"; actions.append(link); });
+    if (artifact || roms.length) actions.append(button("Record test result", "button secondary small", () => openReview(project, artifact, artifact ? null : roms[0])));
+    const latestReview = reviewFor(artifact, artifact ? null : roms[0]);
+    if (latestReview?.device) info.append(el("span", "field-help", `${latestReview.device} · ${dateLabel(latestReview.created_at)}`));
+    if (latestReview?.notes) info.append(el("p", "review-notes", latestReview.notes));
     row.append(info, actions); packageCard.append(row);
     if (!artifact && roms.some((rom) => rom.summary)) {
       const notes = el("details", "import-testing-notes", [el("summary", "", `${targetLabels[target] || target}: testing & launch notes`), ...roms.filter((rom) => rom.summary).map((rom) => el("p", "field-help", rom.summary))]);
@@ -645,24 +673,34 @@ function renderVersions(project, content) {
       if (goodButton.disabled) goodButton.title = "Record a launch check or confirm gameplay before selecting a known-good package.";
       actions.append(goodButton);
     }
-    if (!artifact.demo && !project.demo && validationLevel(artifact) !== "user_confirmed_playable") actions.append(button("Confirm playable", "table-action", () => openValidation(artifact)));
+    if (!artifact.demo && !project.demo) actions.append(button("Record test result", "table-action", () => openValidation(artifact)));
     if (!artifact.published) actions.append(button("Use in local library", "table-action", () => publishArtifact(artifact.id), busy.has(`publish-${artifact.id}`)));
     list.append(el("article", "version-card", [el("div", "version-heading", [el("h3", "", artifact.version || "Archived version"), targetPill(artifact.target)]), el("div", "version-labels", labels), el("div", "version-meta", [el("span", "", bytes(artifact.size)), el("span", "", dateLabel(artifact.created_at))]), ...(artifact.validation?.notes ? [el("p", "version-description", artifact.validation.notes)] : !artifact.demo && !project.demo && validationLevel(artifact) === "packaged" ? [el("p", "version-description", "Confirm gameplay after trying this package to select it as a known-good version.")] : []), actions]));
   });
   content.append(el("p", "section-intro", "Selecting an older version for the local library rolls it back. Pinned and known-good packages are protected from retention cleanup."), el("div", "inline-actions", button("Retention settings →", "text-button", () => navigateProject(project.id))), list);
   list.style.marginTop = "22px";
 }
+function unifiedActivity() {
+  const events = [...(state.activity || [])];
+  state.jobs.forEach((job) => events.push({...job, kind: "build", message: job.error || job.message || (job.target === "capture" ? "Upstream release and update check" : "Portable build"), title: job.target === "capture" ? "Update check" : "Build", result: job.status}));
+  state.artifacts.forEach((artifact) => (artifact.validation_history || []).filter((test) => !test.evidence?.manual_check).forEach((test, index) => events.push({id:`setup-${artifact.id}-${index}`, kind:"test", project_id:artifact.project_id, target:artifact.target, title:"Previous setup check", result:{launch_checked:"starts",user_confirmed_playable:"played",failed:"failed"}[test.level] || "untested", created_at:test.recorded_at, notes:test.notes, origin:"setup_check", package_name:artifact.filename})));
+  return newestFirst(events);
+}
+function activityEvent(event) {
+  const project = projectById(event.project_id);
+  const title = event.kind === "import" ? "Found in RomM" : event.kind === "test" ? (event.origin === "setup_check" ? "Setup test result" : "Manual test result") : event.title;
+  const result = event.kind === "test" ? el("span", `validation-label ${event.result === "failed" ? "failed" : event.result === "played" ? "confirmed" : ""}`, testResultLabels[event.result]) : event.kind === "import" ? statusBadge("published", "In RomM") : statusBadge(event.result);
+  const header = el("div", "activity-event-heading", [el("h3", "", title), result]);
+  const body = el("div", "activity-event-body", [header, el("p", "activity-event-game", [project?.name || event.project_name || "Game", " · ", targetLabels[event.target] || "Update check"]), el("p", "field-help", event.notes || event.message || ""), el("span", "activity-event-date", `${event.device ? event.device + " · " : ""}${dateLabel(event.created_at)}`)]);
+  if (event.package_name) body.append(el("p", "activity-package-name", event.package_name));
+  const actions = el("div", "inline-actions", button("Open game", "text-button", () => navigateProject(event.project_id)));
+  if (event.kind === "build") actions.append(button("Build details", "text-button", () => navigateProject(event.project_id, "advanced", event.id)));
+  return el("article", "activity-event", [body, actions]);
+}
 function renderProjectActivity(project, content) {
-  const jobs = projectJobs(project.id);
-  if (!jobs.length) { content.append(emptyState("◷", "No runs yet", "Check for an update or start a test build. This view shows meaningful steps; diagnostics are in Advanced.")); return; }
-  const panel = el("div", "activity-panel");
-  jobs.forEach((job) => {
-    const main = el("div", "job-item-main", [el("div", "job-item-top", [el("h3", "", job.version || "Update check"), targetPill(job.target || "capture"), statusBadge(jobStage(job))]), el("p", "", job.error || job.message || (job.status === "succeeded" ? "Game step completed." : "Follow the current step above."))]);
-    const actions = el("div", "inline-actions", button("View diagnostics →", "table-action", () => navigateProject(project.id, "advanced", job.id)));
-    if (job.status === "failed") actions.prepend(button("Retry failed step", "table-action", () => retryJob(job.id), busy.has(`retry-${job.id}`)));
-    main.append(actions); panel.append(el("article", "job-item", [main, el("span", "job-date", dateLabel(job.created_at))]));
-  });
-  content.append(panel);
+  const ids = new Set(relatedProjects(project).map((item) => item.id));
+  const events = unifiedActivity().filter((event) => ids.has(event.project_id));
+  content.append(events.length ? el("div", "activity-timeline", events.map(activityEvent)) : emptyState("◷", "No activity recorded yet", "RomM imports and your manual test results appear here alongside builds."));
 }
 function renderAdvanced(project, content, openJobs) {
   const stack = el("div", "advanced-stack");
@@ -957,11 +995,33 @@ async function submitRecipe(event) {
   } catch (error) { $("recipe-form-error").textContent = error.message; }
   finally { submit.disabled = false; submit.textContent = "Save recipe"; }
 }
-function openValidation(artifact) { validationArtifactId = artifact.id; $("validation-form").reset(); $("validation-package").textContent = `${artifact.version} · ${targetLabels[artifact.target] || artifact.target}`; $("validation-error").textContent = ""; $("validation-dialog").showModal(); }
+function openValidation(artifact) { openReview(projectById(artifact.project_id), artifact, null); }
+function openReview(project, artifact, rom) {
+  reviewContext = {projectId: project.id, artifact, rom};
+  $("validation-form").reset();
+  const target = artifact?.target || (rom.platform_slug === "win" ? "windows" : "linux");
+  $("validation-package").textContent = `${project.name} · ${targetLabels[target]} · ${artifact ? "Portkeeper build " + artifact.version : rom.name}`;
+  const review = reviewFor(artifact, rom);
+  $("validation-device").value = review?.device || "";
+  $("validation-notes").value = review?.notes || "";
+  $("validation-result").value = review?.result || "";
+  $("validation-error").textContent = ""; syncReviewFields(); $("validation-dialog").showModal();
+}
+function syncReviewFields() {
+  const result = $("validation-result").value;
+  $("validation-device").required = Boolean(result && result !== "untested");
+  $("validation-confirm").required = Boolean(result && result !== "untested");
+  $("validation-confirm").parentElement.hidden = result === "untested";
+  $("validation-notes").required = result === "failed";
+}
 async function submitValidation(event) {
-  event.preventDefault(); const submit = $("validation-submit"); if (submit.disabled || !$("validation-confirm").checked) return; submit.disabled = true; $("validation-error").textContent = "";
-  try { await api(`/api/artifacts/${encodeURIComponent(validationArtifactId)}/validation`, { method: "POST", body: { level: "user_confirmed_playable", notes: $("validation-notes").value.trim(), evidence: { user_confirmed: true, source: "package review" } } }); $("validation-dialog").close(); toast("Your gameplay confirmation was recorded."); await refresh(); }
-  catch (error) { $("validation-error").textContent = error.message; }
+  event.preventDefault(); const submit = $("validation-submit"); if (submit.disabled || !reviewContext) return; submit.disabled = true; $("validation-error").textContent = "";
+  const {artifact,rom,projectId} = reviewContext;
+  try {
+    await api(`/api/projects/${projectId}/playtest`, {method:"POST",body:{...(artifact ? {artifact_id:artifact.id,signature:artifact.sha256} : {romm_rom_id:rom.id,signature:rom.package_signature}),result:$("validation-result").value,device:$("validation-device").value.trim(),notes:$("validation-notes").value.trim(),confirmed:$("validation-confirm").checked}});
+    $("validation-dialog").close(); toast("Test result saved for this download and added to Activity.");
+    rommImports.clear(); await refresh(true);
+  } catch (error) { $("validation-error").textContent = error.message; }
   finally { submit.disabled = false; }
 }
 async function previewRetention(id) {
@@ -1094,6 +1154,9 @@ document.querySelectorAll('[name="library-layout"]').forEach((node) => node.addE
 $("project-form").addEventListener("submit", submitProject);
 $("recipe-form").addEventListener("submit", submitRecipe);
 $("recipe-auto-build").addEventListener("change", syncAutoPublish);
+$("validation-result").addEventListener("change", syncReviewFields);
+$("activity-game-filter").addEventListener("change", () => { activityGameFilter = $("activity-game-filter").value; renderActivity(); });
+$("activity-type-filter").addEventListener("change", () => { activityTypeFilter = $("activity-type-filter").value; renderActivity(); });
 $("validation-form").addEventListener("submit", submitValidation);
 $("romm-form").addEventListener("submit", submitRomM);
 $("romm-test").addEventListener("click", testSavedRomM);

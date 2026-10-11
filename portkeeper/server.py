@@ -137,6 +137,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(202, self.engine.demo())
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}", path) and method == "PATCH":
                 self.json(200, self.engine.update_project(path.split("/")[3], self.body()))
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/imports", path) and method == "GET":
+                self.json(200, self.engine.reviews.imports(path.split("/")[3]))
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/playtest", path) and method == "POST":
+                self.json(201, self.engine.reviews.record(path.split("/")[3], self.body()))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/cover", path) and method == "GET":
                 project = self.engine.store.get("projects", path.split("/")[3])
                 metadata = project.get("metadata") or {}

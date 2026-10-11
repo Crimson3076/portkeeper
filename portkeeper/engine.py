@@ -133,6 +133,8 @@ class Engine:
         self.preservation = Preservation(self)
         self.shipwright = ShipwrightRunner(self)
         self.assistant = RecipeAssistant(self.data)
+        from .reviews import Reviews
+        self.reviews = Reviews(self)
         self.enable_docker = enable_docker
         self.docker_available = False
         self.docker_error = "Docker builds are disabled; start with --enable-docker to opt in."
@@ -164,7 +166,14 @@ class Engine:
 
     def state(self):
         projects = self.store.all("projects")
-        jobs = self.store.all("jobs")[:150]
+        all_jobs = self.store.all("jobs")
+        jobs = all_jobs[:150]
+        included = {job['id'] for job in jobs}
+        for project in projects:
+            latest_job = next((job for job in all_jobs if job['project_id'] == project['id']), None)
+            if latest_job and latest_job['id'] not in included:
+                jobs.append(latest_job)
+                included.add(latest_job['id'])
         artifacts = self.store.all("artifacts")
         for artifact in artifacts:
             project = next((p for p in projects if p["id"] == artifact["project_id"]), {})
@@ -177,7 +186,7 @@ class Engine:
         public_romm["last_test"] = health if health.get("url") == public_romm.get("url") else None
         public_romm["connected"] = bool(public_romm.get("last_test", {}).get("connected")) if public_romm["last_test"] else False
         assistant = self.assistant.public_config()
-        return {"projects": projects, "jobs": jobs, "artifacts": artifacts,
+        return {"projects": projects, "jobs": jobs, "artifacts": artifacts, "activity": self.reviews.activity(), "playtests": self.store.all("playtests")[:1000],
                 "settings": {"input_root": str(self.input_root), "library_root": str(self.library_root),
                              "archive_root": str(self.archive_root), "docker_enabled": self.enable_docker,
                              "toolchain": self.get_setting("toolchain", {})},
@@ -1020,6 +1029,12 @@ class Engine:
                         with self.match_lock:
                             result = matcher.sync()
                         self.save_setting("romm_import_matching", {"checked_at": now(), **result})
+                        checked_prefixes = set()
+                        for project in self.store.all("projects"):
+                            prefix = (project.get("metadata") or {}).get("filename_prefix")
+                            if prefix and prefix not in checked_prefixes:
+                                checked_prefixes.add(prefix)
+                                self.reviews.imports(project["id"])
                     except Exception:
                         # Do not expose credentials or remote response bodies in the status.
                         self.save_setting("romm_import_matching", {"checked_at": now(), "error": "Import matching failed. Check RomM connection and roms.write permission."})
