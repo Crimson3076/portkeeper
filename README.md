@@ -41,6 +41,17 @@ The input bind uses the shared SELinux label option `z` (`:ro,z`). On SELinux ho
 
 Custom Docker recipes remain disabled in Compose. The Docker socket is not mounted. The service image passed a fresh network-disabled Shipwright extractor build and Linux/Windows packaging from preserved material plus an owned input. See [validation](docs/VALIDATION.md) for the checked scope and remaining limits.
 
+## Install on Unraid
+
+The image is published to `ghcr.io/crimson3076/portkeeper:latest` on every push to `main`.
+
+1. Copy [`unraid/portkeeper.xml`](unraid/portkeeper.xml) to `/boot/config/plugins/dockerMan/templates-user/my-portkeeper.xml` on the server (or add the container by hand with the same settings).
+2. In **Docker → Add Container**, pick the `portkeeper` template.
+3. Set **Allowed hosts** to every address you type into the browser, such as `192.168.1.20,tower,tower.local`. Any other address is refused with `403 Unrecognized Host header`; this protects the unauthenticated UI from DNS-rebinding attacks.
+4. Point **Library** at your RomM ports folder when ready. Apply, then open the WebUI.
+
+Unraid starts containers as root. The entrypoint takes ownership of the app-data folder for `PUID`/`PGID` (default `99:100`, nobody:users), then drops to that user. A non-empty library folder is never re-owned; it must already be writable by that user.
+
 ## Set up a worker
 
 1. In **Settings → RomM**, enter your server URL and a [Client API Token](https://docs.romm.app/latest/developers/client-api-tokens/) with `roms.read`. `me.read` is optional for the connection probe. Save and test the connection.

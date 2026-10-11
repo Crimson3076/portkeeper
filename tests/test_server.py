@@ -76,6 +76,14 @@ class HttpIntegrationTests(unittest.TestCase):
                 self.assertIn("error", json.loads(body))
         self.assertEqual(self.engine.store.all("projects"), [])
 
+    def test_configured_lan_host_is_accepted_on_any_published_port(self):
+        self.server.allowed_hosts.add("192.168.1.20")
+        for host, expected in (("192.168.1.20:8787", 200), ("192.168.1.20:18787", 200), ("127.0.0.1:18787", 200),
+                               ("192.168.1.21:8787", 403), ("192.168.1.20:bad", 403)):
+            with self.subTest(host=host):
+                status, _, _ = self.request("GET", "/api/state", headers={"Host": host})
+                self.assertEqual(status, expected)
+
     def test_invalid_and_non_object_json_are_errors(self):
         for body in ("[1, 2]", "null", '"string"', "{broken"):
             with self.subTest(body=body):
