@@ -14,6 +14,21 @@ from portkeeper.engine import Engine
 from portkeeper.server import Handler, make_server
 
 
+class AllowedHostTests(unittest.TestCase):
+    def test_allowed_host_entries_may_include_a_port_or_scheme(self):
+        with tempfile.TemporaryDirectory() as temp:
+            engine = Engine(Path(temp) / "data")
+            self.addCleanup(engine.close)
+            try:
+                server = make_server(engine, port=0, allowed_hosts=[
+                    "192.168.0.83:8787", " Tower ", "http://tower.local:8787/", "[fd00::5]:8787", ""])
+            except PermissionError:
+                self.skipTest("Sandbox forbids localhost sockets")
+            server.server_close()
+        self.assertTrue({"192.168.0.83", "tower", "tower.local", "fd00::5"} <= server.allowed_hosts)
+        self.assertNotIn("", server.allowed_hosts)
+
+
 class HttpIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -75,6 +90,14 @@ class HttpIntegrationTests(unittest.TestCase):
                 self.assertEqual(status, expected)
                 self.assertIn("error", json.loads(body))
         self.assertEqual(self.engine.store.all("projects"), [])
+
+    def test_configured_lan_host_is_accepted_on_any_published_port(self):
+        self.server.allowed_hosts.add("192.168.1.20")
+        for host, expected in (("192.168.1.20:8787", 200), ("192.168.1.20:18787", 200), ("127.0.0.1:18787", 200),
+                               ("192.168.1.21:8787", 403), ("192.168.1.20:bad", 403)):
+            with self.subTest(host=host):
+                status, _, _ = self.request("GET", "/api/state", headers={"Host": host})
+                self.assertEqual(status, expected)
 
     def test_invalid_and_non_object_json_are_errors(self):
         for body in ("[1, 2]", "null", '"string"', "{broken"):

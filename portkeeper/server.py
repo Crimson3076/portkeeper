@@ -71,7 +71,8 @@ class Handler(BaseHTTPRequestHandler):
     def valid_host(self):
         try:
             parts = urllib.parse.urlsplit("http://" + self.headers.get("Host", ""))
-            return parts.hostname in self.server.allowed_hosts and parts.port in (None, self.server.server_port)
+            parts.port  # Rejects malformed ports. Docker may publish on a different host port.
+            return parts.hostname in self.server.allowed_hosts
         except ValueError:
             return False
 
@@ -87,7 +88,8 @@ class Handler(BaseHTTPRequestHandler):
     def dispatch(self, method):
         try:
             if not self.valid_host():
-                self.json(403, {"error": "Unrecognized Host header; use the printed local URL"})
+                self.json(403, {"error": "Unrecognized Host header; use the printed local URL or add this "
+                                         "address with --allowed-host / PORTKEEPER_ALLOWED_HOSTS"})
                 return
             path = urllib.parse.urlsplit(self.path).path
             if method == "GET" and path == "/api/state":
@@ -223,9 +225,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
-def make_server(engine, host="127.0.0.1", port=8787):
+def make_server(engine, host="127.0.0.1", port=8787, allowed_hosts=()):
     server = ThreadingHTTPServer((host, port), partial(Handler, engine=engine))
     server.allowed_hosts = {"localhost", "127.0.0.1", "::1"}
+    for name in allowed_hosts:
+        name = name.strip()
+        if name:  # Accept "host", "host:port", "[v6]:port" or a URL.
+            server.allowed_hosts.add(urllib.parse.urlsplit(name if "//" in name else "//" + name).hostname or name.lower())
     if host not in ("0.0.0.0", "::"):
         server.allowed_hosts.add(host)
     return server

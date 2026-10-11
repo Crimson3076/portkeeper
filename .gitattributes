@@ -1,2 +1,3 @@
 # Unified diffs retain space-prefixed blank context lines.
 tools/patches/*.patch -whitespace
+*.sh text eol=lf

@@ -1,8 +1,13 @@
 services:
   portkeeper:
     build: .
+    user: "10001:10001"
     ports:
       - "127.0.0.1:8787:8787"
+    # To open the UI from another machine, publish the port on the LAN and list
+    # the address you browse to, e.g. PORTKEEPER_ALLOWED_HOSTS: "192.168.1.20,tower"
+    # environment:
+    #   PORTKEEPER_ALLOWED_HOSTS: ""
     volumes:
       - portkeeper-data:/data
       - ./game-inputs:/inputs:ro,z

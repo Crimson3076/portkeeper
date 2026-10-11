@@ -16,7 +16,11 @@ RUN apt-get update \
 COPY portkeeper ./portkeeper
 COPY static ./static
 COPY tools ./tools
+COPY --chmod=0755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-USER 10001:10001
+# Unraid starts containers as root and passes PUID/PGID (default nobody:users);
+# the entrypoint drops to that user. Compose sets `user:` and skips the drop.
+ENV PUID=99 PGID=100
 EXPOSE 8787
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["python", "-m", "portkeeper", "--host", "0.0.0.0", "--data-dir", "/data", "--input-root", "/inputs", "--library-root", "/library", "--enable-profile-builds"]
