@@ -310,6 +310,11 @@ class Engine:
             raise Invalid("Configure a build recipe before enabling automatic builds")
         checked = {"name": name, "repo": repo, "targets": targets,
                 "poll_minutes": interval, "auto_build": auto_build, "auto_publish": auto_publish, "recipe": recipe}
+        metadata = config.get("metadata")
+        if metadata is not None:
+            from .romm_identity import validate_identity
+            metadata = validate_identity(metadata)
+        checked["metadata"] = metadata
         if profile_id:
             checked.update(profile=profile_id, rom_source=config.get("rom_source"))
         return checked
@@ -325,7 +330,7 @@ class Engine:
             if project_id in self.busy:
                 raise Busy("Wait for the running project job before editing its recipe")
             project = self.store.get("projects", project_id)
-            allowed = {"name", "targets", "poll_minutes", "auto_build", "auto_publish", "recipe", "rom_source"}
+            allowed = {"name", "targets", "poll_minutes", "auto_build", "auto_publish", "recipe", "rom_source", "metadata"}
             if not isinstance(config, dict) or any(key not in allowed for key in config):
                 raise Invalid("Only name, targets, poll_minutes, auto_build, auto_publish, and recipe can be edited")
             merged = {**project, **config}
@@ -334,6 +339,19 @@ class Engine:
                 if key in checked:
                     project[key] = checked[key]
             return self.store.put("projects", project)
+
+    def link_metadata(self, project_id, payload):
+        rom_id = payload.get("romm_rom_id")
+        if type(rom_id) is not int or rom_id < 1:
+            raise Invalid("Choose a RomM entry ID")
+        reference = self.romm._json("roms/" + str(rom_id))
+        if not reference.get("igdb_id"):
+            raise Invalid("Match this entry to a game in RomM first, then link it here")
+        identity = {"romm_rom_id": rom_id, "igdb_id": reference["igdb_id"],
+                    "game": payload.get("game") or reference.get("name"),
+                    "filename_prefix": payload.get("filename_prefix"),
+                    "cover_policy": payload.get("cover_policy", "preserve")}
+        return self.update_project(project_id, {"metadata": identity})
 
     def claim(self, project_id):
         with self.lock:
@@ -962,9 +980,9 @@ class Engine:
         # Matching is independent of builds and runs after RomM's asynchronous file scan.
         def match_imports():
             from .romm_identity import ImportIdentities
-            matcher = ImportIdentities(self.romm, self.data)
+            matcher = ImportIdentities(self.romm, self.data, self.store)
             while not self.stop.is_set():
-                if matcher.path.is_file() and self.romm.public_config().get("configured"):
+                if self.romm.public_config().get("configured"):
                     try:
                         result = matcher.sync()
                         self.save_setting("romm_import_matching", {"checked_at": now(), **result})

@@ -15,3 +15,17 @@ Windows platforms, and preserves existing version labels and testing notes. Orig
 console files are untouched. Unregistered games require an explicit identity first;
 this avoids guessing from port names. This step matches files already imported by
 RomM; it does not upload files or initiate library scans.
+
+### Project metadata settings
+
+Open a game's Overview and select **Edit metadata link**. Enter the package filename
+prefix and either an IGDB game ID or a link to a matched RomM entry. A RomM reference
+is followed on each matching pass, so a later manual metadata correction carries
+forward without another setup step. The reference itself is never overwritten.
+
+Artwork is independent: **Keep current covers** leaves package artwork alone;
+**Reuse the linked RomM entry's cover** follows its cover URL or custom uploaded
+PNG/JPEG/WebP, including on future platform builds. Custom artwork copies are limited
+to 10 MiB and fetched only from the configured RomM origin. Matching retains package
+versions and validation notes. Project settings override legacy registrations with
+the same filename prefix. The token still needs `roms.write`.

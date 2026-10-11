@@ -20,6 +20,7 @@ let settingsView = "romm";
 let route = { page: "library", projectId: null, tab: "overview" };
 let selectedJobId = null;
 let recipeProjectId = null;
+let metadataProjectId = null;
 let validationArtifactId = null;
 let retentionReview = null;
 let recipeProposal = null;
@@ -421,7 +422,10 @@ function renderOverview(project, content) {
   game.append(el("div", "detail-facts", [meta("Game input", source.member || source.filename || source.path || (project.demo ? "Synthetic fixtures" : "Recipe-defined local files"), true), meta("ROM revision", source.revision || profiles.find((profile) => profile.id === project.profile)?.supported_roms?.find((rom) => rom.sha1 === source.sha1)?.name || (source.sha1 ? "Hash verified" : "Not selected")), meta("Update schedule", `Every ${project.poll_minutes || 60} min`), meta("After an update", project.auto_build ? "Build automatically" : "Preserve and wait"), meta("Local library copy", project.auto_publish ? "Automatic" : "Manual")]));
   if (source.sha1) game.append(statusBadge("ready", "ROM hash selected"));
   if (project.last_error && !projectActiveJob(project)) game.append(el("p", "project-error", project.last_error));
-  right.append(game, retentionCard(project), preservationCard(project));
+  const identity = project.metadata || {};
+  const metadataCard = el("section", "detail-card", [el("h2", "", "Game metadata & artwork"), el("p", "detail-note", "Link the original game or a port-specific IGDB entry. Choose custom port artwork in RomM once, then reuse it for later builds."), el("div", "detail-facts", [meta("Game", identity.game || "Not linked"), meta("IGDB ID", identity.igdb_id || "Not linked"), meta("Artwork", identity.cover_policy === "romm" ? "Follow linked RomM cover" : "Keep current covers")]), button("Edit metadata link", "button secondary small", () => openMetadata(project.id))]);
+  if (identity.romm_rom_id && rommConfig().url) { const link = el("a", "text-button", "Choose metadata & cover in RomM →"); link.href = `${rommConfig().url}/rom/${identity.romm_rom_id}`; link.target = "_blank"; link.rel = "noopener noreferrer"; metadataCard.append(el("div", "inline-actions", link)); }
+  right.append(metadataCard, game, retentionCard(project), preservationCard(project));
   grid.append(left, right); content.append(grid);
 }
 function progressSteps(job, project) {
@@ -561,6 +565,35 @@ function renderAdvanced(project, content, openJobs) {
   diagnostic.append(jobs.length ? logs : el("p", "detail-empty", "No diagnostics yet.")); stack.append(diagnostic);
   if (project.rom_source?.sha1) stack.append(el("section", "detail-card", [el("h2", "", "Game input identity"), el("div", "detail-facts", [meta("ROM SHA-1", project.rom_source.sha1, true), meta("Cache key", project.rom_source.cache_key || "Not cached", true)])]));
   content.append(stack);
+}
+
+function openMetadata(id) {
+  const project = projectById(id); metadataProjectId = id;
+  const identity = project.metadata || {};
+  $("metadata-game").value = identity.game || project.name;
+  $("metadata-prefix").value = identity.filename_prefix || project.library_basename || "";
+  $("metadata-romm").value = identity.romm_rom_id || "";
+  $("metadata-igdb").value = identity.igdb_id || "";
+  $("metadata-cover").value = identity.cover_policy || "preserve";
+  $("metadata-error").textContent = ""; $("metadata-dialog").showModal();
+}
+async function saveMetadata(event) {
+  event.preventDefault(); $("metadata-save").disabled = true;
+  try {
+    const identity = {game: $("metadata-game").value.trim(), filename_prefix: $("metadata-prefix").value.trim(), cover_policy: $("metadata-cover").value};
+    const reference = $("metadata-romm").value.trim();
+    if (reference) {
+      const match = reference.match(/^(?:https?:\/\/[^/]+\/rom\/)?([0-9]+)\/?$/);
+      if (!match) throw new Error("Enter a RomM entry ID or its /rom/123 link.");
+      await api(`/api/projects/${metadataProjectId}/metadata-link`, {method: "POST", body: {...identity, romm_rom_id: Number(match[1])}});
+    } else {
+      const igdb_id = Number($("metadata-igdb").value);
+      if (!Number.isSafeInteger(igdb_id) || igdb_id < 1) throw new Error("Link a matched RomM entry or enter its IGDB game ID.");
+      await api(`/api/projects/${metadataProjectId}`, {method: "PATCH", body: {metadata: {...identity, igdb_id}}});
+    }
+    $("metadata-dialog").close(); await refresh(); toast("Metadata linked. Imports are checked every minute after RomM scans them.");
+  } catch (error) { $("metadata-error").textContent = error.message; }
+  finally { $("metadata-save").disabled = false; }
 }
 
 function openWizard() {
@@ -882,6 +915,7 @@ function openInbox() { renderNotifications($("inbox-content")); $("inbox-dialog"
 $("add-project").addEventListener("click", openWizard);
 $("manual-project").addEventListener("click", openCustomProject);
 $("refresh").addEventListener("click", () => refresh(true));
+$("metadata-form").addEventListener("submit", saveMetadata);
 $("project-form").addEventListener("submit", submitProject);
 $("recipe-form").addEventListener("submit", submitRecipe);
 $("recipe-auto-build").addEventListener("change", syncAutoPublish);
