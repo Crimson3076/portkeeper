@@ -99,3 +99,17 @@ This early application has no user authentication. Keep the loopback bind or add
 Packaging success is distinct from launch checks and gameplay confirmation. The verified profile does not support ARM handhelds, Switch, or macOS, and it assembles official Windows binaries rather than compiling them natively. Generic target labels do not guarantee device compatibility.
 
 A source ZIP or preservation export is not automatically a complete offline rebuild. Dependency declarations, toolchains, system libraries, and offline-build evidence are tracked separately. Game files and credentials are excluded from preservation exports and the source repository. Supply your own required game files; Portkeeper does not obtain them from public ROM sites.
+
+### Library layouts
+
+Game workspace is the default: select a game beside its platform downloads and
+artwork. Settings → Appearance also offers Collection and Library list. The choice
+is saved per browser; if browser storage is unavailable, it lasts for the session.
+Games with the same registered import prefix and IGDB identity are shown together.
+The library includes matching Linux/Windows imports from RomM, so manually imported
+ports appear alongside Portkeeper builds. Platform download counts exclude older
+archive copies. Build recipes and saved releases remain available in game details.
+
+Frontend interaction tests: install `jsdom@26.1.0` in a temporary Node environment,
+then set `PORTKEEPER_JSDOM` to that environment's `node_modules/jsdom` path and run
+`node tests/test_ui_layouts.cjs`. CI runs these checks alongside the Python suite.

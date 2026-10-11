@@ -155,6 +155,7 @@ def _normalize_record(record):
     return {'id': record.get('id'), 'name': record.get('name') or record.get('fs_name') or 'Untitled ROM',
             'platform': record.get('platform_display_name') or record.get('platform_name') or record.get('platform_slug'),
             'platform_id': record.get('platform_id'), 'platform_slug': record.get('platform_slug'),
+            'summary': record.get('summary') or '', 'igdb_id': record.get('igdb_id'),
             'files': [_normalize_file(item) for item in record.get('files', []) if isinstance(item, dict)]}
 
 

@@ -32,7 +32,7 @@ jobs:
         run: python -W error -m unittest discover -s tests -v
 
   frontend:
-    name: Frontend syntax
+    name: Frontend checks
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -45,3 +45,7 @@ jobs:
           package-manager-cache: false
       - name: Check browser JavaScript
         run: node --check static/app.js
+      - name: Check library layout interactions
+        run: |
+          npm install --prefix "$RUNNER_TEMP/portkeeper-ui-tests" --no-audit --no-fund jsdom@26.1.0
+          PORTKEEPER_JSDOM="$RUNNER_TEMP/portkeeper-ui-tests/node_modules/jsdom" node tests/test_ui_layouts.cjs
