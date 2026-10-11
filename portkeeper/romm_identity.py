@@ -6,7 +6,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from .romm import _OriginRedirect, _origin, _atomic_json
+from .romm import _OriginRedirect, _origin, _atomic_json, _cover_url
 from .safety import Invalid
 
 
@@ -80,9 +80,7 @@ class ImportIdentities:
                 if identity.get('cover_policy') == 'romm':
                     identity['url_cover'] = reference.get('url_cover', '')
                     if not identity['url_cover'] and reference.get('path_cover_large'):
-                        url = urllib.parse.urljoin(config['url'], reference['path_cover_large'])
-                        if _origin(url) != _origin(config['url']):
-                            raise Invalid('RomM artwork must stay on the configured server')
+                        url = _cover_url(config['url'], reference['path_cover_large'])
                         req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + config['token']})
                         with urllib.request.build_opener(_OriginRedirect(_origin(config['url']))).open(req, timeout=30) as response:
                             artwork_type = response.headers.get_content_type()

@@ -158,6 +158,16 @@ def _normalize_record(record):
             'files': [_normalize_file(item) for item in record.get('files', []) if isinstance(item, dict)]}
 
 
+def _cover_url(server_url, path):
+    url = urllib.parse.urljoin(server_url, path)
+    if _origin(url) != _origin(server_url):
+        raise Invalid('Cover must be served by the configured RomM server')
+    parts = urllib.parse.urlsplit(url)
+    return urllib.parse.urlunsplit(parts._replace(
+        path=urllib.parse.quote(parts.path, safe='/%:@'),
+        query=urllib.parse.quote(parts.query, safe='=&%:+,;/?@'), fragment=''))
+
+
 class RomM:
     def __init__(self, data_dir):
         self.data_dir = Path(data_dir)
@@ -273,9 +283,7 @@ class RomM:
         path = record.get('path_cover_large') or record.get('path_cover_small')
         if not path:
             raise Invalid('This RomM entry has no cover yet')
-        url = urllib.parse.urljoin(config.get('url', ''), path)
-        if _origin(url) != _origin(config.get('url', '')):
-            raise Invalid('Cover must be served by the configured RomM server')
+        url = _cover_url(config.get('url', ''), path)
         request = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + config.get('token', '')})
         opener = urllib.request.build_opener(_OriginRedirect(_origin(url)))
         try:
