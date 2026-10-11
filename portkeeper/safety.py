@@ -62,7 +62,7 @@ def validate_recipe(recipe, allow_overrides=True):
     if not isinstance(recipe, dict) or recipe.get("version") != 1:
         raise Invalid("Recipe must be an object with version: 1")
     fields = {"version", "mode", "profile", "payload", "inputs", "expected_files", "notes", "steps",
-              "image", "command", "network", "output_dir", "target_overrides"}
+              "image", "command", "network", "output_dir", "target_overrides", "portable"}
     if any(key not in fields for key in recipe):
         raise Invalid("Recipe contains unsupported fields; keep credentials in Settings")
     mode = recipe.get("mode")
@@ -88,6 +88,13 @@ def validate_recipe(recipe, allow_overrides=True):
         if not isinstance(item.get("sha256"), str) or not re.fullmatch(r"[a-fA-F0-9]{64}", item["sha256"]):
             raise Invalid("Every input needs its expected SHA-256")
     payload = recipe.get("payload", {"kind": "source"})
+    portable = recipe.get("portable")
+    if portable is not None:
+        if not isinstance(portable, dict) or set(portable) != {"kind", "disc"} or portable["kind"] != "dusklight" or mode != "assemble":
+            raise Invalid("Portable packaging requires the Dusklight assemble launcher and disc")
+        disc = portable["disc"]
+        if not isinstance(disc, str) or not re.fullmatch(r"game\.(ciso|iso|rvz)", disc) or disc not in destinations:
+            raise Invalid("Portable Dusklight disc must be a verified input named game.ciso, game.iso, or game.rvz")
     if not isinstance(payload, dict) or payload.get("kind") not in ("source", "release"):
         raise Invalid("Payload kind must be source or release")
     patterns = payload.get("asset_patterns", {})
@@ -124,7 +131,7 @@ def validate_recipe(recipe, allow_overrides=True):
     overrides = recipe.get("target_overrides", {})
     if not isinstance(overrides, dict) or any(target not in TARGETS for target in overrides):
         raise Invalid("target_overrides must be keyed by target")
-    allowed = {"mode", "image", "command", "output_dir", "network", "expected_files", "inputs", "payload", "notes"}
+    allowed = {"mode", "image", "command", "output_dir", "network", "expected_files", "inputs", "payload", "notes", "portable"}
     if overrides and not allow_overrides:
         raise Invalid("Nested target_overrides are not supported")
     for override in overrides.values():
