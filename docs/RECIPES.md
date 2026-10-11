@@ -14,6 +14,7 @@ Always begin with a manual run against known inputs. Expected-file checks establ
 | `inputs` | Local files selected relative to the server's input root. |
 | `payload.kind` | Start from archived `source` or `release` assets. |
 | `payload.asset_patterns` | Optional per-target regular expressions matching release asset names. |
+| `payload.single_file_name` | Optional package path for a release asset that is a single file rather than a ZIP/TAR, such as an AppImage. Defaults to the upstream asset name; set it so `expected_files` stay valid across versions. |
 | `steps` | Reserved step list. Use an empty list in this proof of concept. |
 | `expected_files` | Required files within the produced package. |
 | `target_overrides` | Optional objects replacing selected fields for `linux`, `windows`, or `handheld`. |
@@ -211,3 +212,7 @@ curl -X POST http://127.0.0.1:8787/api/toolchains/config \
 Alternatively, `/api/toolchains/archive` accepts `{"image":"name@sha256:<digest>"}` for an already installed digest-pinned Docker image and saves it locally. It does not pull or run the image. A daemon must be accessible for saving; registration works without one. Existing size limits still apply.
 
 Preservation exports include registered toolchain material but retain an honest closure report. Archiving an image alone does not prove an offline rebuild, and ordinary HTTP exports do not run verification. A saved bundle with actual offline-build proof can establish the scoped result; status requires a matching capture, scope, toolchain identity, and toolchain checksum. Saved bundles remain downloadable from the worker overview. The reviewed Shipwright profile's audited verified bundle is recorded in [validation](VALIDATION.md).
+
+## Example: Dusklight
+
+[`recipes/dusklight.json`](recipes/dusklight.json) packages the official [Dusklight](https://github.com/TwilitRealm/dusklight) release builds (Twilight Princess PC port) for Linux x86-64, Windows x64, and Linux ARM64 handhelds. Linux builds are single-file AppImages, so the recipe stores them as `Dusklight.AppImage`. Game data is not packaged: Dusklight asks for your own disc image (`.iso` or `.rvz`) on first launch. Create a custom project for `TwilitRealm/dusklight`, paste the recipe, then check upstream and build.
