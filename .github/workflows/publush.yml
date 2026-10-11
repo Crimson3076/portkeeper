@@ -1,0 +1,41 @@
+name: Build and Publish Docker Image
+
+on:
+  workflow_dispatch: # This allows you to trigger it manually via GitHub UI
+  push:
+    branches: [ main ] # Automatically builds whenever you commit updates
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: portkeeper
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@65b78e0e1a39d2ca034c0f35441da00b1c490bec
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe27b2f538b4c867af
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.actor }}/portkeeper
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@0a9c6d40fd1ca1e0f2951f8bf7a9c381cb896954
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
