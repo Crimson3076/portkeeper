@@ -172,3 +172,33 @@ download are labeled as such and do not change its native result.
 ## Editing and restoring definitions
 
 The editor has Settings, JSON and Changes views of the same definition. Guided edits preserve all other fields. Validate checks structure and project compatibility without saving or building. JSON can be imported, formatted and exported. Saving a changed definition retains the previous content in Saved revisions (up to 20). Review & restore loads that content as a draft; saving creates a new revision. Catalog changes also open as a draft comparison, so local edits are never replaced just by opening the preview. Automation controls remain separate under Updates.
+
+## Platform detection and changing selections
+
+Custom game lookup reads release filenames and the release commit's README plus up to five
+linked first-party build guides. Detected platforms show the supporting filename or
+instruction. Android, macOS and iOS are reported separately; they are not translated into
+Handheld and this runner does not package those OS targets. An architecture label such as
+ARM64 alone does not identify an operating system. Unknown support leaves the selection
+empty for a manual choice. Detection is a suggestion, not launch or gameplay verification;
+a documented source build also does not guarantee a downloadable runtime.
+
+For an existing game, open **Advanced → Platforms to build**. **Detect supported platforms**
+loads suggestions from the latest release, and **Save platforms** applies your reviewed
+selection without starting a build. A preserve-only game can add an omitted platform and
+then draft packaging steps again. For a game with packaging steps, only platforms already
+covered by those steps can be enabled; edit or redraft the definition before adding another.
+
+## Draft path errors and game directories
+
+Definition path fields use relative POSIX paths with forward slashes, even for Windows
+packages. `launch.command` is a filename, not an entire command line. Omit optional fields
+such as `strip_prefix` when unused. Validation identifies the field that failed and sends
+that detail back to the model on retries. Every selected platform must remain in its draft.
+
+`stage_input` stages one declared **file**, not a directory. A runtime that asks the player
+to choose an existing game directory should describe that choice with
+`first_run.mode: asks_user`; a model must not invent an operation to copy or process the
+folder. Directory inputs currently serve the fixed PS4 extraction tool's prepared-data
+workflow. These rules do not automatically preconfigure a game's launcher or prove that
+a model-generated package will work.

@@ -78,6 +78,25 @@ class DraftingTests(unittest.TestCase):
         with self.assertRaisesRegex(Invalid, "No JSON"):
             drafting.read_reply("I could not do it", PROJECT)
 
+    def test_path_errors_name_the_field_and_directory_inputs_explain_the_limit(self):
+        bad = definition()
+        bad["downloads"]["windows"]["strip_prefix"] = ""
+        with self.assertRaisesRegex(Invalid, r"downloads.windows.strip_prefix.*omit optional"):
+            drafting.read_reply(json.dumps({"definition": bad}), PROJECT)
+        bad = definition()
+        bad["launch"]["windows"]["command"] = r"C:\Games\Launch.cmd"
+        with self.assertRaisesRegex(Invalid, r"launch.windows.command.*forward slashes"):
+            drafting.read_reply(json.dumps({"definition": bad}), PROJECT)
+        bad = definition()
+        bad["inputs"][0]["kind"] = "directory"
+        with self.assertRaisesRegex(Invalid, r"Operation 3.*not a directory.*asks_user"):
+            drafting.read_reply(json.dumps({"definition": bad}), PROJECT)
+        self.assertIn("NEVER use stage_input for kind directory", drafting.FORMAT)
+
+    def test_draft_cannot_silently_drop_a_selected_platform(self):
+        with self.assertRaisesRegex(Invalid, "missing selected platforms: handheld"):
+            drafting.check(definition(), {**PROJECT, "targets": ["linux", "windows", "handheld"]})
+
     def test_warnings_point_out_what_a_reviewer_should_check(self):
         loose = definition(source_checks=[])
         loose["inputs"][0] = {**loose["inputs"][0], "verify": "downstream", "accepted": []}
@@ -175,6 +194,20 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("rejected", server.requests[1]["body"]["messages"][-1]["content"])
         self.assertTrue(any("rejected" in line for line in logs))
         self.assertEqual(self.assistant.list_models({"provider": "openai", "base_url": server.url + "/v1"})["models"], ["model-a", "model-b"])
+
+    def test_retries_get_field_specific_path_and_directory_feedback(self):
+        path_error = definition()
+        path_error["downloads"]["windows"]["strip_prefix"] = ""
+        directory_error = definition()
+        directory_error["inputs"][0]["kind"] = "directory"
+        replies = [{"choices": [{"message": {"content": json.dumps({"definition": item})}}]} for item in (path_error, directory_error, definition())]
+        server = self.serve(replies)
+        self.assistant.configure_provider({"provider": "openai", "base_url": server.url + "/v1", "model": "test-model"})
+        checked, _ = self.assistant.draft_definition("SYSTEM", "USER", lambda text: drafting.read_reply(text, PROJECT), lambda message: None)
+        self.assertEqual(checked["id"], "example-port")
+        self.assertIn("downloads.windows.strip_prefix", server.requests[1]["body"]["messages"][-1]["content"])
+        self.assertIn("Operation 3", server.requests[2]["body"]["messages"][-1]["content"])
+        self.assertIn("stage_input accepts declared file inputs only", server.requests[2]["body"]["messages"][-1]["content"])
 
     def test_claude_api_request_uses_structured_output_and_fallbacks(self):
         reply = {"stop_reason": "end_turn", "content": [{"type": "thinking", "thinking": ""},

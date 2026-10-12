@@ -30,6 +30,8 @@ let editorOriginal = null, editorView = "settings", editorDirty = false;
 const automationDrafts = new Map();
 const inputDrafts = new Map();
 const projectDisclosures = new Map();
+const platformDetections = new Map();
+const platformSelections = new Map();
 let metadataProjectId = null;
 let coverProjectId = null;
 let coverChoice = null;
@@ -948,6 +950,56 @@ function packagingInstructions(project) {
   group("5. Existing downloads & launch instructions", [el("p", "field-help", imports.length ? "Existing RomM imports are separate from this project's saved packaging configuration. Their launch instructions and test results are beside each platform download." : "A built archive or matching RomM import will appear under Play."), button("View downloads & launch instructions →", "button secondary small", () => navigateProject(project.id, "overview"))]);
   section.append(list); return section;
 }
+function platformEvidence(detection) {
+  const notes = el("div", "platform-evidence");
+  if (!detection) return notes;
+  if (!detection.platforms?.length) notes.append(el("p", "field-help", "No platform evidence found. Choose platforms manually; Portkeeper will not assume Windows and Linux."));
+  (detection.platforms || []).forEach(platform => {
+    const evidence = platform.evidence || [], released = evidence.some(item => item.kind === "release");
+    notes.append(el("p", "field-help", [el("strong", "", `${platform.label}: `), released ? "Release download found. " : "Documentation or catalog instructions found; no matching release download. ", platform.packaging_supported ? "" : "Detected, but this Portkeeper runner cannot package this OS yet. "]));
+    const detail = disclosure(`platform-evidence:${platform.id}`, "diagnostics-list", [el("summary", "table-action", `Why ${platform.label} was detected`), ...evidence.map(item => el("p", "field-help", `${item.source}: ${item.detail}`))]);
+    notes.append(detail);
+  });
+  if (detection.documentation_error) notes.append(el("p", "field-help", detection.documentation_error));
+  if (detection.note) notes.append(el("p", "field-help", detection.note));
+  return notes;
+}
+function projectPlatformsCard(project) {
+  const key = `platforms-${project.id}`, definition = project.packaging;
+  const editable = definition?.runner === "capture" || !definition;
+  const allowed = editable ? ["linux", "windows", "handheld"] : definition.targets;
+  const selection = platformSelections.get(project.id) || project.targets;
+  const card = el("section", "detail-card", [el("h2", "", "Platforms to build"), el("p", "field-help", "Change the platforms you selected when adding this game. Detect reads the latest release and linked build documentation; it does not start a build.")]);
+  const choices = el("div", "setup-options");
+  ["linux", "windows", "handheld"].forEach(target => {
+    const box = input(`project-platform-${project.id}-${target}`, "checkbox"); box.checked = selection.includes(target); box.disabled = !allowed.includes(target) || busy.has(key);
+    box.addEventListener("change", () => { const draft = platformSelections.get(project.id) || [...project.targets]; platformSelections.set(project.id, box.checked ? [...new Set([...draft, target])] : draft.filter(value => value !== target)); renderProject(); });
+    choices.append(el("label", "", [box, targetLabels[target], allowed.includes(target) ? "" : el("span", "field-help", " — not in saved instructions; edit or redraft them first")]));
+  });
+  card.append(choices, platformEvidence(platformDetections.get(project.id)), el("div", "inline-actions", [button(busy.has(key) ? "Checking…" : "Detect supported platforms", "button secondary small", () => detectProjectPlatforms(project.id), busy.has(key) || project.demo), button("Save platforms", "button primary small", () => saveProjectPlatforms(project.id), busy.has(key) || !selection.length)]));
+  return card;
+}
+async function detectProjectPlatforms(id) {
+  const key = `platforms-${id}`; if (busy.has(key)) return; busy.add(key); render();
+  try {
+    const project = projectById(id), result = await api(`/api/github/lookup?repo=${encodeURIComponent(project.repo)}`);
+    platformDetections.set(id, result.platform_detection);
+    const allowed = !project.packaging || project.packaging.runner === "capture" ? ["linux", "windows", "handheld"] : project.packaging.targets;
+    const suggested = result.platforms.filter(target => allowed.includes(target));
+    if (suggested.length) platformSelections.set(id, suggested);
+    toast("Platform evidence loaded. Review the selection and save it when ready.");
+  } catch(error) { toast(error.message, true); }
+  finally { busy.delete(key); render(); }
+}
+async function saveProjectPlatforms(id) {
+  const project = projectById(id), targets = platformSelections.get(id) || project.targets, body = {targets};
+  if (project.packaging?.runner === "capture") body.packaging = {...project.packaging, targets: [...new Set([...project.packaging.targets, ...targets])]};
+  const key = `platforms-${id}`; if (busy.has(key)) return; busy.add(key); render();
+  try { await api(`/api/projects/${encodeURIComponent(id)}`, {method:"PATCH", body}); platformSelections.delete(id); toast("Platforms saved. Draft again if you need packaging steps for a newly selected platform."); await refresh(); }
+  catch(error) { toast(error.message, true); }
+  finally { busy.delete(key); render(); }
+}
+
 function renderAdvanced(project, content, openJobs) {
   const stack = el("div", "advanced-stack");
   const configuration = el("section", "detail-card", [el("h2", "", project.packaging ? "Your build instructions" : "Saved configuration & automation"), el("p", "detail-note", project.packaging ? "The readable instructions above are generated from this definition. Editing it creates a new definition revision, so new packages and their tests are never confused with older ones." + (project.profile ? " The reviewed profile's build commands stay fixed." : "") : project.profile ? "This game uses fixed, reviewed build instructions for its supported release. Automation settings are editable; changing trusted build execution requires a profile update. New unsupported releases are preserved for review." : "A custom recipe controls required inputs, outputs, and the build runner.")]);
@@ -963,7 +1015,7 @@ function renderAdvanced(project, content, openJobs) {
     if (!(project.definition_history || []).length) history.append(el("p", "field-help", "Your previous definition is saved here when you edit it. Restoring creates a new revision; existing packages are unchanged."));
     configuration.append(history);
   }
-  stack.append(configuration);
+  stack.append(projectPlatformsCard(project), configuration);
   if (project.packaging && !project.demo && !["recipe", "profile"].includes(project.packaging.runner)) stack.append(draftCard(project));
   stack.append(packagingInstructions(project));
   stack.append(retentionCard(project), preservationCard(project));
@@ -1644,19 +1696,19 @@ function renderCustomGame(content, actions) {
       const game = addGame.games.find((item) => item.id === found.catalog_id);
       if (game) where.append(el("p", "field-help", `Portkeeper already supports this game.`), button(`Set up ${game.name} instead`, "button secondary small", () => { addGame.pick = game; continueAddGame(); }));
     }
-  } else where.append(el("p", "field-help", "Portkeeper reads the latest release to see which platforms it ships."));
+  } else where.append(el("p", "field-help", "Portkeeper reads release files, the README and linked build guides to detect platform support."));
   content.append(where);
   if (!found) return;
   const details = el("div", "setup-panel", el("h3", "", "Name and platforms"));
-  const name = input("custom-name", "text", custom.name); name.setAttribute("aria-label", "Name in your library"); name.addEventListener("input", () => { custom.name = name.value; });
+  const name = input("custom-name", "text", custom.name); name.setAttribute("aria-label", "Name in your library"); name.addEventListener("input", () => { custom.name = name.value; syncCustomSubmit(); });
   details.append(name);
   const options = el("div", "setup-options");
   ["linux", "windows", "handheld"].forEach((target) => {
     const box = input(`custom-target-${target}`, "checkbox"); box.checked = custom.targets.includes(target);
-    box.addEventListener("change", () => { custom.targets = ["linux", "windows", "handheld"].filter((t) => t === target ? box.checked : custom.targets.includes(t)); });
+    box.addEventListener("change", () => { custom.targets = ["linux", "windows", "handheld"].filter((t) => t === target ? box.checked : custom.targets.includes(t)); syncCustomSubmit(); });
     options.append(el("label", "", [box, targetLabels[target]]));
   });
-  details.append(options);
+  details.append(options, platformEvidence(found.platform_detection));
   content.append(details);
   const settings = assistantSettings();
   const methods = [
@@ -1674,15 +1726,16 @@ function renderCustomGame(content, actions) {
   if (!settings.configured) list.append(button("Connect a local or cloud model in Settings →", "text-button", () => { $("add-game-dialog").close(); navigateSettings("assistant"); }));
   method.append(list);
   content.append(method, el("p", "first-run-note warn", "A custom game is marked as not packaged until its packaging steps are approved and a build succeeds."));
-  actions.append(button(addGame.busy ? "Adding…" : "Add game", "button primary", submitCustomGame, addGame.busy || !custom.targets.length || !custom.name.trim()));
+  const submit = button(addGame.busy ? "Adding…" : "Add game", "button primary", submitCustomGame, addGame.busy || !custom.targets.length || !custom.name.trim()); submit.id = "custom-add-submit"; actions.append(submit);
 }
+function syncCustomSubmit() { const submit = $("custom-add-submit"); if (submit && addGame?.custom) submit.disabled = addGame.busy || !addGame.custom.targets.length || !addGame.custom.name.trim(); }
 async function lookupCustomGame() {
   const custom = addGame.custom; let repo;
   try { repo = normalizedRepo(custom.repo || ""); } catch (error) { $("add-game-error").textContent = error.message; return; }
   custom.looking = true; $("add-game-error").textContent = ""; renderAddGame();
   try {
     const result = await api(`/api/github/lookup?repo=${encodeURIComponent(repo)}`);
-    custom.lookup = result; custom.repo = result.repository; custom.name = custom.name || result.repository.split("/")[1]; custom.targets = result.platforms;
+    custom.lookup = result; custom.repo = result.repository; custom.name = custom.name || result.repository.split("/")[1]; custom.targets = [...result.platforms];
   } catch (error) { $("add-game-error").textContent = error.message; }
   finally { custom.looking = false; renderAddGame(); }
 }

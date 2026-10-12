@@ -92,6 +92,13 @@ def _list(value, field, limit=100):
     return value
 
 
+def _path(value, field):
+    try:
+        return relative(value)
+    except Invalid as error:
+        raise Invalid(f"{field}: {error}. Use forward slashes and a relative filename, such as game/eboot.bin; omit optional empty path fields.") from None
+
+
 def split_root(value, field, roots=("package", "shared")):
     """Return (root, relative path) for $package/... and $shared/... locations."""
     if not isinstance(value, str) or not value.startswith("$"):
@@ -100,7 +107,7 @@ def split_root(value, field, roots=("package", "shared")):
     if root not in roots:
         raise Invalid(f"{field} must start with " + " or ".join("$" + r for r in roots))
     if rest:
-        relative(rest)
+        _path(rest, field)
     return root, rest
 
 
@@ -123,11 +130,11 @@ def _check_operation(op, definition, index):
             raise Invalid(f"{where} refers to an unknown download")
         split_root(op.get("to"), f"{where} destination")
         if "file_name" in op:
-            relative(op["file_name"])
+            _path(op["file_name"], f"{where} file_name")
     elif kind == "stage_input":
         allowed |= {"input", "to"}
         if op.get("input") not in inputs or inputs[op["input"]]["kind"] != "file":
-            raise Invalid(f"{where} must stage a declared file input")
+            raise Invalid(f"{where} input must stage a declared file input (IDs: " + ", ".join(key for key, item in inputs.items() if item["kind"] == "file") + "). stage_input copies one file, not a directory. For a launcher that asks for a game folder, omit this step, use first_run.mode: asks_user, and describe choosing the folder; do not invent a directory-copy operation.")
         split_root(op.get("to"), f"{where} destination")
     elif kind == "copy":
         allowed |= {"from", "to"}
@@ -136,13 +143,13 @@ def _check_operation(op, definition, index):
     elif kind == "include_tree":
         allowed |= {"from", "as"}
         split_root(op.get("from"), f"{where} source", roots=("shared",))
-        relative(op.get("as"))
+        _path(op.get("as"), f"{where} as")
     elif kind == "launcher":
         allowed |= {"path", "template", "exec", "args", "env", "mkdir", "run_python", "chmod_exec"}
-        relative(op.get("path"))
+        _path(op.get("path"), f"{where} path")
         if op.get("template") not in ("posix", "windows_cmd"):
             raise Invalid(f"{where} launcher template must be posix or windows_cmd")
-        relative(op.get("exec"))
+        _path(op.get("exec"), f"{where} exec")
         for arg in _list(op.get("args"), f"{where} args", 32):
             if not _safe_value(arg, op["template"]):
                 raise Invalid(f"{where} launcher arguments may contain only letters, digits and path characters")
@@ -150,7 +157,7 @@ def _check_operation(op, definition, index):
         if not isinstance(env, dict) or len(env) > 32 or any(not isinstance(k, str) or not _ENV_NAME.fullmatch(k) or not _safe_value(v, op["template"]) for k, v in env.items()):
             raise Invalid(f"{where} launcher environment must map NAMES to plain path-like values")
         for path in _list(op.get("mkdir"), f"{where} mkdir", 32):
-            relative(path)
+            _path(path, f"{where} mkdir")
         for script in _list(op.get("run_python"), f"{where} run_python", 8):
             if not isinstance(script, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+\.py", script):
                 raise Invalid(f"{where} may only run Python helper scripts in the package folder")
@@ -188,7 +195,7 @@ def _check_tool(op, definition, inputs, downloads, where):
     if tool == "ship_o2r_headless":
         if op.get("download") not in downloads:
             raise Invalid(f"{where} refers to an unknown download")
-        relative(op.get("appimage"))
+        _path(op.get("appimage"), f"{where} appimage")
         if split_root(op.get("rom"), f"{where} ROM")[0] != "shared":
             raise Invalid(f"{where} ROM must be staged under $shared")
         if not isinstance(op.get("output"), str) or not re.fullmatch(r"[a-z0-9_]+\.o2r", op["output"]):
@@ -208,7 +215,7 @@ def _check_tool(op, definition, inputs, downloads, where):
         if not collect:
             raise Invalid(f"{where} must collect at least one output directory")
         for path in collect:
-            relative(path)
+            _path(path, f"{where} collect")
         return {"tool", "download", "game", "iso", "collect", "to", "timeout_minutes"}
     # ps4_pkg_extract
     if op.get("tool_download") not in downloads or not downloads[op["tool_download"]].get("sha256"):
@@ -292,7 +299,7 @@ def validate_definition(definition):
         if item.get("repository"):
             if not _REPO.fullmatch(str(item["repository"])) or not isinstance(item.get("tag"), str) or not isinstance(item.get("asset"), str) or not _SHA256.fullmatch(str(item.get("sha256", ""))):
                 raise Invalid(f"Download {key} from another repository must pin repository, tag, asset and sha256")
-            relative(item["asset"])
+            _path(item["asset"], f"downloads.{key}.asset")
         else:
             _regex(item.get("asset_pattern"), f"Download {key} asset_pattern")
         if item.get("platform", "any") not in (*TARGETS, "any"):
@@ -300,9 +307,9 @@ def validate_definition(definition):
         if item.get("format", "auto") not in ("auto", "zip", "tar", "file"):
             raise Invalid(f"Download {key} format must be auto, zip, tar or file")
         for member in _list(item.get("required_members"), f"Download {key} required_members", 50):
-            relative(member)
+            _path(member, f"downloads.{key}.required_members")
         if item.get("strip_prefix") is not None:
-            relative(item["strip_prefix"])
+            _path(item["strip_prefix"], f"downloads.{key}.strip_prefix")
         _text(item.get("description"), f"Download {key} description", 500)
     inputs = _list(d.setdefault("inputs", []), "inputs", 20)
     seen = set()
@@ -339,7 +346,7 @@ def validate_definition(definition):
         if not isinstance(check, dict) or set(check) - {"description", "path", "contains", "contains_input_hash"}:
             raise Invalid("Source checks need description, path and contains or contains_input_hash")
         _text(check.get("description"), "Source check description", 500, required=True)
-        relative(check.get("path"))
+        _path(check.get("path"), "source_checks.path")
         if ("contains" in check) == ("contains_input_hash" in check):
             raise Invalid("Each source check needs exactly one of contains or contains_input_hash")
         if "contains" in check:
@@ -353,7 +360,7 @@ def validate_definition(definition):
         if not isinstance(output, dict) or set(output) - {"expected_files", "compression", "max_bytes"}:
             raise Invalid(f"Output {target} supports expected_files, compression and max_bytes")
         for path in _list(output.get("expected_files"), f"Output {target} expected_files"):
-            relative(path)
+            _path(path, f"outputs.{target}.expected_files")
         if output.get("compression", "deflate") not in ("deflate", "stored"):
             raise Invalid("Output compression must be deflate or stored")
         size = output.get("max_bytes", 2 * GIB)
@@ -367,7 +374,7 @@ def validate_definition(definition):
         if not isinstance(launch, dict) or set(launch) - {"command", "instructions"}:
             raise Invalid("Launch entries support command and instructions")
         if launch.get("command") is not None:
-            relative(launch["command"])
+            _path(launch["command"], f"launch.{target}.command")
         _text(launch.get("instructions"), "Launch instructions", 2000)
     for target, items in d["dependencies"].items():
         for item in _list(items, f"Dependencies for {target}", 30):

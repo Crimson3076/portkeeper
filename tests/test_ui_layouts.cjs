@@ -30,6 +30,7 @@ async function create(saved, storageBlocked=false, source=fixture) {
     else if(endpoint.startsWith('/preservation',0)||endpoint.includes('/preservation'))payload={};
     else if(endpoint==='/api/profiles')payload={profiles:[]};
     else if(endpoint==='/api/recipes')payload={recipes:[]};
+    else if(endpoint.startsWith('/api/github/lookup?'))payload=source.platform_lookup || {repository:'example/game',version:'v1',assets:['game-linux.zip','game-windows.zip'],platforms:['linux','windows'],platform_detection:{suggested_targets:['linux','windows'],platforms:[{id:'linux',label:'Linux',packaging_supported:true,evidence:[{kind:'release',detail:'game-linux.zip',source:'Release files'}]},{id:'windows',label:'Windows',packaging_supported:true,evidence:[{kind:'documentation',detail:'Windows build instructions',source:'README.md'}]},{id:'android',label:'Android',packaging_supported:false,evidence:[{kind:'documentation',detail:'Android build instructions',source:'README.md'}]}]}};
     else if(endpoint==='/api/catalog/games')payload={games:source.catalog_games || [{id:'banjo-recompiled',name:'Banjo Recompiled',targets:['linux','windows'],runner:'operations',needs:[{label:'Banjo-Kazooie (USA) 1.0 N64 ROM'}],first_run:{mode:'preloaded',text:'Your ROM is placed where Banjo looks for it.'},in_library:null}],romm_connected:true};
     else if(endpoint==='/api/catalog/games/banjo-recompiled/files')payload={inputs:[{id:'rom',label:'Banjo-Kazooie (USA) 1.0 N64 ROM',kind:'file',required:true,accepted:['USA 1.0'],found:[{path:'n64/roms/Banjo-Kazooie (USA).z64',name:'Banjo-Kazooie (USA).z64',accepted:'USA 1.0'}],rejected:[]}]};
     else if(endpoint.endsWith('/configuration/validate')){requests.push({endpoint,body:JSON.parse(options.body)});payload={valid:true};}
@@ -145,6 +146,23 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   d.getElementById('recipe-json').value=JSON.stringify(draft);d.getElementById('recipe-form').dispatchEvent(new w.Event('submit',{cancelable:true,bubbles:true}));await tick();await tick();
   assert(!d.getElementById('recipe-dialog').open);assert.deepEqual(Object.keys(requests.at(-1).body),['packaging']);assert.equal(editable.projects[1].packaging.summary,'My custom build');
   d.getElementById('project-activity-tab').click();await tick();assert(d.getElementById('project-content').textContent.includes('Build progress & logs'));
+  dom.window.close();
+  const missingPlatform=JSON.parse(JSON.stringify(editable));missingPlatform.projects[1].targets=['windows'];missingPlatform.projects[1].packaging.targets=['windows'];
+  dom=await create(null,false,missingPlatform);w=dom.window;d=w.document;
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();d.getElementById('project-advanced-tab').click();await tick();
+  [...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Detect supported platforms').click();await tick();await tick();
+  assert(d.getElementById('project-platform-'+id(2)+'-linux').checked,'Detection can recover an omitted Linux selection');
+  assert(d.getElementById('project-content').textContent.includes('cannot package this OS yet'),'Android detection is informative, not a handheld target');
+  [...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Save platforms').click();await tick();await tick();
+  assert.deepEqual(requests.at(-1).body.targets,['linux','windows']);assert(requests.at(-1).body.packaging.targets.includes('linux'));
+  d.getElementById('add-project').click();await tick();await tick();d.querySelector('.game-pick.custom').click();await tick();[...d.querySelectorAll('#add-game-actions button')].find(n=>n.textContent.includes('Continue')).click();await tick();
+  const repo=d.getElementById('custom-repo');repo.value='example/game';repo.dispatchEvent(new w.Event('input'));repo.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));await tick();await tick();
+  assert(d.getElementById('custom-target-linux').checked && d.getElementById('custom-target-windows').checked,'Detected desktop platforms are selected for a custom game');assert(d.getElementById('add-game-content').textContent.includes('Android'));
+  dom.window.close();
+  const unknownPlatforms=JSON.parse(JSON.stringify(fixture));unknownPlatforms.platform_lookup={repository:'example/game',version:'v1',assets:['release.zip'],platforms:[],platform_detection:{platforms:[],suggested_targets:[]}};
+  dom=await create(null,false,unknownPlatforms);w=dom.window;d=w.document;d.getElementById('add-project').click();await tick();await tick();d.querySelector('.game-pick.custom').click();await tick();[...d.querySelectorAll('#add-game-actions button')].find(n=>n.textContent.includes('Continue')).click();await tick();
+  const unknownRepo=d.getElementById('custom-repo');unknownRepo.value='example/game';unknownRepo.dispatchEvent(new w.Event('input'));unknownRepo.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));await tick();await tick();
+  assert(d.getElementById('custom-add-submit').disabled);assert(!d.getElementById('custom-target-linux').checked && !d.getElementById('custom-target-windows').checked,'Unknown platform support is not guessed');d.getElementById('custom-target-linux').click();assert(!d.getElementById('custom-add-submit').disabled,'Manual platform selection remains usable');
   dom.window.close();
   for(const value of ['collection','list','invalid']){dom=await create(value);assert(dom.window.document.getElementById('project-grid').classList.contains('layout-'+(value==='invalid'?'workspace':value)));dom.window.close();}
   dom=await create(null,true);assert(dom.window.document.getElementById('project-grid').classList.contains('layout-workspace'));dom.window.close();

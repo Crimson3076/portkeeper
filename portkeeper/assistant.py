@@ -467,7 +467,7 @@ class RecipeAssistant:
                 if attempt == attempts:
                     raise Invalid(f'The model could not produce a valid definition: {error}') from None
                 messages += [{'role': 'assistant', 'content': text[:60000]},
-                             {'role': 'user', 'content': f'Portkeeper rejected that definition: {error}\nReturn the corrected JSON object only.'}]
+                             {'role': 'user', 'content': f'Portkeeper rejected that definition: {error}\nCorrect the named field while keeping valid parts of the definition. Use forward-slash relative paths; omit optional empty path fields. stage_input accepts declared file inputs only, never directories. If the launcher requires a game folder, use first_run.mode asks_user and explain how to select it. Do not invent hashes, release assets, tools or operations. Return the corrected JSON object only.'}]
         raise Invalid('No draft was produced')
 
 

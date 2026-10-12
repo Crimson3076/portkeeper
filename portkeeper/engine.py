@@ -1280,10 +1280,14 @@ class Engine:
         repo = repo.strip()
         release = self.github.release(repo)
         names = [a.get("name") for a in release.get("assets", []) if isinstance(a.get("name"), str)][:60]
-        platforms = sorted({t for t, pattern in (("linux", r"(?i)linux|appimage"), ("windows", r"(?i)win|\.exe$"), ("handheld", r"(?i)arm64|aarch64"))
-                            if any(re.search(pattern, n) for n in names)})
+        from . import platforms
         known = next((d for d in self.catalog.definitions().values() if d["upstream"]["repository"].lower() == repo.lower()), None)
-        return {"repository": repo, "version": release["version"], "assets": names, "platforms": platforms or ["linux", "windows"],
+        documents, read_error = platforms.read_documents(self.github, repo, release.get("commit"))
+        detection = platforms.detect(release.get("assets", []), documents, (known or {}).get("targets", []))
+        if read_error:
+            detection["documentation_error"] = read_error
+        return {"repository": repo, "version": release["version"], "assets": names,
+                "platforms": detection["suggested_targets"], "platform_detection": detection,
                 "release_url": release["url"], "catalog_id": known["id"] if known else None}
 
     # Drafting packaging with a model -------------------------------------------
