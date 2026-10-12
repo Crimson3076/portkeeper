@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "policy": "docs/PROJECT_VERIFICATION.md",
+  "projects": [
+    {
+      "id": "shipwright",
+      "name": "Ship of Harkinian",
+      "repository": "HarbourMasters/Shipwright",
+      "procedure_kind": "installed_build_profile",
+      "build_profile_available": true,
+      "verification_scopes": [
+        {
+          "release": "9.3.0",
+          "package_revision": null,
+          "platform": "linux",
+          "status": "candidate",
+          "archive_sha256": null,
+          "evidence": [
+            "docs/SHIPWRIGHT.md",
+            "docs/VALIDATION.md"
+          ],
+          "device": "Linux host; see validation record",
+          "checks": {
+            "packaging": "passed; see historical validation record",
+            "portability": "unknown; confirm exact archived package",
+            "startup": "passed for recorded Linux package; archive identity must be linked",
+            "gameplay": "not tested"
+          },
+          "approval": null
+        },
+        {
+          "release": "9.3.0",
+          "package_revision": null,
+          "platform": "windows",
+          "status": "candidate",
+          "archive_sha256": null,
+          "evidence": [
+            "docs/SHIPWRIGHT.md",
+            "docs/VALIDATION.md"
+          ],
+          "device": null,
+          "checks": {
+            "packaging": "passed; see historical validation record",
+            "portability": "unknown; confirm exact archived package",
+            "startup": "not tested",
+            "gameplay": "not tested"
+          },
+          "approval": null
+        }
+      ],
+      "notes": "Existing reviewed bundled profile. Initial catalog records historical evidence; maintainer approval reference must be added before catalog promotion."
+    }
+  ]
+}
