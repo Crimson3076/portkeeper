@@ -40,9 +40,9 @@ def confined(root, value, must_exist=False):
     resolved = candidate.resolve()
     if not resolved.is_relative_to(root):
         raise Invalid("Path leaves its configured root")
-    if must_exist and not candidate.is_file():
+    if must_exist and not resolved.is_file():
         raise Invalid(f"Missing file: {value}")
-    return candidate
+    return resolved
 
 
 def checksum(path):

@@ -548,7 +548,7 @@ class RomM:
                     raise Invalid('ROM cache must not use symlinks')
                 directory.mkdir(parents=True, exist_ok=True, mode=0o700)
                 fd, temporary = tempfile.mkstemp(prefix='.download-', dir=directory)
-                sha1, sha256, size = hashlib.sha1(), hashlib.sha256(), 0
+                sha1, sha256, size = hashlib.sha1(usedforsecurity=False), hashlib.sha256(), 0
                 try:
                     route = f'roms/{file_id}/files/content/{urllib.parse.quote(filename, safe="")}'
                     with self._open(route) as response, os.fdopen(fd, 'wb') as output:

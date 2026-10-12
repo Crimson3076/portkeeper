@@ -30,7 +30,8 @@ COMPAT_SSL = os.environ.get("PORTKEEPER_COMPAT_SSL_DIR", "/opt/portkeeper/compat
 
 def digests(path, normalize=None):
     """SHA-1 and SHA-256 of a file, optionally after N64 byte-order normalization."""
-    sha1, sha256 = hashlib.sha1(), hashlib.sha256()
+    # SHA-1 only matches published dump checksums; integrity decisions also use SHA-256.
+    sha1, sha256 = hashlib.sha1(usedforsecurity=False), hashlib.sha256()
     if normalize == "n64_big_endian":
         data = normalize_n64(Path(path).read_bytes())
         sha1.update(data)
@@ -115,7 +116,7 @@ class Context:
             for alias, target in self.aliases.items():
                 if rest == alias or rest.startswith(alias + "/"):
                     tail = rest[len(alias):].lstrip("/")
-                    return Path(target) / tail if tail else Path(target)
+                    return confined(target, tail) if tail else Path(target)
             return confined(self.shared, rest) if rest else self.shared
         if package is None:
             raise Invalid("Shared operations cannot write into a platform package")
