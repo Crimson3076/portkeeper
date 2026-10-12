@@ -48,6 +48,10 @@ recipe is kept in `legacy_recipe` and earlier notes move to `history`.
 `game-windows/`. Expected output paths are relative to the final package.
 `required_members` and `expected_files` use literal paths, not wildcards:
 choose an actual filename or an expected output directory such as `bin/`, never `bin/*.dll`.
+`required_members` is a JSON array of at most 50 entries; usually 2–10 essential
+files are enough. It checks compatibility and does not filter extraction: all archive
+files are unpacked. `expected_files` has at most 100 entries; executables, generated
+launchers and key directories usually make a clearer check than an entire file manifest.
 
 Inputs are files needed on the Portkeeper server during packaging. If a Windows
 launcher asks the player to choose an existing game folder on their PC, keep

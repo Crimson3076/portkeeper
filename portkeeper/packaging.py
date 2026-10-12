@@ -313,7 +313,11 @@ def validate_definition(definition):
             raise Invalid(f"Download {key} platform must be a target or any")
         if item.get("format", "auto") not in ("auto", "zip", "tar", "file"):
             raise Invalid(f"Download {key} format must be auto, zip, tar or file")
-        for member in _list(item.get("required_members"), f"Download {key} required_members", 50):
+        members = item.get("required_members")
+        if members is not None and (not isinstance(members, list) or len(members) > 50):
+            received = f"{len(members)} items" if isinstance(members, list) else type(members).__name__
+            raise Invalid(f"downloads.{key}.required_members must be a JSON array with at most 50 items (received {received}). Keep only 2-10 essential file checks, not the whole archive listing. All archive files are extracted regardless of required_members.")
+        for member in _list(members, f"Download {key} required_members", 50):
             _literal_path(member, f"downloads.{key}.required_members")
         if item.get("strip_prefix") is not None:
             _path(item["strip_prefix"], f"downloads.{key}.strip_prefix")

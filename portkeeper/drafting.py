@@ -40,6 +40,9 @@ Top-level fields:
   Example: ZIP contains game-windows/Game.exe. To put Game.exe at the package root,
   set strip_prefix: "game-windows" and required_members: ["Game.exe"]. Do NOT repeat
   game-windows/ in required_members. Without strip_prefix the enclosing folder is kept.
+  required_members is a JSON array with at most 50 items. Usually choose 2-10 critical
+  files (executables and essential assets), NOT the entire archive listing. It is only a
+  compatibility check, not an extraction filter: unpack_download extracts ALL archive files.
   A download from another repository must pin repository, tag, asset and sha256 instead of asset_pattern.
 - inputs: files the player supplies. [{id, label, kind: "file" | "directory", platform_hint: "RomM platform
   folder such as n64, ps2, ps4, gc", name_hint: "regex for the file name", normalize: "n64_big_endian"
@@ -87,6 +90,7 @@ Path rules (including Windows packages):
   For expected_files, use "bin/" or an inspected filename such as "bin/runtime.dll", NEVER "bin/*.dll".
   For required_members, prefer exact inspected file members, relative to strip_prefix.
   expected_files are relative to the finished package, after stripping and unpacking folders.
+  expected_files has at most 100 items. Keep it short: executable, launcher and key directories.
 - launch: {target: {command, instructions}}. saves: where saves and settings live.
 - dependencies: {target: ["host requirement"]}. limitations: ["known limitation"].
 - history: []. verified_releases: [] (leave empty; only a person records verified releases).
@@ -286,7 +290,7 @@ def prompt_parts(context, definitions, instruction=""):
               "# Final checks before replying",
               "1. Match real release assets and only the requested platforms. Archive listings may be partial; archive_layouts describes the enclosing folders.",
               "2. Follow archive folder layout: strip_prefix removes that folder; required_members must not repeat it. The launcher executable must exist at its final package path.",
-              "3. Use literal expected_files, never wildcards. Include generated launchers and files only when operations create them.",
+              "3. Use literal expected_files, never wildcards. required_members: JSON array, at most 50 items, usually 2-10 essential files; do not copy the archive listing. All archive files are unpacked regardless. expected_files: at most 100 items. Include generated launchers and files only when operations create them.",
               "4. If the player chooses a game folder on their PC, inputs must be empty unless a fixed tool really consumes them during packaging. State asks_user honestly.",
               "5. Describe actual settings/save locations, dependencies and uncertainty. Leave history and verified_releases empty.",
               "Reply with one JSON object: {\"explanation\": \"...\", \"definition\": {...}}"]

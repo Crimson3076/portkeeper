@@ -289,6 +289,22 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("Operation 3", server.requests[2]["body"]["messages"][-1]["content"])
         self.assertIn("stage_input accepts declared file inputs only", server.requests[2]["body"]["messages"][-1]["content"])
 
+    def test_ollama_can_repair_an_oversized_required_member_list(self):
+        bad = definition()
+        bad['downloads']['windows']['required_members'] = ['bin/runtime-%d.dll' % i for i in range(51)]
+        server = self.serve([{'message': {'content': json.dumps(item)}} for item in (bad, definition())])
+        self.assistant.configure_provider({'provider': 'ollama', 'endpoint': server.url, 'model': 'qwen3-coder:30b'})
+        checked, _ = self.assistant.draft_definition('SYSTEM', 'USER', lambda text: drafting.read_reply(text, PROJECT), lambda _: None)
+        self.assertEqual(checked['downloads']['windows']['required_members'], ['port.exe'])
+        feedback = server.requests[1]['body']['messages'][-1]['content']
+        self.assertIn('downloads.windows.required_members', feedback)
+        self.assertIn('received 51 items', feedback)
+        self.assertIn('Keep only 2-10 essential file checks', feedback)
+        self.assertIn('All archive files are extracted regardless', feedback)
+        bad['downloads']['windows']['required_members'] = 'port.exe'
+        with self.assertRaisesRegex(Invalid, r'required_members must be a JSON array.*received str'):
+            drafting.check(bad, PROJECT)
+
     def test_model_retry_receives_archive_layout_feedback_before_review(self):
         good = drafting.extract_json(drafting.SIMPLE_EXAMPLE)
         bad = json.loads(json.dumps(good))
