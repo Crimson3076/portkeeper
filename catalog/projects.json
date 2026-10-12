@@ -48,7 +48,255 @@
           "approval": null
         }
       ],
-      "notes": "Existing reviewed bundled profile. Initial catalog records historical evidence; maintainer approval reference must be added before catalog promotion."
+      "notes": "Existing reviewed bundled profile. Initial catalog records historical evidence; maintainer approval reference must be added before catalog promotion.",
+      "definition": "catalog/definitions/shipwright.json"
+    },
+    {
+      "id": "2ship2harkinian",
+      "name": "2 Ship 2 Harkinian",
+      "repository": "2ship2harkinian/2ship2harkinian",
+      "procedure_kind": "automatic_definition",
+      "build_profile_available": false,
+      "definition": "catalog/definitions/2ship2harkinian.json",
+      "verification_scopes": [
+        {
+          "release": "5.0.1",
+          "package_revision": "manual-2026-10-11",
+          "platform": "linux",
+          "status": "candidate",
+          "archive_sha256": "a1efa361e22d8a8a25cc8eae1645fe426c45a8c997ba2948a38473a87e947ce5",
+          "evidence": [
+            "outputs/native-port-import-report.md (2026-10-11, not committed)"
+          ],
+          "device": "Fedora 44 desktop",
+          "checks": {
+            "packaging": "passed for the recorded archive",
+            "portability": "unknown; check the exact archive in a fresh folder",
+            "startup": "passed for the manually assembled package; the automated package is a new archive and is untested",
+            "gameplay": "not tested"
+          },
+          "approval": null
+        },
+        {
+          "release": "5.0.1",
+          "package_revision": "manual-2026-10-11",
+          "platform": "windows",
+          "status": "candidate",
+          "archive_sha256": "118b6d7f48b5a071475f40e2c0f999d514dfd75a465bbce658a1eb84986f1d0d",
+          "evidence": [
+            "outputs/native-port-import-report.md (2026-10-11, not committed)"
+          ],
+          "device": null,
+          "checks": {
+            "packaging": "passed for the recorded archive",
+            "portability": "unknown; check the exact archive in a fresh folder",
+            "startup": "not tested",
+            "gameplay": "not tested"
+          },
+          "approval": null
+        }
+      ],
+      "notes": "Packaging is now automated by the definition. Recorded evidence applies to the manually assembled 2026-10-11 archives only; approval has not been given."
+    },
+    {
+      "id": "banjo-recompiled",
+      "name": "Banjo Recompiled",
+      "repository": "BanjoRecomp/BanjoRecomp",
+      "procedure_kind": "automatic_definition",
+      "build_profile_available": false,
+      "definition": "catalog/definitions/banjo-recompiled.json",
+      "verification_scopes": [
+        {
+          "release": "v1.0.2",
+          "package_revision": "manual-2026-10-11",
+          "platform": "linux",
+          "status": "candidate",
+          "archive_sha256": "6182bc1de89924e968977994f6a2afda60750e76622890810bacb07ec200b360",
+          "evidence": [
+            "outputs/native-port-import-report.md (2026-10-11, not committed)"
+          ],
+          "device": "Fedora 44 desktop",
+          "checks": {
+            "packaging": "passed for the recorded archive",
+            "portability": "unknown; check the exact archive in a fresh folder",
+            "startup": "frontend started for the manually assembled package; gameplay not tested",
+            "gameplay": "not tested"
+          },
+          "approval": null
+        },
+        {
+          "release": "v1.0.2",
+          "package_revision": "manual-2026-10-11",
+          "platform": "windows",
+          "status": "candidate",
+          "archive_sha256": "d0ba56a20263516c7e90387a9c8a95197e13c45bfa202a0eb5dbfb9a96bd307b",
+          "evidence": [
+            "outputs/native-port-import-report.md (2026-10-11, not committed)"
+          ],
+          "device": null,
+          "checks": {
+            "packaging": "passed for the recorded archive",
+            "portability": "unknown; check the exact archive in a fresh folder",
+            "startup": "not tested",
+            "gameplay": "not tested"
+          },
+          "approval": null
+        }
+      ],
+      "notes": "Packaging is now automated by the definition. Evidence applies to the manually assembled archives; approval has not been given."
+    },
+    {
+      "id": "opengoal-jak1",
+      "name": "Jak and Daxter OpenGOAL",
+      "repository": "open-goal/jak-project",
+      "procedure_kind": "automatic_definition",
+      "build_profile_available": false,
+      "definition": "catalog/definitions/opengoal-jak1.json",
+      "verification_scopes": [
+        {
+          "release": "v0.3.8",
+          "package_revision": "manual-2026-10-11",
+          "platform": "linux",
+          "status": "candidate",
+          "archive_sha256": "f5860274b575ff621109b206275ed17a2a86623de6b9ee29ca354dd4f0c7883e",
+          "evidence": [
+            "outputs/native-port-import-report.md (2026-10-11, not committed)"
+          ],
+          "device": "Fedora 44 desktop",
+          "checks": {
+            "packaging": "passed for the recorded archive",
+            "portability": "unknown; check the exact archive in a fresh folder",
+            "startup": "title screen reached with the manually assembled package",
+            "gameplay": "not tested"
+          },
+          "approval": null
+        },
+        {
+          "release": "v0.3.8",
+          "package_revision": "manual-2026-10-11",
+          "platform": "windows",
+          "status": "candidate",
+          "archive_sha256": "7635b3b443f1861802b165d05dfba3a12c44c185f7ef9534f5a84c5ecd0cbaa1",
+          "evidence": [
+            "outputs/native-port-import-report.md (2026-10-11, not committed)"
+          ],
+          "device": null,
+          "checks": {
+            "packaging": "passed for the recorded archive",
+            "portability": "unknown; check the exact archive in a fresh folder",
+            "startup": "not tested",
+            "gameplay": "not tested"
+          },
+          "approval": null
+        }
+      ],
+      "notes": "The Windows package uses game data compiled by the Linux extractor; native Windows is untested. Approval has not been given."
+    },
+    {
+      "id": "bloodborne-bbport-linux",
+      "name": "Bloodborne bbport",
+      "repository": "deadinside28/bloodborne_pc",
+      "procedure_kind": "automatic_definition",
+      "build_profile_available": false,
+      "definition": "catalog/definitions/bloodborne-bbport-linux.json",
+      "verification_scopes": [
+        {
+          "release": "0.51",
+          "package_revision": "nvidiafix1",
+          "platform": "linux",
+          "status": "candidate",
+          "archive_sha256": "7dbc3bcd1cc9f9ea1a4e7691ad1fc25440859e253eac3da56d7a930d59e672b8",
+          "evidence": [
+            "outputs/bloodborne-startup-fix-report.md (not committed)",
+            "https://github.com/deadinside28/bloodborne_pc/issues/135"
+          ],
+          "device": "Fedora 44 · RTX 5090 · NVIDIA 595.58.03",
+          "checks": {
+            "packaging": "passed for the recorded archive",
+            "portability": "fresh-folder startup passed; other devices unknown",
+            "startup": "startup reached (DLSS ready, Vulkan presenter ready, splash hidden) in a fresh portable folder; logs only",
+            "gameplay": "not tested"
+          },
+          "approval": null
+        }
+      ],
+      "notes": "Experimental. Requires the libcuda workaround for upstream issue #135 on NVIDIA. Gameplay not confirmed; approval has not been given."
+    },
+    {
+      "id": "bloodborne-bbport-windows",
+      "name": "Bloodborne bbport Windows",
+      "repository": "Supermedo/bloodborne_pc",
+      "procedure_kind": "automatic_definition",
+      "build_profile_available": false,
+      "definition": "catalog/definitions/bloodborne-bbport-windows.json",
+      "verification_scopes": [
+        {
+          "release": "windows-v1.6",
+          "package_revision": "manual-2026-10-11",
+          "platform": "windows",
+          "status": "candidate",
+          "archive_sha256": "ce1c5fd8d57da950d6f65955610a55bc15694cd648cf063a89bebcafd03b7354",
+          "evidence": [
+            "outputs/native-port-import-report.md (2026-10-11, not committed)"
+          ],
+          "device": null,
+          "checks": {
+            "packaging": "passed for the recorded archive",
+            "portability": "unknown; check the exact archive in a fresh folder",
+            "startup": "not tested",
+            "gameplay": "not tested"
+          },
+          "approval": null
+        }
+      ],
+      "notes": "Experimental. Not launched on native Windows; Wine/Proton results would not establish native compatibility."
+    },
+    {
+      "id": "dusklight",
+      "name": "Dusklight",
+      "repository": "TwilitRealm/dusklight",
+      "procedure_kind": "automatic_definition",
+      "build_profile_available": false,
+      "definition": "catalog/definitions/dusklight.json",
+      "verification_scopes": [
+        {
+          "release": "v2.0.3",
+          "package_revision": null,
+          "platform": "linux",
+          "status": "candidate",
+          "archive_sha256": "dd2391ecfbf626b3f51e435a64543c0ecea7bf9320f723ccbddcb914a7dbb77b",
+          "evidence": [
+            "Portkeeper validation record for the published v2.0.3 Linux package"
+          ],
+          "device": "Fedora desktop",
+          "checks": {
+            "packaging": "passed for the recorded archive",
+            "portability": "unknown; check the exact archive in a fresh folder",
+            "startup": "15-second startup loaded game resources with the bundled disc; no interactive gameplay",
+            "gameplay": "not tested"
+          },
+          "approval": null
+        },
+        {
+          "release": "v2.0.3",
+          "package_revision": null,
+          "platform": "windows",
+          "status": "candidate",
+          "archive_sha256": "087eca8ace7c5b31eac5c0392a4de5bc47aefcb7c9f8d7aa89607cd62d7b9d59",
+          "evidence": [
+            "Portkeeper package record"
+          ],
+          "device": null,
+          "checks": {
+            "packaging": "passed for the recorded archive",
+            "portability": "unknown; check the exact archive in a fresh folder",
+            "startup": "not tested",
+            "gameplay": "not tested"
+          },
+          "approval": null
+        }
+      ],
+      "notes": "The existing Dusklight project keeps its saved recipe; the bundled definition is used by new Dusklight projects."
     }
   ]
 }

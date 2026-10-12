@@ -9,9 +9,10 @@ Detect stable release
   -> checkpoint tagged source and selected release assets
   -> capture reviewed profile dependencies, when applicable
   -> verify selected user inputs
-  -> assemble, run a reviewed profile, or use an opt-in Docker recipe
+  -> apply the packaging definition's compatibility rules (or hold for review)
+  -> run definition operations, a reviewed profile, or a saved recipe
   -> validate outputs and archive a checksummed package
-  -> manual or opt-in automatic local-library publication
+  -> manual or opt-in automatic publication: RomM upload API or local library copy
 ```
 
 Capture precedes input validation and execution. The source is checkpointed before release-asset downloads, and each completed asset is checkpointed afterward. A failed asset download leaves preserved source accessible but blocks building until a complete capture exists. Profile dependency sources are checkpointed before compiler execution. Unsupported new profile releases are still preserved, then held for review.
@@ -55,6 +56,7 @@ Packages have immutable IDs, manifests, recipe/input hashes, and ZIP checksums. 
 | --- | --- |
 | Capture | Preserve upstream material without execution. |
 | Assembly | Unpack supported archives, copy verified inputs, check expected files, ZIP outputs. |
+| Packaging definition | Fixed operations and tools interpreted by Portkeeper (unpack, verify inputs, generate assets with official upstream tools, write launchers, archive). See [packaging definitions](PACKAGING.md). |
 | Reviewed profile | Fixed pinned Shipwright extractor build/extraction commands, enabled with `--enable-profile-builds`. |
 | Docker recipe | User-reviewed argument array inside a digest-pinned Linux container, enabled with `--enable-docker`. |
 
@@ -70,7 +72,7 @@ Archive extraction rejects traversal, links, special files, and oversized output
 
 Settings configure a RomM server URL and Client API Token. The server writes secrets atomically with mode `0600` and returns only configured status to the browser. API calls remain on the configured origin, validate downloaded files against available metadata, inspect supported ROM revisions, and provide bounded ZIP-member selection. No token or ROM is sent to the optional model.
 
-Use `roms.read` for searching/downloading; `me.read` is optional for the probe. RomM API upload/indexing is deferred. Publication uses a configured local shared directory. Source monitoring currently supports unauthenticated public GitHub repositories; private upstream credentials and other forge providers are not implemented.
+Use `roms.read` for searching/downloading; `me.read` is optional for the probe. **Publish to RomM** needs `roms.write`: packages are uploaded with RomM's chunked upload API (32 MiB chunks) into the `linux` or `win` platform, and RomM's filesystem watcher creates the entry. Existing RomM files are never overwritten; a differing package gets a `-r2` style name. The local library folder copy is a separate action. Source monitoring currently supports unauthenticated public GitHub repositories; private upstream credentials and other forge providers are not implemented.
 
 The HTTP service has no application user authentication. It rejects inappropriate mutation content types and cross-origin requests, but those checks do not replace an authenticated reverse proxy for remote access.
 

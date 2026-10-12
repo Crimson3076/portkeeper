@@ -106,6 +106,9 @@ class Reviews:
             raise Invalid('Enter your device and confirm you tested this exact download')
         if result == 'failed' and not notes.strip():
             raise Invalid('Describe what did not work')
+        environment = payload.get('environment', 'native')
+        if environment not in ('native', 'wine_proton'):
+            raise Invalid('Choose whether the download ran natively or under Wine/Proton')
         artifact_id, rom_id = payload.get('artifact_id'), payload.get('romm_rom_id')
         if bool(artifact_id) == bool(rom_id):
             raise Invalid('Choose exactly one build archive or RomM download')
@@ -126,16 +129,19 @@ class Reviews:
                 raise Invalid('This RomM download belongs to another game or is not a PC port archive')
             reference = self.reference(record)
             target, name = ('windows' if record['platform_slug'] == 'win' else 'linux'), record['name']
+        if environment == 'wine_proton' and target != 'windows':
+            raise Invalid('Wine/Proton results apply to Windows downloads')
         expected = payload.get('signature')
         if expected and expected != reference['signature']:
             raise Invalid('The download changed since you opened this check. Reload it and test the new version')
         if not expected and origin == 'manual':
             raise Invalid('Reload this download before recording a check')
         with self.engine.lock:
-            if artifact:
+            # Wine/Proton evidence never advances the package's native validation level.
+            if artifact and environment == 'native':
                 levels = {'untested': 'packaged', 'starts': 'launch_checked', 'played': 'user_confirmed_playable', 'failed': 'failed'}
                 self.engine.lifecycle.validate(artifact_id, levels[result], (device.strip() + ': ' + notes.strip()).strip(': '), {'manual_check': True, 'device': device.strip()})
-            event = {'id': identifier(), 'kind': 'test', 'project_id': project_id, 'project_name': project['name'], 'target': target, 'package': reference, 'package_name': name, 'result': result, 'device': device.strip(), 'notes': notes.strip(), 'origin': origin, 'created_at': now()}
+            event = {'id': identifier(), 'kind': 'test', 'project_id': project_id, 'project_name': project['name'], 'target': target, 'package': reference, 'package_name': name, 'result': result, 'environment': environment, 'device': device.strip(), 'notes': notes.strip(), 'origin': origin, 'created_at': now()}
             self.store.put('playtests', event)
         return event
 

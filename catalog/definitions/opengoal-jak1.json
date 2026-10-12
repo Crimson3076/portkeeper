@@ -1,0 +1,214 @@
+{
+  "schema": 2,
+  "id": "opengoal-jak1",
+  "revision": 1,
+  "name": "Jak and Daxter OpenGOAL",
+  "game": "Jak and Daxter: The Precursor Legacy",
+  "package_prefix": "Jak-and-Daxter-OpenGOAL",
+  "summary": "Official OpenGOAL runtimes with Jak 1 game data extracted, validated, decompiled and compiled from your PS2 ISO by the release's own extractor.",
+  "runner": "operations",
+  "runner_version": 1,
+  "upstream": {
+    "repository": "open-goal/jak-project",
+    "documentation": [
+      "https://github.com/open-goal/jak-project#readme",
+      "https://opengoal.dev/docs/usage/installation/"
+    ],
+    "release_rules": {
+      "stable_only": true,
+      "tag_pattern": "v[0-9]+\\.[0-9]+\\.[0-9]+",
+      "notes": "Stable releases ship opengoal-linux-<tag>.tar.gz and opengoal-windows-<tag>.zip."
+    }
+  },
+  "targets": [
+    "linux",
+    "windows"
+  ],
+  "downloads": {
+    "linux": {
+      "asset_pattern": "^opengoal-linux-v[0-9.]+\\.tar\\.gz$",
+      "platform": "linux",
+      "format": "tar",
+      "required_members": [
+        "extractor",
+        "gk",
+        "goalc",
+        "data/decompiler/config/jak1/jak1_config.jsonc"
+      ],
+      "description": "Linux runtime; its extractor also builds the game data used by both packages."
+    },
+    "windows": {
+      "asset_pattern": "^opengoal-windows-v[0-9.]+\\.zip$",
+      "platform": "windows",
+      "format": "zip",
+      "required_members": [
+        "gk.exe",
+        "extractor.exe",
+        "goalc.exe"
+      ],
+      "description": "Windows runtime."
+    }
+  },
+  "inputs": [
+    {
+      "id": "iso",
+      "label": "Jak and Daxter: The Precursor Legacy (USA) (Rev 1) PS2 ISO",
+      "kind": "file",
+      "platform_hint": "ps2",
+      "name_hint": "(?i)jak and daxter.*precursor",
+      "accepted": [
+        {
+          "label": "USA Rev 1 (SCUS-97124)",
+          "sha1": "e695d5b98d598bfc0262ec73ba1baf368a81039b"
+        }
+      ],
+      "max_bytes": 8589934592,
+      "notes": "The extractor's own validation (-v) must also accept the disc."
+    }
+  ],
+  "source_checks": [
+    {
+      "description": "The release still contains the NTSC v1 decompiler configuration",
+      "path": "decompiler/config/jak1/jak1_config.jsonc",
+      "contains": "ntsc_v1"
+    }
+  ],
+  "operations": [
+    {
+      "op": "unpack_download",
+      "download": "linux",
+      "to": "$package",
+      "targets": [
+        "linux"
+      ]
+    },
+    {
+      "op": "unpack_download",
+      "download": "windows",
+      "to": "$package",
+      "targets": [
+        "windows"
+      ]
+    },
+    {
+      "op": "tool",
+      "tool": "opengoal_extract",
+      "download": "linux",
+      "game": "jak1",
+      "iso": "iso",
+      "collect": [
+        "data/out/jak1/iso",
+        "data/out/jak1/fr3"
+      ],
+      "to": "$shared/opengoal",
+      "timeout_minutes": 90
+    },
+    {
+      "op": "copy",
+      "from": "$shared/opengoal/data/out/jak1",
+      "to": "$package/data/out/jak1"
+    },
+    {
+      "op": "launcher",
+      "targets": [
+        "linux"
+      ],
+      "path": "Launch.sh",
+      "template": "posix",
+      "chmod_exec": true,
+      "exec": "gk",
+      "args": [
+        "--game",
+        "jak1",
+        "--portable",
+        "--proj-path",
+        "$PWD/data",
+        "--",
+        "-boot",
+        "-fakeiso"
+      ]
+    },
+    {
+      "op": "launcher",
+      "targets": [
+        "windows"
+      ],
+      "path": "Launch.cmd",
+      "template": "windows_cmd",
+      "exec": "gk.exe",
+      "args": [
+        "--game",
+        "jak1",
+        "--portable",
+        "--proj-path",
+        "%CD%\\data",
+        "--",
+        "-boot",
+        "-fakeiso"
+      ]
+    },
+    {
+      "op": "write_text",
+      "path": "$package/PORTABLE-README.txt",
+      "text": "{name} {version} portable package.\nExtract the entire ZIP to a writable folder, then run {launch_command}.\nOpenGOAL runs in --portable mode with the compiled game data under data/out/jak1. Settings and saves stay in this folder.\nOfficial upstream: https://github.com/{repository}\nPackaging checks file structure only. Record startup or gameplay results separately for this exact download.\n"
+    }
+  ],
+  "outputs": {
+    "linux": {
+      "expected_files": [
+        "gk",
+        "data/out/jak1/iso/0COMMON.TXT",
+        "Launch.sh",
+        "PORTABLE-README.txt"
+      ],
+      "compression": "deflate",
+      "max_bytes": 4294967296
+    },
+    "windows": {
+      "expected_files": [
+        "gk.exe",
+        "data/out/jak1/iso/0COMMON.TXT",
+        "Launch.cmd",
+        "PORTABLE-README.txt"
+      ],
+      "compression": "deflate",
+      "max_bytes": 4294967296
+    }
+  },
+  "launch": {
+    "linux": {
+      "command": "Launch.sh",
+      "instructions": "Extract the whole ZIP to a writable folder and run Launch.sh. It starts gk in portable mode with the bundled compiled data."
+    },
+    "windows": {
+      "command": "Launch.cmd",
+      "instructions": "Extract the whole ZIP to a writable folder and run Launch.cmd."
+    }
+  },
+  "saves": "OpenGOAL's --portable flag keeps settings and saves in the package folder.",
+  "dependencies": {
+    "linux": [
+      "x86-64 Linux with OpenGL graphics (runtime requirement published upstream)"
+    ],
+    "windows": [
+      "Windows x64 (requirements as published upstream)"
+    ]
+  },
+  "limitations": [
+    "The Windows package uses game data compiled by the Linux extractor of the same release. This matches the 2026-10-11 manual package and assumes the compiled data is platform-independent; it has not been confirmed on native Windows.",
+    "Extraction takes several minutes and roughly 2 GB of temporary space."
+  ],
+  "verified_releases": [
+    {
+      "release": "v0.3.8",
+      "assets": {
+        "opengoal-linux-v0.3.8.tar.gz": "c98fc713e831f65f2954c680f4be4f2bc0259c308f9538284c06fee9429b089d",
+        "opengoal-windows-v0.3.8.zip": "33705bcaf8f1cda6f13b838065796d67cf9855d6061738608dc0bd5ca2b92116"
+      },
+      "evidence": "Manual 2026-10-11 package: Linux reached the title screen; Windows assembled, not launched (RomM 12965 / 12968)."
+    }
+  ],
+  "history": [
+    "2026-10-11: first packages assembled with outputs/package-native-ports.py after running the extractor by hand. This definition automates the same steps."
+  ]
+}

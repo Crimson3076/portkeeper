@@ -1,7 +1,9 @@
-"""Read-only RomM integration with server-side credentials and verified ROM caching.
+"""RomM integration with server-side credentials and verified ROM caching.
 
-Wire contract follows RomM 5.2.0's endpoints/roms and endpoints/roms/files.py.
-No browser credentials, password login, uploads, or third-party download URLs.
+Wire contract follows RomM 5.2.0's endpoints/roms, endpoints/roms/files.py and the chunked
+upload endpoints in endpoints/roms/upload.py. Uploads need a token with roms.write; RomM's
+filesystem watcher (or a manual scan) then creates the library entry.
+No browser credentials, password login, or third-party download URLs.
 """
 import hashlib
 import ipaddress
@@ -388,6 +390,116 @@ class RomM:
         with self.lock:
             return url in self.offered_art
 
+    def _send(self, method, path, body=None, headers=None, timeout=300):
+        """Authenticated write to the configured RomM origin. Returns (status, parsed JSON or None)."""
+        config = self._config()
+        if not config.get('url') or not config.get('token'):
+            raise Invalid('Connect RomM with a Client API Token in Settings first')
+        url = config['url'] + '/api/' + path.lstrip('/')
+        if _origin(url) != _origin(config['url']):
+            raise Invalid('RomM request must stay on the configured server')
+        request = urllib.request.Request(url, data=body if body is not None else b'', method=method,
+                                         headers={'Authorization': 'Bearer ' + config['token'], 'User-Agent': 'Portkeeper/0.3',
+                                                  'Accept': 'application/json', 'Content-Type': 'application/octet-stream', **(headers or {})})
+        opener = urllib.request.build_opener(_OriginRedirect(_origin(url)))
+        try:
+            with opener.open(request, timeout=timeout) as response:
+                data = response.read(MAX_JSON + 1)
+                status = response.status
+        except urllib.error.HTTPError as error:
+            detail = ''
+            try:
+                detail = str(json.loads(error.read(65536) or b'{}').get('detail', ''))[:300]
+            except (ValueError, AttributeError, OSError):
+                pass
+            error.close()
+            if error.code == 401:
+                raise Invalid('RomM rejected the API token (401). Check its value and expiry.') from None
+            if error.code == 403:
+                raise Invalid('RomM denied permission (403). Publishing needs a token with roms.write.') from None
+            if error.code == 400 and 'already exists' in detail:
+                raise FileExistsError(detail) from None
+            raise Invalid(f'RomM request failed with HTTP {error.code}' + (f': {detail}' if detail else '')) from None
+        except (urllib.error.URLError, TimeoutError, OSError):
+            raise Invalid('RomM could not be reached during the upload. Check the server URL and try again.') from None
+        try:
+            return status, (json.loads(data) if data.strip() else None)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return status, None
+
+    def platforms(self):
+        result = self._json('platforms')
+        if not isinstance(result, list):
+            raise Invalid('RomM returned an invalid platform list')
+        return [{'id': item.get('id'), 'fs_slug': item.get('fs_slug'), 'slug': item.get('slug'), 'name': item.get('display_name') or item.get('name')}
+                for item in result if isinstance(item, dict) and isinstance(item.get('id'), int)]
+
+    def platform_for(self, target):
+        """The RomM platform ID whose library folder holds this target's packages."""
+        wanted = {'linux': ('linux',), 'windows': ('win', 'windows')}.get(target)
+        if not wanted:
+            raise Invalid(f'RomM publication for {target} packages is not supported; there is no matching RomM PC platform')
+        for slug in wanted:
+            for platform in self.platforms():
+                if platform['fs_slug'] == slug:
+                    return platform
+        raise Invalid(f'RomM has no {wanted[0]} platform folder. Create it in RomM before publishing {target} packages.')
+
+    def find_file(self, platform_id, filename):
+        """Return the RomM entry containing exactly this file name on a platform, if it is indexed."""
+        stem = filename[:-4] if filename.lower().endswith('.zip') else filename
+        params = urllib.parse.urlencode([('search_term', stem), ('platform_ids', platform_id), ('limit', 50), ('with_files', 'true'),
+                                         ('with_char_index', 'false'), ('with_filter_values', 'false'), ('with_rom_id_index', 'false')])
+        result = self._json('roms?' + params)
+        items = result.get('items', []) if isinstance(result, dict) else result if isinstance(result, list) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            record = _normalize_record(item)
+            names = [f.get('name') for f in record.get('files', [])] + [item.get('fs_name')]
+            if filename in names:
+                return record
+        return None
+
+    def upload(self, path, platform_id, filename, progress=None, chunk_size=32 * 1024 * 1024, stop=None):
+        """Upload a package with RomM's chunked upload API. Raises FileExistsError for a name already in RomM."""
+        path = Path(path)
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._ ()-]{0,200}\.zip', filename):
+            raise Invalid('Package file names must be plain .zip names')
+        size = path.stat().st_size
+        chunks = max(1, -(-size // chunk_size))
+        part = -(-size // chunks)
+        _status, started = self._send('POST', 'roms/upload/start', headers={
+            'X-Upload-Platform': str(platform_id), 'X-Upload-Filename': filename,
+            'X-Upload-Total-Size': str(size), 'X-Upload-Total-Chunks': str(chunks)})
+        upload_id = (started or {}).get('upload_id')
+        if not isinstance(upload_id, str) or not re.fullmatch(r'[A-Za-z0-9-]{8,64}', upload_id):
+            raise Invalid('RomM did not start an upload session')
+        try:
+            with path.open('rb') as stream:
+                for index in range(chunks):
+                    if stop is not None and stop.is_set():
+                        raise Invalid('Upload stopped because the service is shutting down')
+                    body = stream.read(part)
+                    for attempt in range(4):
+                        try:
+                            self._send('PUT', 'roms/upload/' + upload_id, body, {'X-Chunk-Index': str(index)})
+                            break
+                        except Invalid:
+                            if attempt == 3:
+                                raise
+                            time.sleep(2 ** attempt)
+                    if progress:
+                        progress(index + 1, chunks)
+            self._send('POST', 'roms/upload/' + upload_id + '/complete', timeout=3600)
+        except BaseException:
+            try:
+                self._send('POST', 'roms/upload/' + upload_id + '/cancel', timeout=30)
+            except (Invalid, FileExistsError):
+                pass
+            raise
+        return {'upload_id': upload_id, 'chunks': chunks, 'size': size}
+
     def detail(self, rom_id):
         result = self._json('roms/' + str(_positive(rom_id)))
         if not isinstance(result, dict):
@@ -436,7 +548,7 @@ class RomM:
                     raise Invalid('ROM cache must not use symlinks')
                 directory.mkdir(parents=True, exist_ok=True, mode=0o700)
                 fd, temporary = tempfile.mkstemp(prefix='.download-', dir=directory)
-                sha1, sha256, size = hashlib.sha1(), hashlib.sha256(), 0
+                sha1, sha256, size = hashlib.sha1(usedforsecurity=False), hashlib.sha256(), 0
                 try:
                     route = f'roms/{file_id}/files/content/{urllib.parse.quote(filename, safe="")}'
                     with self._open(route) as response, os.fdopen(fd, 'wb') as output:

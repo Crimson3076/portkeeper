@@ -3,12 +3,12 @@ import mimetypes
 import re
 import shutil
 import urllib.parse
-from functools import partial
+from functools import lru_cache, partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .engine import Busy
-from .safety import Invalid, confined, checksum
+from .safety import Invalid, checksum
 
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
@@ -174,6 +174,21 @@ class Handler(BaseHTTPRequestHandler):
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/test-build", path) and method == "POST":
                 self.body()
                 self.json(202, self.engine.test_build(path.split("/")[3]))
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/inputs", path) and method == "POST":
+                self.json(200, self.engine.bind_input(path.split("/")[3], self.body()))
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/catalog-definition", path) and method == "POST":
+                self.body()
+                self.json(200, self.engine.catalog.apply(path.split("/")[3]))
+            elif method == "GET" and path == "/api/catalog":
+                self.json(200, self.engine.catalog.status())
+            elif method == "POST" and path == "/api/catalog/refresh":
+                self.body()
+                self.json(200, self.engine.catalog.refresh())
+            elif re.fullmatch(r"/api/artifacts/[a-f0-9]{32}/publish-romm", path) and method == "POST":
+                self.body()
+                self.json(202, self.engine.publisher.queue(path.split("/")[3]))
+            elif re.fullmatch(r"/api/jobs/[a-f0-9]{32}", path) and method == "GET":
+                self.json(200, self.engine.store.get("jobs", path.split("/")[3]))
             elif re.fullmatch(r"/api/jobs/[a-f0-9]{32}/retry", path) and method == "POST":
                 self.body()
                 self.json(202, self.engine.retry(path.split("/")[3]))
@@ -310,12 +325,20 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.json(404, {"error": "File not found"})
             return
-        file = confined(STATIC, path, must_exist=True)
+        # Serve only files shipped in static/; the request picks an entry, never a path.
+        file = static_files().get(path)
+        if file is None:
+            raise Invalid(f"Missing file: {path}")
         data = file.read_bytes()
         content_type = mimetypes.guess_type(file.name)[0] or "application/octet-stream"
         self.respond_headers(200, content_type, len(data))
         self.wfile.write(data)
 
+
+@lru_cache(maxsize=1)
+def static_files():
+    root = STATIC.resolve()
+    return {path.relative_to(root).as_posix(): path for path in root.rglob("*") if path.is_file() and not path.is_symlink()}
 
 def make_server(engine, host="127.0.0.1", port=8787, allowed_hosts=()):
     server = ThreadingHTTPServer((host, port), partial(Handler, engine=engine))

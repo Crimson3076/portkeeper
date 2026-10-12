@@ -2,7 +2,7 @@
 
 A self-hosted companion for RomM that preserves game port releases, turns your selected game files into versioned packages, and keeps a working version available while updates are being prepared.
 
-Portkeeper captures source before building. The reviewed Ship of Harkinian profile supports release **9.3.0** for Linux x86-64 / Steam Deck and Windows x64. Custom recipes can preserve or assemble other projects, including device-specific handheld ports.
+Portkeeper captures source before building. Each project has a JSON [packaging definition](docs/PACKAGING.md) that describes upstream release rules, the files you provide, build steps, platform packages, launchers, saves, dependencies, checksums and limitations; the readable **Packaging instructions** are generated from it. Bundled definitions automate 2 Ship 2 Harkinian, Banjo Recompiled, Jak and Daxter (OpenGOAL), Bloodborne bbport (Linux and Windows) and Dusklight. The reviewed Ship of Harkinian profile supports release **9.3.0** for Linux x86-64 / Steam Deck and Windows x64.
 
 ## Start locally
 
@@ -62,11 +62,13 @@ Unraid starts containers as root. The entrypoint takes ownership of the app-data
 
 Credentials stay in server-side files with mode `0600`; they are not returned to the browser after saving. RomM-selected game files are downloaded into a private local cache. Local-file fallback is available through the API for files beneath `--input-root`; see [Shipwright setup](docs/SHIPWRIGHT.md).
 
-**Publish** copies a successful ZIP atomically into the configured local library folder. Selecting an older version rolls back that target. Automatic publishing is opt-in, requires automatic builds, and preserves a failed target's previous current package. Uploading packages through the RomM API and triggering its indexing are deferred; configure RomM's shared directory and scanning separately.
+**Publish to RomM** uploads a package through RomM's chunked upload API (token scope `roms.write`). RomM creates the library entry after its filesystem watcher rescans; Portkeeper confirms the entry and links its game metadata and cover. **Copy to local library folder** is a separate action that reaches RomM only when that folder is RomM's own platform folder. Automatic publication is opt-in per game, requires automatic builds, and uploads to RomM by default. A new release that does not match its definition's compatibility rules is preserved and reported for review instead of being packaged.
 
 ## What is included
 
 - Public GitHub stable-release monitoring, source/release archival, staged jobs, logs, retries, and checksums.
+- Packaging definitions with a fixed operation vocabulary, headless extraction tools (Ship-style `.o2r` generation, OpenGOAL, PS4 PKG), explicit compatibility rules for new releases, and per-release status: preserved, needs review, packaged, in RomM.
+- A cached GitHub project catalog with verification scopes and definition updates.
 - A reviewed Shipwright 9.3.0 extraction/packaging worker; newer releases are preserved and held for a reviewed profile update.
 - Custom capture, assembly, and optional digest-pinned Docker recipes with per-target overrides.
 - Version pinning, validation history, known-good pointers, and retention previews protecting current, pinned, latest, and known-good packages.
@@ -116,4 +118,4 @@ then set `PORTKEEPER_JSDOM` to that environment's `node_modules/jsdom` path and 
 
 ## Project verification
 
-See [verification criteria and the human/LLM review workflow](docs/PROJECT_VERIFICATION.md). The [GitHub catalog](catalog/projects.json) records version- and platform-specific evidence and approval. Catalog verification is separate from download startup/gameplay results; the initial entries await an explicit approval reference. Remote catalog fetching and caching are not installed yet.
+See [verification criteria and the human/LLM review workflow](docs/PROJECT_VERIFICATION.md). The [GitHub catalog](catalog/projects.json) records version- and platform-specific evidence and approval. Catalog verification is separate from download startup/gameplay results; the entries await an explicit approval reference. Portkeeper fetches the catalog from GitHub daily, keeps the last valid copy when GitHub is unavailable, and shows its age and source in **Settings → Catalog**.

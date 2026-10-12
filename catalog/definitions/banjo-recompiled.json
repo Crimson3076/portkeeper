@@ -1,0 +1,189 @@
+{
+  "schema": 2,
+  "id": "banjo-recompiled",
+  "revision": 1,
+  "name": "Banjo Recompiled",
+  "game": "Banjo-Kazooie",
+  "package_prefix": "Banjo-Recompiled",
+  "summary": "Official Banjo Recompiled runtimes in portable mode with your normalized Banjo-Kazooie (USA) 1.0 ROM preloaded.",
+  "runner": "operations",
+  "runner_version": 1,
+  "upstream": {
+    "repository": "BanjoRecomp/BanjoRecomp",
+    "documentation": [
+      "https://github.com/BanjoRecomp/BanjoRecomp#readme"
+    ],
+    "release_rules": {
+      "stable_only": true,
+      "tag_pattern": "v[0-9]+\\.[0-9]+\\.[0-9]+",
+      "notes": "Stable v-prefixed releases. Linux x64 has been published as .tar.gz (v1.0.2) and .zip (v1.0.1); both formats are accepted."
+    }
+  },
+  "targets": [
+    "linux",
+    "windows"
+  ],
+  "downloads": {
+    "linux": {
+      "asset_pattern": "^BanjoRecompiled-v[0-9.]+-Linux-X64\\.(tar\\.gz|zip)$",
+      "platform": "linux",
+      "format": "auto",
+      "required_members": [
+        "BanjoRecompiled"
+      ],
+      "description": "Official Linux x86-64 build (not the Flatpak or ARM64 builds)."
+    },
+    "windows": {
+      "asset_pattern": "^BanjoRecompiled-v[0-9.]+-Windows\\.zip$",
+      "platform": "windows",
+      "format": "zip",
+      "required_members": [
+        "BanjoRecompiled.exe"
+      ],
+      "description": "Official Windows build."
+    }
+  },
+  "inputs": [
+    {
+      "id": "rom",
+      "label": "Banjo-Kazooie (USA) 1.0 N64 ROM",
+      "kind": "file",
+      "platform_hint": "n64",
+      "name_hint": "(?i)banjo-kazooie",
+      "normalize": "n64_big_endian",
+      "accepted": [
+        {
+          "label": "USA 1.0 (big-endian .z64)",
+          "sha1": "1fe1632098865f639e22c11b9a81ee8f29c75d7a"
+        }
+      ],
+      "max_bytes": 67108864,
+      "notes": ".n64/.v64 dumps are byte-swapped to .z64 before checking. The runtime stores the accepted ROM as bk.n64.us.1.0.z64 beside the executable in portable mode."
+    }
+  ],
+  "source_checks": [
+    {
+      "description": "The runtime still supports the US 1.0 game ID",
+      "path": "src/main/main.cpp",
+      "contains": ".game_id = u8\"bk.n64.us.1.0\""
+    },
+    {
+      "description": "The runtime still expects the same ROM content hash",
+      "path": "src/main/main.cpp",
+      "contains": "0x1B67585D56E07F8CULL"
+    }
+  ],
+  "operations": [
+    {
+      "op": "unpack_download",
+      "download": "linux",
+      "to": "$package",
+      "targets": [
+        "linux"
+      ]
+    },
+    {
+      "op": "unpack_download",
+      "download": "windows",
+      "to": "$package",
+      "targets": [
+        "windows"
+      ]
+    },
+    {
+      "op": "stage_input",
+      "input": "rom",
+      "to": "$package/bk.n64.us.1.0.z64",
+      "description": "Preload the ROM where portable mode looks for it"
+    },
+    {
+      "op": "touch",
+      "path": "$package/portable.txt",
+      "description": "Enable the runtime's official portable mode"
+    },
+    {
+      "op": "launcher",
+      "targets": [
+        "linux"
+      ],
+      "path": "Launch.sh",
+      "template": "posix",
+      "chmod_exec": true,
+      "exec": "BanjoRecompiled"
+    },
+    {
+      "op": "launcher",
+      "targets": [
+        "windows"
+      ],
+      "path": "Launch.cmd",
+      "template": "windows_cmd",
+      "exec": "BanjoRecompiled.exe"
+    },
+    {
+      "op": "write_text",
+      "path": "$package/PORTABLE-README.txt",
+      "text": "{name} {version} portable package.\nExtract the entire ZIP to a writable folder, then run {launch_command}.\nportable.txt keeps saves and settings in this folder. Your normalized US 1.0 ROM is preloaded as bk.n64.us.1.0.z64.\nOfficial upstream: https://github.com/{repository}\nPackaging checks file structure only. Record startup or gameplay results separately for this exact download.\n"
+    }
+  ],
+  "outputs": {
+    "linux": {
+      "expected_files": [
+        "BanjoRecompiled",
+        "bk.n64.us.1.0.z64",
+        "portable.txt",
+        "Launch.sh",
+        "PORTABLE-README.txt"
+      ],
+      "compression": "deflate",
+      "max_bytes": 1073741824
+    },
+    "windows": {
+      "expected_files": [
+        "BanjoRecompiled.exe",
+        "bk.n64.us.1.0.z64",
+        "portable.txt",
+        "Launch.cmd",
+        "PORTABLE-README.txt"
+      ],
+      "compression": "deflate",
+      "max_bytes": 1073741824
+    }
+  },
+  "launch": {
+    "linux": {
+      "command": "Launch.sh",
+      "instructions": "Extract the whole ZIP to a writable folder and run Launch.sh."
+    },
+    "windows": {
+      "command": "Launch.cmd",
+      "instructions": "Extract the whole ZIP to a writable folder and run Launch.cmd."
+    }
+  },
+  "saves": "portable.txt makes the runtime store saves and settings beside the executable. Carry them forward when replacing the folder.",
+  "dependencies": {
+    "linux": [
+      "x86-64 Linux with a Vulkan driver (runtime requirement published upstream)"
+    ],
+    "windows": [
+      "Windows x64 (requirements as published upstream)"
+    ]
+  },
+  "limitations": [
+    "Windows packages have not been launched on native Windows.",
+    "Only the USA 1.0 ROM is accepted by this definition."
+  ],
+  "verified_releases": [
+    {
+      "release": "v1.0.2",
+      "assets": {
+        "BanjoRecompiled-v1.0.2-Linux-X64.tar.gz": "a34a4d361221171ea638e0165301fff817c53b9cd46167c5affd37867cfc7ad0",
+        "BanjoRecompiled-v1.0.2-Windows.zip": "fc34aad48e06681878bedd13b88d5332a2f21f6a98cafc931c94d54892a4dd92"
+      },
+      "evidence": "Manual 2026-10-11 package: Linux frontend started with the preloaded ROM; Windows assembled, not launched (RomM 12964 / 12967)."
+    }
+  ],
+  "history": [
+    "2026-10-11: first packages assembled with outputs/package-native-ports.py after byte-swapping the ROM by hand. This definition automates the same steps."
+  ]
+}

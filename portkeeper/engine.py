@@ -24,7 +24,7 @@ class Busy(Invalid):
     pass
 
 
-ALLOWED_HOSTS = {"github.com", "api.github.com", "codeload.github.com",
+ALLOWED_HOSTS = {"github.com", "api.github.com", "codeload.github.com", "raw.githubusercontent.com",
                  "objects.githubusercontent.com", "release-assets.githubusercontent.com"}
 
 
@@ -135,6 +135,12 @@ class Engine:
         self.assistant = RecipeAssistant(self.data)
         from .reviews import Reviews
         self.reviews = Reviews(self)
+        from .runner import OperationRunner
+        from .publishing import Publisher
+        from .catalog import Catalog
+        self.packager = OperationRunner(self)
+        self.publisher = Publisher(self)
+        self.catalog = Catalog(self)
         self.enable_docker = enable_docker
         self.docker_available = False
         self.docker_error = "Docker builds are disabled; start with --enable-docker to opt in."
@@ -155,6 +161,25 @@ class Engine:
         for project in self.store.all("projects"):
             if project["status"] in ("checking", "building"):
                 self.store.update("projects", project["id"], status="needs_attention", last_error="Previous job was interrupted. Retry explicitly.")
+        self.publisher.recover()
+        self.migrate_definitions()
+
+    def migrate_definitions(self):
+        """Give every project saved before schema 2 a packaging definition, keeping its behavior."""
+        from . import packaging
+        definitions = self.catalog.definitions()
+        for project in self.store.all("projects"):
+            if project.get("packaging"):
+                continue
+            try:
+                definition = packaging.migrate(project, definitions)
+            except Invalid as error:
+                self.store.update("projects", project["id"], last_error="Packaging definition migration failed: " + str(error))
+                continue
+            recipe = project.get("recipe") if definition["runner"] in ("recipe", "profile") else packaging.recipe_for(definition)
+            self.store.update("projects", project["id"], packaging=definition, recipe=recipe,
+                              auto_publish_destination=project.get("auto_publish_destination") or ("library" if project.get("auto_publish") else "romm"),
+                              definition_source={"kind": "migration", "migrated_at": now(), "from_mode": (project.get("recipe") or {}).get("mode", "capture")})
 
     def close(self):
         self.stop.set()
@@ -173,6 +198,15 @@ class Engine:
                     project['preserved_release'] = {key: capture.get(key) for key in ('version', 'commit', 'release_url', 'source', 'assets', 'created_at')}
                 except KeyError:
                     pass
+        from . import packaging
+        captures = self.store.all("captures")
+        all_artifacts = self.store.all("artifacts")
+        for project in projects:
+            definition = project.get("packaging")
+            if definition:
+                project["packaging_view"] = packaging.view(definition)
+                project["releases"] = self.releases(project, captures, all_artifacts)
+                project["catalog_update"] = self.catalog.update_for(project)
         all_jobs = self.store.all("jobs")
         jobs = all_jobs[:150]
         included = {job['id'] for job in jobs}
@@ -181,7 +215,7 @@ class Engine:
             if latest_job and latest_job['id'] not in included:
                 jobs.append(latest_job)
                 included.add(latest_job['id'])
-        artifacts = self.store.all("artifacts")
+        artifacts = all_artifacts
         for artifact in artifacts:
             project = next((p for p in projects if p["id"] == artifact["project_id"]), {})
             artifact["known_good"] = project.get("known_good", {}).get(artifact["target"]) == artifact["id"]
@@ -198,18 +232,50 @@ class Engine:
                              "archive_root": str(self.archive_root), "docker_enabled": self.enable_docker,
                              "toolchain": self.get_setting("toolchain", {})},
                 "runner": {"docker_available": self.docker_available, "docker_error": self.docker_error,
-                           "profile_builds_enabled": self.enable_profile_builds, "profile_runner": self.shipwright.availability()},
+                           "profile_builds_enabled": self.enable_profile_builds, "profile_runner": self.shipwright.availability(),
+                           "packaging_runner": {**self.packager.availability(), "runner_version": packaging.RUNNER_VERSION}},
+                "catalog": self.catalog.status(),
                 "romm": public_romm, "profiles": catalog(), "notifications": self.lifecycle.notifications(),
                 "assistant": assistant,
                 "summary": {"projects": len(projects), "artifacts": len(artifacts),
                             "needs_attention": sum(p["status"] == "needs_attention" for p in projects)}}
+
+    def releases(self, project, captures, artifacts):
+        """Per preserved release: whether it was only preserved, needs review, or was packaged and published."""
+        result = []
+        for capture in captures:
+            if capture["project_id"] != project["id"]:
+                continue
+            built = [a for a in artifacts if a["project_id"] == project["id"] and (a.get("manifest") or {}).get("capture_id") == capture["id"]]
+            review = capture.get("review")
+            packaged = sorted({a["target"] for a in built})
+            in_romm = sorted({a["target"] for a in built if (a.get("romm") or {}).get("status") == "in_romm"})
+            if packaged:
+                status = "packaged"
+            elif not capture.get("complete", True):
+                status = "incomplete"
+            elif review and review.get("status") == "needs_review":
+                status = "needs_review"
+            else:
+                status = "preserved"
+            result.append({"capture_id": capture["id"], "version": capture.get("version"), "commit": capture.get("commit"),
+                           "created_at": capture.get("created_at"), "release_url": capture.get("release_url"),
+                           "complete": capture.get("complete", True), "review": review, "status": status,
+                           "packaged_targets": packaged, "romm_targets": in_romm})
+        return result[:30]
+
+    def input_hashes(self, project):
+        return {key: value.get("sha1") or value.get("sha256") for key, value in (project.get("input_bindings") or {}).items()
+                if isinstance(value, dict) and (value.get("sha1") or value.get("sha256"))}
 
     def templates(self):
         return {"recipes": [
             {"id": "shipwright", "name": "Ship of Harkinian · source preservation", "description": "Archives stable tagged source. Asset extraction and playable builds need your own tested recipe.", "recipe": CAPTURE_RECIPE},
             {"id": "release", "name": "Release assembly · fill in your files", "description": "Select an upstream asset for each target, supply input SHA-256 values, and declare expected output files.", "recipe": {
                 "version": 1, "mode": "capture", "payload": {"kind": "release", "asset_patterns": {}},
-                "inputs": [], "expected_files": [], "notes": "Change mode to assemble after configuring patterns and expected files."}}]}
+                "inputs": [], "expected_files": [], "notes": "Change mode to assemble after configuring patterns and expected files."}}],
+                "definitions": [{"id": d["id"], "name": d["name"], "repository": d["upstream"]["repository"], "runner": d["runner"],
+                                 "revision": d["revision"], "definition": d} for d in self.catalog.definitions().values()]}
 
     def get_setting(self, key, default=None):
         try:
@@ -252,6 +318,8 @@ class Engine:
         job = self.store.get("jobs", job_id)
         if job["status"] != "failed":
             raise Invalid("Only failed jobs can be retried")
+        if job.get("kind") == "publish":
+            return self.publisher.queue(job["artifact_id"])
         project = self.store.get("projects", job["project_id"])
         if job["target"] == "capture":
             return self.check(project["id"], build_after=job.get("build_after", False), release_version=job.get("release_version"))
@@ -321,12 +389,41 @@ class Engine:
         if auto_publish and not auto_build:
             raise Invalid("Enable automatic builds before enabling automatic publication")
         recipe = copy.deepcopy(validate_recipe(config.get("recipe", CAPTURE_RECIPE)))
+        from . import packaging
+        definition = config.get("packaging")
+        if definition is not None:
+            definition = packaging.validate_definition(definition)
+            if definition["upstream"]["repository"].lower() != repo.lower():
+                raise Invalid("The packaging definition describes another repository")
+            unsupported = [t for t in targets if t not in definition["targets"]]
+            if unsupported:
+                raise Invalid("The packaging definition does not produce: " + ", ".join(unsupported))
+            if definition["runner"] == "profile" and definition.get("profile") != profile_id:
+                raise Invalid("Profile definitions belong to projects created from that verified profile")
+            if definition["runner"] in ("operations", "capture"):
+                recipe = packaging.recipe_for(definition)
+            elif definition["runner"] == "recipe":
+                recipe = copy.deepcopy(validate_recipe(definition["recipe"]))
+        elif recipe["mode"] == "definition":
+            raise Invalid("A definition-backed recipe needs its packaging definition")
+        bindings = config.get("input_bindings") or {}
+        if not isinstance(bindings, dict) or len(bindings) > 20:
+            raise Invalid("Game file selections must be an object")
+        declared = {item["id"] for item in (definition or {}).get("inputs", [])}
+        for key, value in bindings.items():
+            if key not in declared or not isinstance(value, dict) or value.get("source") not in ("inputs", "prepared") or set(value) - {"source", "path", "sha1", "sha256", "accepted", "verified_at"}:
+                raise Invalid("Game file selections must name a declared input, its source and a relative path")
+            relative(value.get("path"))
+        destination = config.get("auto_publish_destination", "romm")
+        if destination not in ("romm", "library"):
+            raise Invalid("Automatic publication goes to RomM or to the local library folder")
         if recipe["mode"] == "profile" and not profile_id:
             raise Invalid("Select a verified project profile before using its fixed recipe")
         if auto_build and recipe["mode"] == "capture":
             raise Invalid("Configure a build recipe before enabling automatic builds")
         checked = {"name": name, "repo": repo, "targets": targets,
-                "poll_minutes": interval, "auto_build": auto_build, "auto_publish": auto_publish, "recipe": recipe}
+                "poll_minutes": interval, "auto_build": auto_build, "auto_publish": auto_publish, "recipe": recipe,
+                "packaging": definition, "input_bindings": bindings, "auto_publish_destination": destination}
         metadata = config.get("metadata")
         if metadata is not None:
             from .romm_identity import validate_identity
@@ -337,6 +434,14 @@ class Engine:
         return checked
 
     def create_project(self, config):
+        if isinstance(config, dict) and config.get("packaging") is None and not config.get("demo_fixture"):
+            # New projects start from the catalog definition for their repository, when there is one.
+            from . import packaging
+            draft = self.validate_project(config)
+            try:
+                config = {**config, "packaging": packaging.migrate({**draft, "recipe": draft["recipe"]}, self.catalog.definitions())}
+            except Invalid:
+                pass
         project = {**self.validate_project(config), "id": identifier(),
                    "created_at": now(), "last_checked": None, "status": "idle", "last_error": None,
                    "latest_version": None, "capture_id": None}
@@ -347,15 +452,84 @@ class Engine:
             if project_id in self.busy:
                 raise Busy("Wait for the running project job before editing its recipe")
             project = self.store.get("projects", project_id)
-            allowed = {"name", "targets", "poll_minutes", "auto_build", "auto_publish", "recipe", "rom_source", "metadata"}
+            allowed = {"name", "targets", "poll_minutes", "auto_build", "auto_publish", "recipe", "rom_source", "metadata",
+                       "packaging", "input_bindings", "auto_publish_destination"}
             if not isinstance(config, dict) or any(key not in allowed for key in config):
-                raise Invalid("Only name, targets, poll_minutes, auto_build, auto_publish, and recipe can be edited")
+                raise Invalid("Only name, targets, poll_minutes, automation, packaging, game files, recipe and metadata can be edited")
+            config = self._definition_update(project, config)
             merged = {**project, **config}
             checked = self.validate_project(merged)
             for key in allowed:
                 if key in checked:
                     project[key] = checked[key]
             return self.store.put("projects", project)
+
+    def _definition_update(self, project, config):
+        """Keep the definition the source of truth when an older client edits only the recipe."""
+        current = project.get("packaging")
+        if not current:
+            return config
+        config = dict(config)
+        if "recipe" in config and "packaging" not in config:
+            mode = (config["recipe"] or {}).get("mode") if isinstance(config["recipe"], dict) else None
+            if current["runner"] == "operations":
+                if mode != "definition":
+                    raise Invalid("This project is built from its packaging definition. Edit the definition instead of a recipe.")
+                config.pop("recipe")
+            elif current["runner"] in ("capture", "recipe") and mode in ("capture", "assemble", "docker"):
+                updated = copy.deepcopy(current)
+                updated.pop("recipe", None)
+                if mode == "capture":
+                    updated.update(runner="capture", operations=[])
+                else:
+                    updated.update(runner="recipe", recipe=copy.deepcopy(config["recipe"]), operations=[])
+                config["packaging"] = updated
+        if "packaging" in config and isinstance(config["packaging"], dict):
+            proposed = copy.deepcopy(config["packaging"])
+            strip = lambda d: {k: v for k, v in d.items() if k != "revision"}
+            if strip(proposed) != strip(current) and isinstance(proposed.get("revision"), int) and proposed["revision"] <= current.get("revision", 1):
+                # Changed instructions get a new revision so packages and tests never look identical.
+                proposed["revision"] = current.get("revision", 1) + 1
+            config["packaging"] = proposed
+            config.pop("recipe", None)
+            if "input_bindings" not in config:
+                declared = {item.get("id") for item in proposed.get("inputs", []) if isinstance(item, dict)}
+                config["input_bindings"] = {k: v for k, v in (project.get("input_bindings") or {}).items() if k in declared}
+        return config
+
+    def bind_input(self, project_id, payload):
+        """Choose or automatically find the user's file for one declared input."""
+        project = self.store.get("projects", project_id)
+        definition = project.get("packaging") or {}
+        input_id = payload.get("input")
+        item = next((i for i in definition.get("inputs", []) if i["id"] == input_id), None)
+        if not item:
+            raise Invalid("Choose a declared game file")
+        bindings = dict(project.get("input_bindings") or {})
+        if payload.get("clear"):
+            bindings.pop(input_id, None)
+            return self.update_project(project_id, {"input_bindings": bindings})
+        if payload.get("path"):
+            source = payload.get("source", "inputs")
+            root = self.packager.prepared if source == "prepared" else self.input_root
+            path = confined(root, payload["path"])
+            if (item["kind"] == "file" and not path.is_file()) or (item["kind"] == "directory" and not path.is_dir()):
+                raise Invalid("That file or folder does not exist below the configured input root")
+            binding = {"source": source, "path": str(relative(payload["path"]))}
+            if item["kind"] == "file" and item.get("verify", "hash") == "hash":
+                from .runner import accepted, digests
+                digest = digests(path, item.get("normalize"))
+                match = accepted(item, digest)
+                if not match:
+                    raise Invalid(f"This file is not an accepted revision (SHA-1 {digest['sha1']})")
+                binding.update(sha1=digest["sha1"], accepted=match["label"], verified_at=now())
+            bindings[input_id] = binding
+            return self.update_project(project_id, {"input_bindings": bindings})
+        found = self.packager.locate(project, definition, input_id)
+        if len(found) != 1:
+            return {"project": project, "found": found, "message": "No accepted file was found" if not found else "Several files match; choose one"}
+        bindings[input_id] = found[0]
+        return {"project": self.update_project(project_id, {"input_bindings": bindings}), "found": found}
 
     def link_metadata(self, project_id, payload):
         rom_id = payload.get("romm_rom_id")
@@ -468,14 +642,20 @@ class Engine:
             log(f"Checking {release_version or 'latest stable release'} of {project['repo']}")
             release = self.github.release_tag(project["repo"], release_version) if release_version else self.github.release(project["repo"])
             recipe = project["recipe"]
-            patterns = {target: target_recipe(recipe, target).get("payload", {}).get("asset_patterns", {}).get(target)
-                        for target in project["targets"]}
+            definition = project.get("packaging") if (project.get("packaging") or {}).get("runner") == "operations" else None
+            if definition:
+                from . import packaging
+                wanted = packaging.asset_patterns(definition)
+            else:
+                patterns = {target: target_recipe(recipe, target).get("payload", {}).get("asset_patterns", {}).get(target)
+                            for target in project["targets"]}
+                wanted = [patterns[target] for target in project["targets"] if patterns.get(target)]
             selected = []
             for asset in release["assets"]:
                 name = asset.get("name", "")
                 if len(name) > 255 or not name:
                     raise Invalid("Invalid upstream asset name")
-                if any(re.search(patterns[target], name) for target in project["targets"] if patterns.get(target)):
+                if any(re.search(pattern, name) for pattern in wanted):
                     selected.append(asset)
             if len(selected) > 30:
                 raise Invalid("Asset patterns matched too many files (limit 30)")
@@ -529,7 +709,14 @@ class Engine:
                 ensure_release(project["profile"], capture["version"], capture["commit"])
                 self.store.update("projects", project["id"], compatible_capture_id=capture["id"], compatible_version=capture["version"])
                 self.shipwright.capture_dependencies(lambda stage, message: self.stage(jid, stage, message))
+            review = None
+            if definition:
+                review = self.review_release(project, definition, capture, log)
             self.stage(jid, "complete", "Release preservation finished")
+            if review and review["status"] == "needs_review":
+                if build_after or project["auto_build"]:
+                    log("Not packaged: this release needs review first")
+                return
             if build_after or (changed and project["auto_build"]):
                 jobs = [self.store.update("jobs", self.job(project, target, capture["version"])["id"], capture_id=capture["id"]) for target in project["targets"]]
                 self._build_group(project, capture, jobs)
@@ -542,6 +729,24 @@ class Engine:
                                   str(error), jobid=jid, event_key=f"check:{project['id']}:{str(error)[:180]}")
         finally:
             self.release_claim(project["id"])
+
+    def review_release(self, project, definition, capture, log=None):
+        """Apply compatibility rules; preserve the release either way and report what needs review."""
+        from . import packaging
+        if log:
+            self.packager.capture_dependencies(definition, log)
+        review = packaging.evaluate_release(definition, capture, self.input_hashes(project), targets=project["targets"])
+        self.store.update("captures", capture["id"], review={**review, "checked_at": now()})
+        if log:
+            if review["status"] == "needs_review":
+                log("Release preserved, but packaging needs review: " + "; ".join(review["problems"]))
+            else:
+                log(" ".join(review["notes"]))
+        if review["status"] == "needs_review":
+            self.notify(project["id"], "needs_review",
+                        f"{project['name']} {capture['version']} was preserved but not packaged. Review: " + "; ".join(review["problems"]),
+                        event_key=f"review:{project['id']}:{capture['id']}:{definition['revision']}")
+        return review
 
     def checkpoint_capture(self, capture):
         root = Path(capture["root"])
@@ -588,6 +793,16 @@ class Engine:
             names = {asset["name"] for asset in capture.get("assets", [])}
             if any(spec["runtimes"][target]["name"] not in names for target in chosen):
                 raise Invalid("Capture the verified release again to preserve runtimes for all selected targets")
+        definition = project.get("packaging")
+        if definition and definition["runner"] == "operations":
+            from . import packaging
+            support = packaging.requirements(definition)
+            if not support["supported"]:
+                raise Invalid(support["reason"])
+            review = packaging.evaluate_release(definition, capture, self.input_hashes(project), targets=chosen)
+            self.store.update("captures", capture["id"], review={**review, "checked_at": now()})
+            if review["status"] == "needs_review":
+                raise Invalid(f"{capture['version']} needs review before it can be packaged: " + "; ".join(review["problems"]))
         self.claim(project_id)
         jobs = [self.store.update("jobs", self.job(project, target, capture["version"])["id"], capture_id=capture["id"]) for target in chosen]
         self.executor.submit(self._run_group, project, capture, jobs)
@@ -602,20 +817,51 @@ class Engine:
     def _build_group(self, project, capture, jobs):
         self.store.update("projects", project["id"], status="building", last_error=None)
         errors = []
-        for job in jobs:
-            try:
-                artifact = self._build_one(project, capture, job)
-                if project.get("auto_publish"):
-                    self.publish(artifact["id"])
-                    self.store.append_log(job["id"], "Automatically published validated package to the library")
+
+        def finish(job, artifact, error):
+            if artifact and not error:
+                if self.store.get("jobs", job["id"])["status"] != "ready":
+                    self.store.update("jobs", job["id"], status="ready", artifact_id=artifact["id"], finished_at=now())
+                    self.stage(job["id"], "complete", "Package ready; launch has not been tested")
                 self.notify(project["id"], "ready", f"{project['name']} {capture['version']} is packaged for {job['target']}", artifactid=artifact["id"])
-            except Exception as error:
-                self.store.append_log(job["id"], str(error))
-                self.store.update("jobs", job["id"], status="failed", error=str(error), finished_at=now())
-                errors.append(f"{job['target']}: {error}")
-                self.notify(project["id"], "needs_input" if "ROM" in str(error) else "build_failed", str(error), jobid=job["id"],
-                                      event_key=f"build:{project['id']}:{capture['id']}:{job['target']}:{str(error)[:150]}")
+                if project.get("auto_publish"):
+                    self.auto_publish(project, artifact, job)
+                return
+            self.store.append_log(job["id"], str(error))
+            self.store.update("jobs", job["id"], status="failed", error=str(error), finished_at=now())
+            errors.append(f"{job['target']}: {error}")
+            missing = "ROM" in str(error) or "Missing game file" in str(error) or "does not match an accepted" in str(error)
+            self.notify(project["id"], "needs_input" if missing else "build_failed", str(error), jobid=job["id"],
+                        event_key=f"build:{project['id']}:{capture['id']}:{job['target']}:{str(error)[:150]}")
+
+        definition = project.get("packaging")
+        if definition and definition["runner"] == "operations":
+            self.packager.build_group(project, definition, capture, jobs,
+                                      lambda jid: (lambda stage, message: self.stage(jid, stage, message)),
+                                      lambda jid: (lambda message: self.store.append_log(jid, message)), finish)
+        else:
+            for job in jobs:
+                try:
+                    artifact = self._build_one(project, capture, job)
+                except Exception as error:
+                    finish(job, None, error)
+                else:
+                    finish(job, artifact, None)
         self.store.update("projects", project["id"], status="needs_attention" if errors else "ready", last_error="; ".join(errors) if errors else None)
+
+    def auto_publish(self, project, artifact, job):
+        log = lambda message: self.store.append_log(job["id"], message)
+        if project.get("auto_publish_destination", "romm") == "library":
+            self.publish(artifact["id"])
+            log("Automatically copied the validated package to the local library folder (this is not a RomM upload)")
+            return
+        try:
+            result = self.publisher.publish(artifact["id"], log)
+            log("Automatically published to RomM" + (f" (entry {result['rom_id']})" if result.get("rom_id") else "; waiting for RomM to index it"))
+        except Exception as error:
+            log("Automatic RomM publication failed; the package stays archived: " + str(error))
+            self.notify(project["id"], "build_failed", f"Automatic RomM publication failed for {artifact['filename']}: {error}",
+                        artifactid=artifact["id"], event_key="autopublish:" + artifact["id"])
 
     def _payload(self, recipe, target, capture, destination):
         payload = recipe.get("payload", {"kind": "source"})
@@ -1036,6 +1282,7 @@ class Engine:
                         with self.match_lock:
                             result = matcher.sync()
                         self.save_setting("romm_import_matching", {"checked_at": now(), **result})
+                        self.publisher.poll()
                         checked_prefixes = set()
                         for project in self.store.all("projects"):
                             prefix = (project.get("metadata") or {}).get("filename_prefix")
@@ -1048,4 +1295,5 @@ class Engine:
                 if self.stop.wait(60):
                     return
         self.identity_scheduler = threading.Thread(target=match_imports, daemon=True, name="portkeeper-romm-matching")
+        self.catalog.start()
         self.identity_scheduler.start()
