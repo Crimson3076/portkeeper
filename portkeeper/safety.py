@@ -30,19 +30,19 @@ def relative(value):
 def confined(root, value, must_exist=False):
     root = Path(root).resolve()
     rel = relative(value)
-    candidate = root.joinpath(*rel.parts)
     # Reject symlink components, even when the target would remain inside root.
     cursor = root
     for part in rel.parts:
         cursor = cursor / part
         if cursor.is_symlink():
             raise Invalid("Symlinks are not allowed in recipe paths")
-    resolved = candidate.resolve()
-    if not resolved.is_relative_to(root):
+    base = str(root)
+    resolved = os.path.realpath(os.path.join(base, *rel.parts))
+    if os.path.commonpath([base, resolved]) != base:
         raise Invalid("Path leaves its configured root")
-    if must_exist and not resolved.is_file():
+    if must_exist and not os.path.isfile(resolved):
         raise Invalid(f"Missing file: {value}")
-    return resolved
+    return Path(resolved)
 
 
 def checksum(path):
