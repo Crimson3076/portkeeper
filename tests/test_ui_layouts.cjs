@@ -16,8 +16,8 @@ const imports = prefix => ['linux','win'].map((platform,n) => ({id:200+n+(prefix
 const requests=[];
 async function create(saved, storageBlocked=false, source=fixture) {
   const errors=[];
-  const dom=new JSDOM(fs.readFileSync(path.join(base,'static/index.html'),'utf8'),{url:'http://localhost:8787',runScripts:'outside-only'});
-  const w=dom.window;w.scrollTo=()=>{};w.setInterval=()=>0;w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;};
+  const dom=new JSDOM(fs.readFileSync(path.join(base,'static/index.html'),'utf8'),{url:'http://localhost:8787',runScripts:'outside-only',pretendToBeVisual:true});
+  const w=dom.window;w.scrollTo=()=>{};w.setInterval=callback=>{w.pollRefresh=callback;return 0;};w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;};
   if(saved)w.localStorage.setItem('portkeeper.library-layout',saved);
   if(storageBlocked)Object.defineProperty(w,'localStorage',{get(){throw new Error('Storage unavailable');}});
   w.addEventListener('error',e=>errors.push(e.error));
@@ -116,6 +116,22 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();
   d.getElementById('project-advanced-tab').click();await tick();
   assert(!d.getElementById('project-content').textContent.includes('Build progress & logs'));
+  const disclosure=label=>[...d.querySelectorAll('#project-content details')].find(node=>node.querySelector('summary')?.textContent===label);
+  disclosure('View definition JSON').open=true;disclosure('Saved revisions (last 20)').open=true;
+  editable.catalog={age_seconds:3};editable.projects[1].packaging.summary='Updated by the server';w.pollRefresh();await tick();await tick();
+  assert(disclosure('View definition JSON').open,'Definition JSON stays expanded after a polling update');
+  assert(disclosure('View definition JSON').textContent.includes('Updated by the server'),'Expanded JSON still shows updated server content');
+  assert(disclosure('Saved revisions (last 20)').open,'Revision history also stays expanded');
+  disclosure('View definition JSON').open=false;editable.catalog.age_seconds=6;w.pollRefresh();await tick();await tick();
+  assert(!disclosure('View definition JSON').open,'Polling respects an explicitly closed disclosure');
+  disclosure('View definition JSON').open=true;
+  d.getElementById('project-activity-tab').click();await tick();d.getElementById('project-advanced-tab').click();await tick();
+  assert(disclosure('View definition JSON').open,'Returning to the same game preserves disclosure choices');
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Ship of Harkinian')).click();await tick();d.getElementById('project-advanced-tab').click();await tick();
+  assert(!disclosure('Executable configuration (JSON)').open,'Disclosure choices are not shared with another game');
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();d.getElementById('project-advanced-tab').click();await tick();
+  assert(disclosure('View definition JSON').open,'The original game keeps its own choice');
+  editable.projects[1].packaging.summary='Original summary';editable.catalog.age_seconds=9;w.pollRefresh();await tick();await tick();
   [...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Edit packaging definition').click();
   assert(d.getElementById('recipe-dialog').open);assert(!d.getElementById('editor-settings').hidden);
   const summary=d.getElementById('editor-summary');summary.value='My custom build';summary.dispatchEvent(new w.Event('input'));

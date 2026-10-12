@@ -29,6 +29,7 @@ let recipeProjectId = null;
 let editorOriginal = null, editorView = "settings", editorDirty = false;
 const automationDrafts = new Map();
 const inputDrafts = new Map();
+const projectDisclosures = new Map();
 let metadataProjectId = null;
 let coverProjectId = null;
 let coverChoice = null;
@@ -52,6 +53,11 @@ function el(tag, className, content) {
   const node = document.createElement(tag);
   if (className) node.className = className;
   if (content !== undefined && content !== null) (Array.isArray(content) ? content : [content]).forEach((child) => node.append(child instanceof Node ? child : document.createTextNode(String(child))));
+  return node;
+}
+function disclosure(key, className, content) {
+  const node = el("details", className, content);
+  node.dataset.disclosureKey = key;
   return node;
 }
 function button(label, className, action, disabled = false) {
@@ -469,12 +475,18 @@ function render() {
   const fingerprint = JSON.stringify([state, [...busy], route, activityView, settingsView, libraryLayout]);
   if (fingerprint === lastRender) return;
   lastRender = fingerprint;
+  // Moving the game pane while rebuilding the library also drops browser focus.
+  const content = $("project-content"), active = document.activeElement;
+  const focusedDisclosure = content.contains(active) && active.tagName === "SUMMARY" ? {view: content.dataset.viewKey, key: active.parentElement.dataset.disclosureKey} : null;
   $("nav-project-count").textContent = libraryGames().length;
   const unread = state.notifications.filter(notificationUnread).length;
   [$("nav-notification-count"), $("inbox-count")].forEach((node) => { node.textContent = unread; node.hidden = !unread; });
   renderLibrary(); renderActivity(); renderSettings();
   if (route.page === "project") renderProject();
   if ($("inbox-dialog").open) renderNotifications($("inbox-content"));
+  if (focusedDisclosure && content.dataset.viewKey === focusedDisclosure.view) {
+    [...content.querySelectorAll("details[data-disclosure-key]")].find(node => node.dataset.disclosureKey === focusedDisclosure.key)?.querySelector("summary")?.focus({preventScroll: true});
+  }
 }
 function processNotifications() {
   if (!notificationsInitialized) { state.notifications.forEach((item) => seenNotifications.add(String(item.id))); notificationsInitialized = true; return; }
@@ -536,6 +548,15 @@ function markAllRead() { return runAction("read-all", "/api/notifications/read-a
 function renderProject() {
   const project = projectById(route.projectId);
   const heading = $("project-heading"), content = $("project-content");
+  // Polling replaces this page. Keep reading state scoped to the previous game
+  // and tab, including sections the user deliberately collapsed.
+  const previousView = content.dataset.viewKey;
+  if (previousView) content.querySelectorAll("details[data-disclosure-key]").forEach(node => {
+    projectDisclosures.set(`${previousView}:${node.dataset.disclosureKey}`, node.open);
+  });
+  const focusedSummary = content.contains(document.activeElement) && document.activeElement.tagName === "SUMMARY" ? document.activeElement.parentElement.dataset.disclosureKey : null;
+  const viewKey = `${route.projectId}/${route.tab}`;
+  content.dataset.viewKey = viewKey;
   const focused = content.contains(document.activeElement) && document.activeElement.id ? { id: document.activeElement.id, start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;
   const openJobs = new Set([...content.querySelectorAll("details[open][data-job-id]")].map((node) => node.dataset.jobId));
   heading.replaceChildren(); content.replaceChildren();
@@ -559,6 +580,11 @@ function renderProject() {
     renderBuildDiagnostics(project, content, openJobs); renderVersions(project, content); renderProjectActivity(project, content);
   }
   if (route.tab === "advanced") renderAdvanced(project, content, openJobs);
+  content.querySelectorAll("details[data-disclosure-key]").forEach(node => {
+    const key = `${viewKey}:${node.dataset.disclosureKey}`;
+    if (projectDisclosures.has(key)) node.open = projectDisclosures.get(key);
+    if (previousView === viewKey && focusedSummary === node.dataset.disclosureKey) node.querySelector("summary")?.focus({preventScroll: true});
+  });
   if (focused && $(focused.id)) { $(focused.id).focus({ preventScroll: true }); if (focused.start !== null && focused.start !== undefined && typeof $(focused.id).setSelectionRange === "function") $(focused.id).setSelectionRange(focused.start, focused.end); }
 }
 function renderOverview(project, content) {
@@ -591,7 +617,7 @@ function renderOverview(project, content) {
     row.append(info, actions); packageCard.append(row);
     if (artifact || roms.length) packageCard.append(downloadDetails(artifact, artifact ? null : roms[0]));
     if (!artifact && roms.some((rom) => rom.summary)) {
-      const notes = el("details", "import-testing-notes", [el("summary", "", `${targetLabels[target] || target}: testing & launch notes`), ...roms.filter((rom) => rom.summary).map((rom) => el("p", "field-help", rom.summary))]);
+      const notes = disclosure(`import-notes:${target}`, "import-testing-notes", [el("summary", "", `${targetLabels[target] || target}: testing & launch notes`), ...roms.filter((rom) => rom.summary).map((rom) => el("p", "field-help", rom.summary))]);
       packageCard.append(notes);
     }
   });
@@ -705,7 +731,7 @@ function renderVersions(project, content) {
     if (!artifact.demo && !project.demo) actions.append(button("Record test result", "table-action", () => openValidation(artifact)));
     if (!artifact.demo && !["in_romm", "uploading"].includes(artifact.romm?.status)) actions.append(button(artifact.romm?.status === "failed" ? "Retry RomM upload" : "Send to RomM", "table-action", () => publishToRomM(artifact.id), busy.has(`romm-${artifact.id}`) || !rommReady()));
     if (artifact.romm?.rom_id && rommConfig().url) { const link = el("a", "table-action", "Open in RomM"); link.href = `${rommConfig().url}/rom/${artifact.romm.rom_id}`; link.target = "_blank"; link.rel = "noopener noreferrer"; actions.append(link); }
-    if (!artifact.published) actions.append(el("details", "advanced-copy", [el("summary", "table-action", "Advanced transfer"), button("Copy to local library folder", "table-action", () => publishArtifact(artifact.id), busy.has(`publish-${artifact.id}`))]));
+    if (!artifact.published) actions.append(disclosure(`archive-transfer:${artifact.id}`, "advanced-copy", [el("summary", "table-action", "Advanced transfer"), button("Copy to local library folder", "table-action", () => publishArtifact(artifact.id), busy.has(`publish-${artifact.id}`))]));
     list.append(el("article", "version-card", [el("div", "version-heading", [el("h3", "", artifact.version || "Archived version"), targetPill(artifact.target)]), el("div", "version-labels", labels), el("div", "version-meta", [el("span", "", bytes(artifact.size)), el("span", "", dateLabel(artifact.created_at))]), ...(artifact.validation?.notes ? [el("p", "version-description", artifact.validation.notes)] : !artifact.demo && !project.demo && validationLevel(artifact) === "packaged" ? [el("p", "version-description", "Confirm gameplay after trying this package to select it as a known-good version.")] : []), actions]));
   });
   content.append(el("p", "section-intro", "Publish to RomM uploads a package through RomM's API; older versions stay in RomM as separate files. Copying an older version to the local library folder rolls that folder back. Pinned and known-good packages are protected from retention cleanup."), el("div", "inline-actions", button("Retention settings →", "text-button", () => navigateProject(project.id))), list);
@@ -767,7 +793,7 @@ function definitionInstructions(project) {
   group("1. Upstream & release rules", [repoLink(definition.upstream.repository), ...(definition.upstream.documentation || []).map((url) => el("p", "", externalLink(url.replace(/^https:\/\//, "") + " ↗", url))),
     el("p", "field-help", `${rules.stable_only === false ? "Pre-releases are allowed" : "Stable releases only"}${rules.tag_pattern ? ` · the tag must match ${rules.tag_pattern}` : ""}`), ...(rules.notes ? [el("p", "field-help", rules.notes)] : [])]);
   const downloads = Object.entries(definition.downloads || {}).map(([key, item]) => el("p", "", [el("strong", "", `${key}${item.platform && item.platform !== "any" ? " · " + (targetLabels[item.platform] || item.platform) : ""}: `), item.repository ? `${item.repository} ${item.tag} · ${item.asset} · SHA-256 ${item.sha256}` : `the release file matching ${item.asset_pattern}`, item.required_members?.length ? el("span", "field-help", ` · must contain ${item.required_members.join(", ")}`) : "", item.description ? el("span", "field-help", ` · ${item.description}`) : ""]));
-  (definition.verified_releases || []).forEach((release) => downloads.push(el("details", "diagnostics-list", [el("summary", "table-action", `Reviewed release ${release.release}: file checksums`), ...Object.entries(release.assets || {}).map(([name, hash]) => el("p", "field-help", `${name} · SHA-256 ${hash}`)), ...(release.evidence ? [el("p", "field-help", release.evidence)] : [])])));
+  (definition.verified_releases || []).forEach((release) => downloads.push(disclosure(`reviewed-release:${release.release}`, "diagnostics-list", [el("summary", "table-action", `Reviewed release ${release.release}: file checksums`), ...Object.entries(release.assets || {}).map(([name, hash]) => el("p", "field-help", `${name} · SHA-256 ${hash}`)), ...(release.evidence ? [el("p", "field-help", release.evidence)] : [])])));
   if (!downloads.length) downloads.push(el("p", "field-help", definition.runner === "profile" ? "The reviewed profile pins its runtime downloads; see the reviewed release checksums." : "No release files are selected."));
   group("2. Selected downloads & checksums", downloads);
   group("3. Your game files", inputsSection(project));
@@ -928,11 +954,11 @@ function renderAdvanced(project, content, openJobs) {
   if (!project.packaging) configuration.append(el("div", "detail-facts", [meta("Packaging method", project.recipe?.mode || "capture"), meta("Automatic build", project.auto_build ? "Enabled" : "Disabled"), meta("Automatic local library copy", project.auto_publish ? "Enabled" : "Disabled"), meta("Polling interval", `${project.poll_minutes || 60} minutes`)]));
   configuration.append(externalLink("Configuration reference ↗", "https://github.com/Crimson3076/portkeeper/blob/main/docs/PACKAGING.md"));
   configuration.append(button(project.packaging ? "Edit packaging definition" : "Edit packaging instructions", "button secondary small", () => openRecipe(project.id)));
-  const json = el("details", "diagnostics-list"); json.append(el("summary", "table-action", project.packaging ? "View definition JSON" : "Executable configuration (JSON)"), el("pre", "json-preview", JSON.stringify(project.packaging || project.recipe || captureRecipe, null, 2))); configuration.append(json);
+  const json = disclosure("configuration-json", "diagnostics-list"); json.append(el("summary", "table-action", project.packaging ? "View definition JSON" : "Executable configuration (JSON)"), el("pre", "json-preview", JSON.stringify(project.packaging || project.recipe || captureRecipe, null, 2))); configuration.append(json);
   if (project.packaging) {
     const source = project.definition_source;
     configuration.append(el("p", "field-help", source ? `Based on ${source.kind} revision ${source.revision}. Current revision ${project.packaging.revision}. Edits apply to this game only.` : "This game's own definition. Edits apply to this game only."));
-    const history = el("details", "diagnostics-list", el("summary", "table-action", "Saved revisions (last 20)"));
+    const history = disclosure("configuration-history", "diagnostics-list", el("summary", "table-action", "Saved revisions (last 20)"));
     (project.definition_history || []).slice().reverse().forEach(record => history.append(el("div", "inline-actions", [el("span", "field-help", `Revision ${record.definition.revision} · ${dateLabel(record.saved_at)}`), button("Review & restore", "button secondary small", () => { openRecipe(project.id); $("recipe-json").value = JSON.stringify(record.definition, null, 2); editorDirty = true; switchEditor("changes"); })])));
     if (!(project.definition_history || []).length) history.append(el("p", "field-help", "Your previous definition is saved here when you edit it. Restoring creates a new revision; existing packages are unchanged."));
     configuration.append(history);
@@ -958,7 +984,7 @@ function renderAdvanced(project, content, openJobs) {
 function renderBuildDiagnostics(project, content, openJobs) {
   const diagnostic = el("section", "detail-card", [el("h2", "", "Build progress & logs"), el("p", "detail-note", "Detailed logs and errors for troubleshooting a game step.")]);
   const jobs = projectJobs(project.id); const logs = el("div", "diagnostics-list");
-  jobs.forEach((job) => { const details = el("details", "job-panel"); details.dataset.jobId = job.id; details.open = openJobs.has(String(job.id)) || String(job.id) === String(selectedJobId); details.append(el("summary", "", [targetPill(job.target || "capture"), el("span", "", job.version || "Update check"), statusBadge(jobStage(job)), el("span", "job-date", dateLabel(job.created_at))]), el("pre", "", (Array.isArray(job.logs) ? job.logs.join("\n") : String(job.logs || "Waiting for log output…")) + (job.error ? `\n\nError: ${job.error}` : ""))); if (job.status === "failed") details.append(button("Retry failed step", "button secondary small", () => retryJob(job.id), busy.has(`retry-${job.id}`))); logs.append(details); });
+  jobs.forEach((job) => { const details = disclosure(`job:${job.id}`, "job-panel"); details.dataset.jobId = job.id; details.open = openJobs.has(String(job.id)) || String(job.id) === String(selectedJobId); details.append(el("summary", "", [targetPill(job.target || "capture"), el("span", "", job.version || "Update check"), statusBadge(jobStage(job)), el("span", "job-date", dateLabel(job.created_at))]), el("pre", "", (Array.isArray(job.logs) ? job.logs.join("\n") : String(job.logs || "Waiting for log output…")) + (job.error ? `\n\nError: ${job.error}` : ""))); if (job.status === "failed") details.append(button("Retry failed step", "button secondary small", () => retryJob(job.id), busy.has(`retry-${job.id}`))); logs.append(details); });
   diagnostic.append(jobs.length ? logs : el("p", "detail-empty", "No diagnostics yet.")); content.append(diagnostic);
 
 }
@@ -1728,7 +1754,7 @@ function draftCard(project) {
   card.append(actions);
   if (draftPrompts.has(id)) {
     const preview = el("textarea", "prompt-preview"); preview.id = `draft-prompt-${id}`; preview.readOnly = true; preview.value = draftPrompts.get(id);
-    card.append(el("details", "diagnostics-list", [el("summary", "table-action", "Show the prompt"), preview]));
+    card.append(disclosure("draft-prompt", "diagnostics-list", [el("summary", "table-action", "Show the prompt"), preview]));
   }
   const paste = el("textarea", "assistant-prompt"); paste.id = `draft-import-${id}`; paste.rows = 4; paste.placeholder = "Paste the JSON answer here"; paste.value = draftImports.get(id) || "";
   paste.addEventListener("input", () => draftImports.set(id, paste.value));
@@ -1746,7 +1772,7 @@ function renderProposalReview(card, project, proposal) {
   card.append(el("div", "detail-facts", [meta("Platforms", definition.targets.map((target) => targetLabels[target] || target).join(", ")), meta("Your files", definition.inputs.filter((item) => item.required !== false).map((item) => item.label).join("; ") || "None"), meta("First launch", view.first_run?.text || "Not stated", true)]));
   if (view.steps?.length) card.append(el("h3", "", "Build steps"), el("ol", "instruction-steps", view.steps.map((step) => el("li", "", step.text))));
   if (proposal.warnings?.length) card.append(el("h3", "", "Check before approving"), el("ul", "review-problems", proposal.warnings.map((warning) => el("li", "", warning))));
-  card.append(el("details", "diagnostics-list", [el("summary", "table-action", "View definition JSON"), el("pre", "proposal-json", JSON.stringify(definition, null, 2))]));
+  card.append(disclosure(`draft-definition:${proposal.id}`, "diagnostics-list", [el("summary", "table-action", "View definition JSON"), el("pre", "proposal-json", JSON.stringify(definition, null, 2))]));
   card.append(el("div", "inline-actions", [button(busy.has(`approve-${proposal.id}`) ? "Approving…" : "Approve", "button primary small", () => approveDraft(proposal, project), busy.has(`approve-${proposal.id}`)), button("Discard", "button secondary small", () => runAction(`discard-${proposal.id}`, `/api/proposals/${encodeURIComponent(proposal.id)}/discard`, {}, "Draft discarded."))]));
   card.append(el("p", "quiet-note", "After approving, use Build packages to run a test build. A failed build changes nothing else."));
 }
