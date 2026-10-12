@@ -126,6 +126,17 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   disclosure('View definition JSON').open=false;editable.catalog.age_seconds=6;w.pollRefresh();await tick();await tick();
   assert(!disclosure('View definition JSON').open,'Polling respects an explicitly closed disclosure');
   disclosure('View definition JSON').open=true;
+  const stablePreview=disclosure('View definition JSON').querySelector('pre');stablePreview.scrollTop=80;stablePreview.scrollLeft=20;
+  const range=d.createRange();range.setStart(stablePreview.firstChild,5);range.setEnd(stablePreview.firstChild,45);w.getSelection().removeAllRanges();w.getSelection().addRange(range);const selected=w.getSelection().toString();
+  editable.catalog.age_seconds=7;w.pollRefresh();await tick();await tick();
+  assert.equal(disclosure('View definition JSON').querySelector('pre'),stablePreview,'Age-only polls retain the JSON DOM');assert.equal(w.getSelection().toString(),selected);
+  editable.jobs=[{id:id(55),project_id:id(2),target:'capture',status:'running',stage:'checking',logs:['New log'],created_at:'2026-10-12T12:00:00Z'}];w.pollRefresh();await tick();await tick();
+  const refreshedPreview=disclosure('View definition JSON').querySelector('pre');assert.equal(w.getSelection().toString(),selected,'Actual job updates preserve selected JSON text');assert.equal(refreshedPreview.scrollTop,80);assert.equal(refreshedPreview.scrollLeft,20);
+  let copied=null;Object.defineProperty(w.navigator,'clipboard',{configurable:true,value:{writeText:async text=>{copied=text;}}});
+  disclosure('View definition JSON').querySelector('button').click();await tick();assert.equal(copied,refreshedPreview.textContent,'Viewer copies the complete displayed JSON');
+  Object.defineProperty(w.navigator,'clipboard',{configurable:true,value:undefined});d.execCommand=command=>{assert.equal(command,'copy');copied=d.querySelector('.clipboard-buffer').value;return true;};
+  disclosure('View definition JSON').querySelector('button').click();await tick();assert.equal(copied,refreshedPreview.textContent,'Copy fallback works without the secure Clipboard API');assert(!d.querySelector('.clipboard-buffer'));
+  editable.jobs=[];w.pollRefresh();await tick();await tick();
   d.getElementById('project-activity-tab').click();await tick();d.getElementById('project-advanced-tab').click();await tick();
   assert(disclosure('View definition JSON').open,'Returning to the same game preserves disclosure choices');
   [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Ship of Harkinian')).click();await tick();d.getElementById('project-advanced-tab').click();await tick();
@@ -137,6 +148,7 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   assert(d.getElementById('recipe-dialog').open);assert(!d.getElementById('editor-settings').hidden);
   const summary=d.getElementById('editor-summary');summary.value='My custom build';summary.dispatchEvent(new w.Event('input'));
   d.getElementById('editor-json-tab').click();
+  d.getElementById('recipe-copy').click();await tick();assert.equal(copied,d.getElementById('recipe-json').value,'Editor Copy includes the current draft');
   let draft=JSON.parse(d.getElementById('recipe-json').value);assert.equal(draft.summary,'My custom build');assert.deepEqual(draft.custom_preserved,{nested:true});
   d.getElementById('editor-changes-tab').click();assert(d.getElementById('recipe-diff').textContent.includes('Original summary'));assert(d.getElementById('recipe-diff').textContent.includes('My custom build'));
   const before=requests.length;d.getElementById('recipe-validate').click();await tick();

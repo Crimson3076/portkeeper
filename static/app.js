@@ -42,6 +42,7 @@ let retentionReview = null;
 let recipeProposal = null;
 let refreshing = false;
 let lastRender = null;
+let lastProjectRender = null;
 let notificationsInitialized = false;
 let formConfigFingerprint = null;
 let wizard = null;
@@ -61,6 +62,52 @@ function disclosure(key, className, content) {
   const node = el("details", className, content);
   node.dataset.disclosureKey = key;
   return node;
+}
+function jsonViewer(key, value, className = "json-preview") {
+  const preview = el("pre", className, JSON.stringify(value, null, 2)); preview.dataset.jsonKey = key;
+  const copy = button("Copy JSON", "button secondary small", () => copyJson(preview.textContent, copy));
+  return el("div", "json-viewer", [el("div", "inline-actions", copy), preview]);
+}
+async function copyJson(text, control) {
+  const active = document.activeElement, selection = window.getSelection();
+  const range = selection?.rangeCount ? selection.getRangeAt(0).cloneRange() : null;
+  const caret = active && typeof active.selectionStart === "number" ? {start:active.selectionStart, end:active.selectionEnd, direction:active.selectionDirection, top:active.scrollTop, left:active.scrollLeft} : null;
+  const dialog = control.closest("dialog"), dialogScroll = dialog?.scrollTop;
+  let copied = false;
+  try { if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); copied = true; } } catch (_) { /* Plain HTTP or denied clipboard permission: use the click-initiated fallback. */ }
+  if (!copied) {
+    const buffer = el("textarea", "clipboard-buffer"); buffer.value = text; buffer.readOnly = true; buffer.tabIndex = -1; buffer.setAttribute("aria-hidden", "true");
+    (dialog || document.body).append(buffer);
+    try { buffer.focus({preventScroll:true}); buffer.select(); copied = Boolean(document.execCommand?.("copy")); } catch (_) { copied = false; }
+    finally {
+      buffer.remove(); active?.focus({preventScroll:true});
+      if (caret) { active.setSelectionRange(caret.start, caret.end, caret.direction); active.scrollTop = caret.top; active.scrollLeft = caret.left; }
+      if (range) { selection.removeAllRanges(); selection.addRange(range); }
+      if (dialog) dialog.scrollTop = dialogScroll;
+    }
+  }
+  if (copied) { const label = control.textContent; control.textContent = "Copied!"; setTimeout(() => { control.textContent = label; }, 2000); }
+  else toast("Clipboard access is unavailable. Select the JSON and copy it with your browser, or use Export JSON.", true);
+}
+function jsonReadingState(content) {
+  const panes = [...content.querySelectorAll("pre[data-json-key]")].map(node => ({key:node.dataset.jsonKey, text:node.textContent, top:node.scrollTop, left:node.scrollLeft}));
+  const selection = window.getSelection(), start = selection?.anchorNode, end = selection?.focusNode;
+  const preview = start?.parentElement?.closest("pre[data-json-key]");
+  const range = selection && !selection.isCollapsed && preview && content.contains(preview) && preview.contains(end) && start === preview.firstChild && end === preview.firstChild ? {key:preview.dataset.jsonKey, text:preview.textContent, anchor:selection.anchorOffset, focus:selection.focusOffset} : null;
+  return {panes, range, view:content.dataset.viewKey, x:window.scrollX, y:window.scrollY};
+}
+function restoreJsonReading(content, saved) {
+  if (saved.view !== content.dataset.viewKey) return;
+  content.querySelectorAll("pre[data-json-key]").forEach(node => {
+    const pane = saved.panes.find(item => item.key === node.dataset.jsonKey);
+    if (saved.range?.key === node.dataset.jsonKey && saved.range.text === node.textContent) {
+      const selection = window.getSelection(), text = node.firstChild;
+      if (selection.setBaseAndExtent) selection.setBaseAndExtent(text, saved.range.anchor, text, saved.range.focus);
+      else { const range = document.createRange(); range.setStart(text, Math.min(saved.range.anchor,saved.range.focus)); range.setEnd(text,Math.max(saved.range.anchor,saved.range.focus)); selection.removeAllRanges(); selection.addRange(range); }
+    }
+    if (pane) { node.scrollTop = pane.top; node.scrollLeft = pane.left; }
+  });
+  if (saved.range || content.querySelector("details[open] pre[data-json-key]")) window.scrollTo(saved.x, saved.y);
 }
 function button(label, className, action, disabled = false) {
   const node = el("button", className, label);
@@ -286,7 +333,7 @@ function table(headers, rows) {
 function rommConfig() { return state.romm || state.settings?.romm || {}; }
 function rommReady() { const config = rommConfig(); return Boolean(config.url && (config.token_configured || config.has_token)); }
 function notificationTitle(notification) {
-  const names = { ready: "Package ready", build_failed: "Build needs attention", needs_input: "Game input required", upstream_unavailable: "Upstream unavailable", needs_review: "Release needs review" };
+  const names = { ready: "Package ready", build_failed: "Build needs attention", needs_input: "Game input required", upstream_unavailable: "Upstream unavailable", needs_review: "Release needs review", new_platform: "New platform release" };
   const title = notification.title || names[notification.kind] || "Game update";
   return notification.project_name ? `${notification.project_name} · ${title}` : title;
 }
@@ -312,7 +359,10 @@ function renderRoute() {
 }
 function restoreProjectPage() { if (projectPageElement.parentElement !== projectPageHome) projectPageHome.insertBefore(projectPageElement, projectPageHome.querySelector("footer")); }
 function renderLibrary() {
-  restoreProjectPage();
+  const grid = $("project-grid");
+  const workspaceActive = libraryLayout === "workspace" && ["library", "project"].includes(route.page);
+  const retainedMain = workspaceActive && projectPageElement.parentElement.classList.contains("workspace-game-main") && projectPageElement.parentElement.parentElement === grid ? projectPageElement.parentElement : null;
+  if (!retainedMain) restoreProjectPage();
   const games = libraryGames();
   $("library-page").dataset.layout = libraryLayout;
   games.forEach((project) => { void loadImports(project); });
@@ -321,11 +371,11 @@ function renderLibrary() {
   const attention = games.filter(gameNeedsAttention).length;
   $("summary-attention").textContent = attention;
   $("attention-summary").classList.toggle("attention-active", attention > 0);
-  const grid = $("project-grid"); grid.replaceChildren(); grid.className = `project-grid layout-${libraryLayout}`;
-  const workspaceActive = libraryLayout === "workspace" && ["library", "project"].includes(route.page);
+  if (!retainedMain) grid.replaceChildren(); grid.className = `project-grid layout-${libraryLayout}`;
   if (workspaceActive) $("library-page").hidden = false;
   $("library-results").textContent = "0 games";
   if (!state.projects.length) {
+    if (retainedMain) { restoreProjectPage(); grid.replaceChildren(); }
     const empty = emptyState("▦", "A home for your next playthrough", "Connect your RomM library, choose a game, and preserve its updates.");
     empty.append(el("div", "onboarding-steps", [el("span", "", [el("b", "", "1"), "Connect RomM"]), el("span", "", [el("b", "", "2"), "Select a game"]), el("span", "", [el("b", "", "3"), "Test a build"])]));
     empty.append(button("Set up your first game →", "button primary", openAddGame), button("Explore with a synthetic demo", "text-button", () => navigateSettings("demo")));
@@ -337,6 +387,7 @@ function renderLibrary() {
     return `${project.name} ${project.repo || ""}`.toLowerCase().includes(librarySearch.toLowerCase()) && (!libraryPlatform || gameTargets(project).includes(libraryPlatform)) && (!libraryStage || (libraryStage === "packages" ? hasPackages : libraryStage === "source" ? project.recipe?.mode === "capture" : needsAttention));
   });
   $("library-results").textContent = `${matches.length} of ${games.length} games`;
+  if (!matches.length && retainedMain) { restoreProjectPage(); grid.replaceChildren(); }
   if (!matches.length) grid.append(emptyState("⌕", "No games match", "Try another search or choose All platforms and All games."));
   if (workspaceActive && matches.length) {
     const chosen = projectById(route.projectId) || projectById(workspaceProjectId) || matches.find((item) => item.profile) || matches[0];
@@ -352,8 +403,9 @@ function renderLibrary() {
       choose.append(el("span", "", [el("strong", "", project.name), el("small", "", gameAvailability(project))]));
       sidebar.append(choose);
     });
-    const main = el("div", "workspace-game-main", projectPageElement);
-    grid.append(sidebar, main); projectPageElement.hidden = false; renderProject(); return;
+    if (retainedMain) grid.querySelector(".workspace-game-list").replaceWith(sidebar);
+    else grid.append(sidebar, el("div", "workspace-game-main", projectPageElement));
+    projectPageElement.hidden = false; renderProject(); return;
   }
   projectPageElement.hidden = route.page !== "project";
   matches.forEach((project) => {
@@ -550,6 +602,10 @@ function markAllRead() { return runAction("read-all", "/api/notifications/read-a
 function renderProject() {
   const project = projectById(route.projectId);
   const heading = $("project-heading"), content = $("project-content");
+  const fingerprint = JSON.stringify([route.projectId, route.tab, state.projects, state.jobs, state.artifacts, state.proposals, state.playtests, state.activity, state.assistant, state.runner, state.romm, state.settings, [...rommImports], [...rommImportsLoading], [...busy], [...assistantPromptDrafts], [...retentionDrafts], [...automationDrafts], [...inputDrafts], [...platformDetections], [...platformSelections], [...draftImports], [...draftPrompts], [...preservationCache], [...preservationLoading], selectedJobId]);
+  if (fingerprint === lastProjectRender) return;
+  lastProjectRender = fingerprint;
+  const reading = jsonReadingState(content);
   // Polling replaces this page. Keep reading state scoped to the previous game
   // and tab, including sections the user deliberately collapsed.
   const previousView = content.dataset.viewKey;
@@ -588,6 +644,7 @@ function renderProject() {
     if (previousView === viewKey && focusedSummary === node.dataset.disclosureKey) node.querySelector("summary")?.focus({preventScroll: true});
   });
   if (focused && $(focused.id)) { $(focused.id).focus({ preventScroll: true }); if (focused.start !== null && focused.start !== undefined && typeof $(focused.id).setSelectionRange === "function") $(focused.id).setSelectionRange(focused.start, focused.end); }
+  restoreJsonReading(content, reading);
 }
 function renderOverview(project, content) {
   const grid = el("div", "detail-grid"), left = el("div"), right = el("div");
@@ -855,25 +912,28 @@ function automationCard(project) {
   const card = el("section", "detail-card", [el("h2", "", "Automation"), el("p", "detail-note", "New releases are checked against this game's compatibility rules. Compatible ones can be packaged and published without you; anything unexpected is preserved and reported for review instead.")]);
   const autoBuild = input(`auto-build-${project.id}`, "checkbox"), autoPublish = input(`auto-publish-${project.id}`, "checkbox");
   const draft = automationDrafts.get(project.id) || project;
+  const autoDraft = input(`auto-platform-draft-${project.id}`, "checkbox"); autoDraft.checked = Boolean(draft.auto_draft_platforms); autoDraft.disabled = Boolean(project.profile);
   autoBuild.checked = Boolean(draft.auto_build); autoPublish.checked = Boolean(draft.auto_publish); autoPublish.disabled = !autoBuild.checked;
   const destination = el("select"); destination.id = `auto-destination-${project.id}`; destination.setAttribute("aria-label", "Automatic publication destination");
   [["romm", "Upload to RomM"], ["library", "Copy to the local library folder only"]].forEach(([value, label]) => { const option = el("option", "", label); option.value = value; destination.append(option); });
   destination.value = draft.auto_publish_destination || "romm"; destination.disabled = !autoPublish.checked;
   autoBuild.addEventListener("change", () => { autoPublish.disabled = !autoBuild.checked; if (!autoBuild.checked) autoPublish.checked = false; destination.disabled = !autoPublish.checked; });
   autoPublish.addEventListener("change", () => { destination.disabled = !autoPublish.checked; });
-  const remember = () => automationDrafts.set(project.id, {auto_build: autoBuild.checked, auto_publish: autoPublish.checked, auto_publish_destination: destination.value});
-  [autoBuild, autoPublish, destination].forEach(node => node.addEventListener("change", remember));
+  const remember = () => automationDrafts.set(project.id, {auto_build: autoBuild.checked, auto_publish: autoPublish.checked, auto_publish_destination: destination.value, auto_draft_platforms: autoDraft.checked});
+  [autoBuild, autoPublish, destination, autoDraft].forEach(node => node.addEventListener("change", remember));
   const capture = project.packaging?.runner === "capture" || project.recipe?.mode === "capture";
   if (capture) { autoBuild.disabled = true; autoPublish.disabled = true; destination.disabled = true; }
   card.append(el("label", "checkbox-line", [autoBuild, "Automatically build compatible new releases"]), el("label", "checkbox-line", [autoPublish, "Automatically publish successful packages"]), destination,
     el("p", "field-help", "RomM uploads use RomM's upload API and need a token with roms.write. RomM adds the file to its library after its filesystem watcher rescans; Portkeeper confirms the new entry. A local library folder copy reaches RomM only if that folder is RomM's own platform folder."),
     el("p", "field-help", capture ? "This game preserves releases only, so automatic builds are unavailable until it has packaging steps." : `Checks upstream every ${project.poll_minutes || 60} minutes.`),
-    el("div", "inline-actions", button("Save automation", "button secondary small", () => saveAutomation(project.id, autoBuild.checked, autoPublish.checked, destination.value), busy.has(`automation-${project.id}`) || capture)));
+    el("label", "checkbox-line", [autoDraft, "Automatically draft steps for newly released platforms"]),
+    el("p", "field-help", "Release checks notify you when a new OS download appears. Optional automatic drafting uses your connected model and waits for approval; it never enables or builds the new platform by itself. Reviewed profiles keep their fixed execution."),
+    el("div", "inline-actions", button("Save automation", "button secondary small", () => saveAutomation(project.id, autoBuild.checked, autoPublish.checked, destination.value, autoDraft.checked), busy.has(`automation-${project.id}`))));
   return card;
 }
-async function saveAutomation(id, autoBuild, autoPublish, destination) {
+async function saveAutomation(id, autoBuild, autoPublish, destination, autoDraft = false) {
   busy.add(`automation-${id}`); render();
-  try { await api(`/api/projects/${encodeURIComponent(id)}`, { method: "PATCH", body: { auto_build: autoBuild, auto_publish: autoBuild && autoPublish, auto_publish_destination: destination } }); automationDrafts.delete(id); toast("Automation settings saved."); await refresh(); }
+  try { await api(`/api/projects/${encodeURIComponent(id)}`, { method: "PATCH", body: { auto_build: autoBuild, auto_publish: autoBuild && autoPublish, auto_publish_destination: destination, auto_draft_platforms: autoDraft } }); automationDrafts.delete(id); toast("Automation settings saved."); await refresh(); }
   catch (error) { toast(error.message, true); }
   finally { busy.delete(`automation-${id}`); render(); }
 }
@@ -956,7 +1016,7 @@ function platformEvidence(detection) {
   if (!detection.platforms?.length) notes.append(el("p", "field-help", "No platform evidence found. Choose platforms manually; Portkeeper will not assume Windows and Linux."));
   (detection.platforms || []).forEach(platform => {
     const evidence = platform.evidence || [], released = evidence.some(item => item.kind === "release");
-    notes.append(el("p", "field-help", [el("strong", "", `${platform.label}: `), released ? "Release download found. " : "Documentation or catalog instructions found; no matching release download. ", platform.packaging_supported ? "" : "Detected, but this Portkeeper runner cannot package this OS yet. "]));
+    notes.append(el("p", "field-help", [el("strong", "", `${platform.label}: `), released ? "Release download found. " : platform.support === "mentioned" ? "Referenced in documentation; native support is not established. " : "Build instructions found; no matching release download. ", platform.packaging_supported ? "" : "Detected, but this Portkeeper runner cannot package this OS yet. "]));
     const detail = disclosure(`platform-evidence:${platform.id}`, "diagnostics-list", [el("summary", "table-action", `Why ${platform.label} was detected`), ...evidence.map(item => el("p", "field-help", `${item.source}: ${item.detail}`))]);
     notes.append(detail);
   });
@@ -1006,7 +1066,7 @@ function renderAdvanced(project, content, openJobs) {
   if (!project.packaging) configuration.append(el("div", "detail-facts", [meta("Packaging method", project.recipe?.mode || "capture"), meta("Automatic build", project.auto_build ? "Enabled" : "Disabled"), meta("Automatic local library copy", project.auto_publish ? "Enabled" : "Disabled"), meta("Polling interval", `${project.poll_minutes || 60} minutes`)]));
   configuration.append(externalLink("Configuration reference ↗", "https://github.com/Crimson3076/portkeeper/blob/main/docs/PACKAGING.md"));
   configuration.append(button(project.packaging ? "Edit packaging definition" : "Edit packaging instructions", "button secondary small", () => openRecipe(project.id)));
-  const json = disclosure("configuration-json", "diagnostics-list"); json.append(el("summary", "table-action", project.packaging ? "View definition JSON" : "Executable configuration (JSON)"), el("pre", "json-preview", JSON.stringify(project.packaging || project.recipe || captureRecipe, null, 2))); configuration.append(json);
+  const json = disclosure("configuration-json", "diagnostics-list"); json.append(el("summary", "table-action", project.packaging ? "View definition JSON" : "Executable configuration (JSON)"), jsonViewer("configuration", project.packaging || project.recipe || captureRecipe)); configuration.append(json);
   if (project.packaging) {
     const source = project.definition_source;
     configuration.append(el("p", "field-help", source ? `Based on ${source.kind} revision ${source.revision}. Current revision ${project.packaging.revision}. Edits apply to this game only.` : "This game's own definition. Edits apply to this game only."));
@@ -1428,7 +1488,7 @@ async function draftProposal(id) {
   const result = await runAction(`proposal-${id}`, `/api/projects/${encodeURIComponent(id)}/recipe-proposal`, { instruction: prompt }, ""); if (!result) return;
   recipeProposal = result.proposal || result; $("proposal-error").textContent = ""; $("proposal-confirm").checked = false; $("proposal-apply").disabled = true;
   const data = recipeProposal.recipe || recipeProposal.proposed_recipe;
-  const content = $("proposal-content"); content.replaceChildren(el("p", "dialog-intro", recipeProposal.summary || recipeProposal.explanation || "Review the complete proposed recipe. It will replace the saved recipe only after you apply it."), el("pre", "proposal-json", data ? JSON.stringify(data, null, 2) : recipeProposal.text || recipeProposal.content || "No recipe was returned."));
+  const content = $("proposal-content"); content.replaceChildren(el("p", "dialog-intro", recipeProposal.summary || recipeProposal.explanation || "Review the complete proposed recipe. It will replace the saved recipe only after you apply it."), data ? jsonViewer("recipe-proposal", data, "proposal-json") : el("pre", "proposal-json", recipeProposal.text || recipeProposal.content || "No recipe was returned."));
   const validation = recipeProposal.validation || {}; const errors = recipeProposal.errors || validation.errors || [];
   const valid = recipeProposal.valid !== false && validation.valid !== false && !errors.length && Boolean(data) && Boolean(recipeProposal.id);
   recipeProposal._reviewValid = valid;
@@ -1825,7 +1885,7 @@ function renderProposalReview(card, project, proposal) {
   card.append(el("div", "detail-facts", [meta("Platforms", definition.targets.map((target) => targetLabels[target] || target).join(", ")), meta("Your files", definition.inputs.filter((item) => item.required !== false).map((item) => item.label).join("; ") || "None"), meta("First launch", view.first_run?.text || "Not stated", true)]));
   if (view.steps?.length) card.append(el("h3", "", "Build steps"), el("ol", "instruction-steps", view.steps.map((step) => el("li", "", step.text))));
   if (proposal.warnings?.length) card.append(el("h3", "", "Check before approving"), el("ul", "review-problems", proposal.warnings.map((warning) => el("li", "", warning))));
-  card.append(disclosure(`draft-definition:${proposal.id}`, "diagnostics-list", [el("summary", "table-action", "View definition JSON"), el("pre", "proposal-json", JSON.stringify(definition, null, 2))]));
+  card.append(disclosure(`draft-definition:${proposal.id}`, "diagnostics-list", [el("summary", "table-action", "View definition JSON"), jsonViewer(`proposal:${proposal.id}`, definition, "proposal-json")]));
   card.append(el("div", "inline-actions", [button(busy.has(`approve-${proposal.id}`) ? "Approving…" : "Approve", "button primary small", () => approveDraft(proposal, project), busy.has(`approve-${proposal.id}`)), button("Discard", "button secondary small", () => runAction(`discard-${proposal.id}`, `/api/proposals/${encodeURIComponent(proposal.id)}/discard`, {}, "Draft discarded."))]));
   card.append(el("p", "quiet-note", "After approving, use Build packages to run a test build. A failed build changes nothing else."));
 }
@@ -1921,6 +1981,7 @@ $("settings-advanced-tab").addEventListener("click", () => { settingsView = "sto
 $("recipe-form").addEventListener("submit", submitRecipe);
 ["settings", "json", "changes"].forEach(view => $(`editor-${view}-tab`).addEventListener("click", () => switchEditor(view)));
 $("recipe-json").addEventListener("input", () => { editorDirty = true; $("recipe-validation").textContent = ""; });
+$("recipe-copy").addEventListener("click", () => copyJson($("recipe-json").value, $("recipe-copy")));
 $("recipe-format").addEventListener("click", () => { try { $("recipe-json").value = JSON.stringify(editorValue(), null, 2); } catch(error) { $("recipe-form-error").textContent = error.message; } });
 $("recipe-validate").addEventListener("click", validateEditor);
 $("recipe-import").addEventListener("click", () => $("recipe-file").click());

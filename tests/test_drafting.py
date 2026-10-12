@@ -93,6 +93,12 @@ class DraftingTests(unittest.TestCase):
             drafting.read_reply(json.dumps({"definition": bad}), PROJECT)
         self.assertIn("NEVER use stage_input for kind directory", drafting.FORMAT)
 
+    def test_draft_cannot_claim_linux_without_a_launcher(self):
+        ghost = definition()
+        del ghost["launch"]["linux"]
+        with self.assertRaisesRegex(Invalid, "Platform linux has no launch.command"):
+            drafting.check(ghost, PROJECT)
+
     def test_draft_cannot_silently_drop_a_selected_platform(self):
         with self.assertRaisesRegex(Invalid, "missing selected platforms: handheld"):
             drafting.check(definition(), {**PROJECT, "targets": ["linux", "windows", "handheld"]})

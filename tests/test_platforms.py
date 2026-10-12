@@ -22,7 +22,7 @@ class PlatformDetectionTests(unittest.TestCase):
         docs = [{"path": "README.md", "text": "# Supported platforms\n- Windows\n- Linux\n## Android build instructions\nInstall the Android SDK and compile the app."}]
         result = platforms.detect([{"name": "game-windows.zip"}], docs)
         by_id = {record["id"]: record for record in result["platforms"]}
-        self.assertEqual(result["suggested_targets"], ["linux", "windows"])
+        self.assertEqual(result["suggested_targets"], ["windows"])
         self.assertTrue(any(item["kind"] == "release" for item in by_id["windows"]["evidence"]))
         self.assertTrue(all(item["kind"] == "documentation" for item in by_id["linux"]["evidence"]))
         self.assertFalse(by_id["android"]["packaging_supported"])
@@ -31,6 +31,13 @@ class PlatformDetectionTests(unittest.TestCase):
         docs = [{"path": "README.md", "text": "A Windows port.\nLinux is not supported.\n## Supported platforms\n| Android | No |\n## Unsupported platforms\n- macOS\n## Roadmap\nBuild an Android port someday.\n## Credits\nSDL supports Linux and Android."}]
         self.assertEqual(platforms.detect([], docs)["suggested_targets"], ["windows"])
         self.assertEqual([record["id"] for record in platforms.detect([], docs)["platforms"]], ["windows"])
+
+    def test_windows_guide_comparing_linux_does_not_recommend_linux(self):
+        docs = [{"path": "packaging/windows/README.md", "text": "# Game on Windows\nThe port builds and runs natively on Windows with the same sources as on Linux.\n## What is different from Linux\n| Linux | Windows |\n| run.sh | run.py |\nBuild the runtime with Windows tools."}]
+        result = platforms.detect([{"name": "game-windows.zip"}], docs)
+        self.assertEqual(result["suggested_targets"], ["windows"])
+        linux = next(item for item in result["platforms"] if item["id"] == "linux")
+        self.assertEqual(linux["support"], "mentioned")
 
     def test_a_platform_heading_alone_does_not_imply_support(self):
         docs = [{"path": "README.md", "text": "## Linux\nNot supported yet.\n## Windows\nBuild using MSYS2."}]
@@ -70,5 +77,5 @@ class PlatformDetectionTests(unittest.TestCase):
             engine = Engine(Path(temp) / "data", github=github)
             self.addCleanup(engine.close)
             result = engine.github_lookup("example/game")
-            self.assertEqual(result["platforms"], ["linux", "windows"])
+            self.assertEqual(result["platforms"], ["windows"])
             self.assertEqual(result["platform_detection"]["platforms"][0]["evidence"][0]["kind"], "documentation")

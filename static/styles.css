@@ -76,3 +76,5 @@
 .settings-form label,.checkbox-line,.table-action,.text-button{font-size:14px}
 button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:3px solid var(--cyan);outline-offset:3px}
 @media(max-width:760px){.recipe-dialog{padding:20px}.tabs{flex-wrap:wrap;gap:12px}.tabs>button{font-size:14px}.field-help,.detail-note,.compact-note{font-size:14px}}
+
+.json-viewer>.inline-actions{margin:12px 0}.clipboard-buffer{position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0}

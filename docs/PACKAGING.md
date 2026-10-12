@@ -171,13 +171,16 @@ download are labeled as such and do not change its native result.
 
 ## Editing and restoring definitions
 
-The editor has Settings, JSON and Changes views of the same definition. Guided edits preserve all other fields. Validate checks structure and project compatibility without saving or building. JSON can be imported, formatted and exported. Saving a changed definition retains the previous content in Saved revisions (up to 20). Review & restore loads that content as a draft; saving creates a new revision. Catalog changes also open as a draft comparison, so local edits are never replaced just by opening the preview. Automation controls remain separate under Updates.
+The editor has Settings, JSON and Changes views of the same definition. Guided edits preserve all other fields. Validate checks structure and project compatibility without saving or building. JSON can be imported, formatted, copied and exported. **Copy JSON** copies the full definition or the editor's current unsaved text, including on an HTTP Unraid connection. Background updates preserve the JSON viewer's scroll and selection. Saving a changed definition retains the previous content in Saved revisions (up to 20). Review & restore loads that content as a draft; saving creates a new revision. Catalog changes also open as a draft comparison, so local edits are never replaced just by opening the preview. Automation controls remain separate under Updates.
 
 ## Platform detection and changing selections
 
 Custom game lookup reads release filenames and the release commit's README plus up to five
 linked first-party build guides. Detected platforms show the supporting filename or
-instruction. Android, macOS and iOS are reported separately; they are not translated into
+instruction. Suggestions prefer platforms with release downloads. If there are none,
+documented build instructions are suggested instead. References and comparisons with
+another OS are shown as mentions and do not establish support. A Windows-specific guide
+comparing its code with Linux therefore does not select Linux. Android, macOS and iOS are reported separately; they are not translated into
 Handheld and this runner does not package those OS targets. An architecture label such as
 ARM64 alone does not identify an operating system. Unknown support leaves the selection
 empty for a manual choice. Detection is a suggestion, not launch or gameplay verification;
@@ -188,6 +191,17 @@ loads suggestions from the latest release, and **Save platforms** applies your r
 selection without starting a build. A preserve-only game can add an omitted platform and
 then draft packaging steps again. For a game with packaging steps, only platforms already
 covered by those steps can be enabled; edit or redraft the definition before adding another.
+
+Scheduled release checks also watch for new OS downloads. The first successful check
+establishes a baseline; a later Linux, Windows or other OS download creates a notification
+without changing the platforms you build. Under **Updates**, opt into **Automatically draft
+steps for newly released platforms** to ask your connected model to prepare a draft when
+a new Linux or Windows download appears. This option is off by default and uses your
+model's normal usage or credits. Existing pending drafts take precedence. Review and
+approve the draft to enable the additional platform; detection and drafting alone never
+build or upload it. Android, macOS and iOS releases notify you but cannot be packaged by
+this runner. Detection depends on recognizable OS filenames; an unlabeled asset still
+needs a manual review.
 
 ## Draft path errors and game directories
 

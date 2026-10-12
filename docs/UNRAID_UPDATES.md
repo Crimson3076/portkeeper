@@ -29,7 +29,8 @@ container do not. Do not delete the app-data folder as part of updating.
 
 Open a game → **Advanced** → **Edit packaging definition**. Use **Settings** for
 common fields, **JSON** for the complete definition, and **Changes** to review the
-draft. Import/export work with ordinary JSON files. **Validate** checks the same
+draft. **Copy JSON** copies the current text, including unsaved edits, on HTTP as well
+as HTTPS connections. Import/export work with ordinary JSON files. **Validate** checks the same
 rules used for saving without building. Saving affects future builds and stores the
 previous definition in **Saved revisions** (up to 20). Review a previous revision
 and save it to restore its content as a new revision. Existing packages and their

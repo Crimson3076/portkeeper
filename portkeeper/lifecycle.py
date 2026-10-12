@@ -11,7 +11,7 @@ from .storage import now
 
 
 VALIDATION_LEVELS = ("packaged", "launch_checked", "user_confirmed_playable", "failed")
-NOTIFICATION_KINDS = ("ready", "build_failed", "needs_input", "upstream_unavailable", "needs_review")
+NOTIFICATION_KINDS = ("ready", "build_failed", "needs_input", "upstream_unavailable", "needs_review", "new_platform")
 
 
 def _component(value):

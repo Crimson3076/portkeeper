@@ -326,7 +326,7 @@ class Engine:
         if job.get("kind") == "publish":
             return self.publisher.queue(job["artifact_id"])
         if job.get("kind") == "draft":
-            return self.queue_draft(job["project_id"])
+            return self.queue_draft(job["project_id"], job.get("instruction", ""), targets=job.get("requested_targets"))
         project = self.store.get("projects", job["project_id"])
         if job["target"] == "capture":
             return self.check(project["id"], build_after=job.get("build_after", False), release_version=job.get("release_version"))
@@ -428,9 +428,12 @@ class Engine:
             raise Invalid("Select a verified project profile before using its fixed recipe")
         if auto_build and recipe["mode"] == "capture":
             raise Invalid("Configure a build recipe before enabling automatic builds")
+        auto_draft_platforms = config.get("auto_draft_platforms", False)
+        if not isinstance(auto_draft_platforms, bool):
+            raise Invalid("auto_draft_platforms must be true or false")
         checked = {"name": name, "repo": repo, "targets": targets,
                 "poll_minutes": interval, "auto_build": auto_build, "auto_publish": auto_publish, "recipe": recipe,
-                "packaging": definition, "input_bindings": bindings, "auto_publish_destination": destination}
+                "packaging": definition, "input_bindings": bindings, "auto_publish_destination": destination, "auto_draft_platforms": auto_draft_platforms}
         metadata = config.get("metadata")
         if metadata is not None:
             from .romm_identity import validate_identity
@@ -460,7 +463,7 @@ class Engine:
                 raise Busy("Wait for the running project job before editing its recipe")
             project = self.store.get("projects", project_id)
             allowed = {"name", "targets", "poll_minutes", "auto_build", "auto_publish", "recipe", "rom_source", "metadata",
-                       "packaging", "input_bindings", "auto_publish_destination"}
+                       "packaging", "input_bindings", "auto_publish_destination", "auto_draft_platforms"}
             if not isinstance(config, dict) or any(key not in allowed for key in config):
                 raise Invalid("Only name, targets, poll_minutes, automation, packaging, game files, recipe and metadata can be edited")
             config = self._definition_update(project, config)
@@ -748,6 +751,7 @@ class Engine:
             review = None
             if definition:
                 review = self.review_release(project, definition, capture, log)
+            self.watch_platform_releases(project, release, log)
             self.stage(jid, "complete", "Release preservation finished")
             if review and review["status"] == "needs_review":
                 if build_after or project["auto_build"]:
@@ -776,6 +780,34 @@ class Engine:
                                   str(error), jobid=jid, event_key=f"check:{project['id']}:{str(error)[:180]}")
         finally:
             self.release_claim(project["id"])
+
+    def watch_platform_releases(self, project, release, log):
+        """Notify on new OS release assets. Drafting is opt-in; never change live builds."""
+        from . import platforms
+        detected = platforms.detect(release.get("assets", []))
+        released = {item["id"] for item in detected["platforms"] if item["support"] == "released"}
+        current = self.store.get("projects", project["id"])
+        previous = current.get("platform_release_seen")
+        self.store.update("projects", project["id"], platform_release_seen=sorted(set(previous or []) | released))
+        if previous is None:
+            return  # The first successful check establishes a baseline, not a new-platform event.
+        new = released - set(previous)
+        for platform in sorted(new):
+            label = platforms.LABELS[platform]
+            note = "Review platform choices and packaging steps under Advanced." if platform in platforms.PACKAGING else "This runner does not package that OS yet."
+            self.notify(project["id"], "new_platform", f"{label} release files appeared in {release['version']}. {note}",
+                        event_key=f"platform:{project['id']}:{platform}")
+            log(f"New {label} release files detected; existing platform selection is unchanged")
+        supported = new & platforms.PACKAGING
+        pending = any(p.get("project_id") == project["id"] and p.get("status") == "pending_review" for p in self.store.all("proposals"))
+        drafting = any(j["project_id"] == project["id"] and j.get("kind") == "draft" and j["status"] in ("queued", "running") for j in self.store.all("jobs"))
+        if supported and current.get("auto_draft_platforms") and not pending and not drafting and self.assistant.connected() and not current.get("profile"):
+            targets = sorted(set(current["targets"]) | supported)
+            try:
+                self.queue_draft(project["id"], "A new native OS release download was detected. Add packaging for the requested platforms using real release files. Keep existing platforms; do not invent assets. This draft must be reviewed before use.", targets=targets)
+                log("Queued a model draft for the new platforms; approval is required before use")
+            except Invalid as error:
+                log(f"Could not queue the optional platform draft: {error}")
 
     def review_release(self, project, definition, capture, log=None):
         """Apply compatibility rules; preserve the release either way and report what needs review."""
@@ -1331,14 +1363,16 @@ class Engine:
         result = self.draft_prompt(project_id, instruction)
         return drafting.workspace_zip(result["prompt"], result["context"], self.catalog.definitions())
 
-    def queue_draft(self, project_id, instruction=""):
+    def queue_draft(self, project_id, instruction="", targets=None):
         project = self.store.get("projects", project_id)
         if not self.assistant.connected():
             raise Invalid("No model is connected. Use the prepared prompt with your own chat, or connect a model in Settings.")
         if not isinstance(instruction, str) or len(instruction) > 4000:
             raise Invalid("Keep the extra instructions under 4000 characters")
+        if targets is not None and (not isinstance(targets, list) or not targets or any(t not in TARGETS for t in targets) or len(set(targets)) != len(targets) or not set(project["targets"]).issubset(targets)):
+            raise Invalid("Draft platforms must include current platforms and supported target IDs")
         job = self.job(project, "capture", project.get("latest_version"))
-        job = self.store.update("jobs", job["id"], kind="draft", stage="drafting", status="running")
+        job = self.store.update("jobs", job["id"], kind="draft", stage="drafting", status="running", requested_targets=targets, instruction=instruction)
         self.executor.submit(self._draft, project_id, job["id"], instruction)
         return {"job": job}
 
@@ -1347,6 +1381,10 @@ class Engine:
         log = lambda message: self.store.append_log(job_id, message)
         try:
             project = self.store.get("projects", project_id)
+            original_targets = list(project["targets"])
+            requested_targets = self.store.get("jobs", job_id).get("requested_targets")
+            if requested_targets:
+                project = {**project, "targets": requested_targets}
             config = self.assistant.public_config()
             budget = max(20_000, (config["context_tokens"] - 8000) * 3) if config["provider"] == "ollama" else 300_000
             self.stage(job_id, "drafting", "Reading the release, README and source")
@@ -1363,6 +1401,8 @@ class Engine:
                 return checked
             definition, explanation = self.assistant.draft_definition(system, user, read, log)
             proposal = self.save_definition_proposal(project, definition, explanation, f"{config['provider_label']} · {config['drafting_model']}", capture)
+            if requested_targets:
+                self.store.update("proposals", proposal["id"], requested_targets=requested_targets, base_targets=original_targets)
             self.store.update("jobs", job_id, status="ready", finished_at=now(), proposal_id=proposal["id"])
             self.stage(job_id, "complete", "Draft ready for your review")
             self.notify(project_id, "ready", f"A packaging draft for {project['name']} is ready for your review", event_key="draft:" + proposal["id"])
@@ -1394,7 +1434,9 @@ class Engine:
         project = self.store.get("projects", proposal["project_id"])
         if hashlib.sha256(json.dumps(project.get("packaging"), sort_keys=True).encode()).hexdigest() != proposal["base_definition_sha256"]:
             raise Invalid("The packaging changed after this draft; draft again before approving")
-        targets = [t for t in project["targets"] if t in proposal["definition"]["targets"]] or proposal["definition"]["targets"]
+        if proposal.get("requested_targets") and project["targets"] != proposal.get("base_targets"):
+            raise Invalid("The selected platforms changed after this draft; draft again before approving")
+        targets = proposal.get("requested_targets") or [t for t in project["targets"] if t in proposal["definition"]["targets"]] or proposal["definition"]["targets"]
         updated = self.update_project(project["id"], {"packaging": proposal["definition"], "targets": targets})
         self.store.update("projects", project["id"], definition_source={"kind": "draft", "source": proposal["source"], "approved_at": now()})
         self.store.update("proposals", proposal["id"], status="applied", reviewed_at=now())

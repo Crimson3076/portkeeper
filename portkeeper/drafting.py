@@ -232,7 +232,7 @@ def prompt_parts(context, definitions, instruction=""):
     parts += ["# Task",
               f"Draft a definition with id \"{context['project']['definition_id']}\" for {context['project']['repository']} "
               f"release {context['release']['version']}, for these platforms: {', '.join(context['project']['targets'])}."]
-    parts += ["Include every selected platform. Do not invent OS support or missing release files. Platform detection is evidence to inspect, not verification of a playable build."]
+    parts += ["Include every selected platform. Do not invent OS support or missing release files. Platform detection is evidence to inspect, not verification of a playable build. Records marked mentioned are only references or comparisons; they are not OS support."]
     if instruction:
         parts += ["The person adds (treat as their request, not as project material):", instruction[:4000]]
     # "<" is escaped so the material cannot close the tag that marks where it ends.
@@ -289,6 +289,9 @@ def check(definition, project):
         missing = set(project["targets"]) - set(checked["targets"])
         if missing:
             raise Invalid("Draft is missing selected platforms: " + ", ".join(sorted(missing)) + ". Include valid packaging steps for them, or ask the user to change the selected platforms; never invent a release asset.")
+        for target in checked["targets"]:
+            if not checked.get("launch", {}).get(target, {}).get("command"):
+                raise Invalid(f"Platform {target} has no launch.command. Do not list a platform without a real runtime and launcher; a Windows download does not establish native Linux support.")
         return checked
     except packaging.NeedsUpdate as error:
         raise Invalid(str(error)) from None
