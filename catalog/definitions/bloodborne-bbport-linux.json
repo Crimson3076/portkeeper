@@ -1,0 +1,204 @@
+{
+  "schema": 2,
+  "id": "bloodborne-bbport-linux",
+  "revision": 1,
+  "name": "Bloodborne bbport",
+  "game": "Bloodborne",
+  "package_prefix": "Bloodborne-bbport",
+  "summary": "bbport Linux AppImage with your extracted CUSA00900 game and 1.09 update, portable data paths and the NVIDIA libcuda startup fix.",
+  "runner": "operations",
+  "runner_version": 1,
+  "upstream": {
+    "repository": "deadinside28/bloodborne_pc",
+    "documentation": [
+      "https://github.com/deadinside28/bloodborne_pc#readme",
+      "https://github.com/deadinside28/bloodborne_pc/issues/135"
+    ],
+    "release_rules": {
+      "stable_only": true,
+      "tag_pattern": "[0-9]+\\.[0-9]+[0-9.]*",
+      "notes": "Numbered stable releases with a single Bloodborne-bbport-x86_64.AppImage. Pre-releases such as 0.5-pre4 are ignored."
+    }
+  },
+  "targets": [
+    "linux"
+  ],
+  "downloads": {
+    "bbport": {
+      "asset_pattern": "^Bloodborne-bbport-x86_64\\.AppImage$",
+      "platform": "linux",
+      "format": "file",
+      "description": "bbport Linux AppImage."
+    },
+    "pkgtool": {
+      "repository": "maxton/LibOrbisPkg",
+      "tag": "v0.2",
+      "asset": "PkgTool.Core-linux-x64-0.2.231.zip",
+      "sha256": "ac897d06a0c90256f4297712cb503eb29173fbc6d7f8a936ff476c4b72e5f36e",
+      "platform": "any",
+      "format": "zip",
+      "required_members": [
+        "PkgTool.Core"
+      ],
+      "description": "LibOrbisPkg PkgTool 0.2.231 for Linux, used only to extract your PKG files."
+    }
+  },
+  "inputs": [
+    {
+      "id": "game_pkg",
+      "label": "Bloodborne (USA) CUSA00900 base game PKG",
+      "kind": "file",
+      "platform_hint": "ps4",
+      "name_hint": "(?i)CUSA00900.*Game.*\\.pkg$",
+      "verify": "downstream",
+      "max_bytes": 34359738368,
+      "notes": "Checked after extraction: title CUSA00900, version 01.09 with the update, and an accepted eboot.bin hash."
+    },
+    {
+      "id": "update_pkg",
+      "label": "Bloodborne CUSA00900 1.09 update PKG",
+      "kind": "file",
+      "platform_hint": "ps4",
+      "name_hint": "(?i)CUSA00900.*Update.*1\\.09.*\\.pkg$",
+      "verify": "downstream",
+      "max_bytes": 17179869184
+    },
+    {
+      "id": "prepared_game",
+      "label": "Previously extracted game folder (optional)",
+      "kind": "directory",
+      "required": false,
+      "verify": "downstream",
+      "max_bytes": 68719476736,
+      "notes": "A folder under the app data prepared/ directory that already contains the extracted game. It is used only when it passes the same title, version and eboot.bin checks.",
+      "name_hint": "^uroot$"
+    }
+  ],
+  "operations": [
+    {
+      "op": "tool",
+      "tool": "ps4_pkg_extract",
+      "tool_download": "pkgtool",
+      "packages": [
+        "game_pkg",
+        "update_pkg"
+      ],
+      "prepared_input": "prepared_game",
+      "title_id": "CUSA00900",
+      "app_version": "01.09",
+      "accepted_eboot_sha256": [
+        "d65f0b4f01d59166aed16f8604196d8b7dd805abbf0758b356e8f1354c9429f9"
+      ],
+      "to": "$shared/game",
+      "timeout_minutes": 240
+    },
+    {
+      "op": "unpack_download",
+      "download": "bbport",
+      "to": "$package",
+      "file_name": "Bloodborne-bbport-x86_64.AppImage"
+    },
+    {
+      "op": "helper",
+      "name": "bbport_portable_paths",
+      "to": "$package/portable-paths.py"
+    },
+    {
+      "op": "helper",
+      "name": "bbport_nvidia_libraries",
+      "to": "$package/nvidia-libraries.py",
+      "description": "Expose matching host libcuda libraries to bbport's portable NVIDIA cache (upstream issue #135); does nothing without a matching NVIDIA driver and respects explicit Vulkan overrides"
+    },
+    {
+      "op": "write_text",
+      "path": "$package/data/bbport.ini",
+      "text": "upscaler=fsr3\noutput_res=1920x1080\nlive_resolution=0\n"
+    },
+    {
+      "op": "include_tree",
+      "from": "$shared/game",
+      "as": "game"
+    },
+    {
+      "op": "launcher",
+      "path": "Launch.sh",
+      "template": "posix",
+      "mkdir": [
+        "data/user",
+        "data/config",
+        "data/mods",
+        "data/patches"
+      ],
+      "env": {
+        "XDG_CONFIG_HOME": "$PWD/data/config",
+        "XDG_DATA_HOME": "$PWD/data",
+        "BB_DATA_DIR": "$PWD/data",
+        "BB_USER_DIR": "$PWD/data/user",
+        "BB_GPU_USER_DIR": "$PWD/data/user",
+        "BB_GAME_DIR": "$PWD/game",
+        "APPIMAGE_EXTRACT_AND_RUN": "1"
+      },
+      "run_python": [
+        "portable-paths.py",
+        "nvidia-libraries.py"
+      ],
+      "chmod_exec": true,
+      "exec": "Bloodborne-bbport-x86_64.AppImage"
+    },
+    {
+      "op": "write_text",
+      "path": "$package/PORTABLE-README.txt",
+      "text": "Bloodborne bbport {version} portable test package with your CUSA00900 game and 1.09 update.\nExtract the entire ZIP to a writable folder, then run ./Launch.sh (or ./Launch.sh --play to skip the launcher). Linux needs Python 3 and a Vulkan 1.3 driver.\nSaves, settings, mods and generated files stay in data/. Move the complete folder together.\nOn NVIDIA the launcher links the matching host libcuda libraries into data/vulkan/nvidia at every start (upstream issue #135). Driver libraries are not bundled; explicit VK_DRIVER_FILES or VK_ICD_FILENAMES overrides are respected. For fallback use BB_DLSS=0 ./Launch.sh --play.\nOfficial upstream: https://github.com/{repository}\nExperimental: gameplay is not confirmed.\n"
+    }
+  ],
+  "outputs": {
+    "linux": {
+      "expected_files": [
+        "Bloodborne-bbport-x86_64.AppImage",
+        "Launch.sh",
+        "portable-paths.py",
+        "nvidia-libraries.py",
+        "data/bbport.ini",
+        "game/eboot.bin",
+        "game/sce_sys/param.sfo",
+        "PORTABLE-README.txt"
+      ],
+      "compression": "stored",
+      "max_bytes": 68719476736
+    }
+  },
+  "launch": {
+    "linux": {
+      "command": "Launch.sh",
+      "instructions": "Extract the whole ZIP to a writable folder and run ./Launch.sh, or ./Launch.sh --play to skip bbport's launcher. Requires Python 3 for the path and NVIDIA helpers."
+    }
+  },
+  "saves": "Launch.sh points XDG and BB_* directories at data/ inside the package. portable-paths.py rewrites the launcher's settings whenever the folder moves.",
+  "dependencies": {
+    "linux": [
+      "x86-64 Linux",
+      "Python 3",
+      "Vulkan 1.3 driver"
+    ]
+  },
+  "limitations": [
+    "Experimental. Gameplay has not been confirmed on any platform.",
+    "No separate DLC entitlement is added.",
+    "Each package is about 30 GB and is stored uncompressed.",
+    "Linux startup (not gameplay) was checked on Fedora 44 / RTX 5090 / NVIDIA 595.58.03 with the NVIDIA fix. Other GPUs and the Steam Deck are untested.",
+    "Upstream issue #135 is still open for 0.51; the launcher workaround remains necessary. Re-check it when a newer bbport release appears."
+  ],
+  "verified_releases": [
+    {
+      "release": "0.51",
+      "commit": "3c57da4198ad62039f63f33bfd205b9916518acf",
+      "assets": {
+        "Bloodborne-bbport-x86_64.AppImage": "3dbbec828aebd542622cf25f0ea10a16f50b13f8b5338fb6596a1a69a635fcce"
+      },
+      "evidence": "Revision nvidiafix1 (SHA-256 7dbc3bcd…72b8) started on Fedora 44 / RTX 5090; gameplay not confirmed (RomM 12971)."
+    }
+  ],
+  "history": [
+    "2026-10-11: PKGs extracted by hand with PkgTool in a container, packaged with outputs/package-bloodborne.py, then repackaged with the NVIDIA helper (repackage-bloodborne-fixed.py). This definition automates the same steps."
+  ]
+}

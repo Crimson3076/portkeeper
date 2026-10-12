@@ -1,0 +1,211 @@
+{
+  "schema": 2,
+  "id": "dusklight",
+  "revision": 1,
+  "name": "Dusklight",
+  "game": "The Legend of Zelda: Twilight Princess",
+  "package_prefix": "Dusklight",
+  "summary": "Official Dusklight builds with your Twilight Princess disc image and launchers that keep user data in the package folder.",
+  "runner": "operations",
+  "runner_version": 1,
+  "upstream": {
+    "repository": "TwilitRealm/dusklight",
+    "documentation": [
+      "https://github.com/TwilitRealm/dusklight#readme"
+    ],
+    "release_rules": {
+      "stable_only": true,
+      "tag_pattern": "v[0-9]+\\.[0-9]+\\.[0-9]+"
+    }
+  },
+  "targets": [
+    "linux",
+    "windows",
+    "handheld"
+  ],
+  "downloads": {
+    "linux": {
+      "asset_pattern": "^Dusklight-v[0-9.]+-linux-x86_64\\.AppImage$",
+      "platform": "linux",
+      "format": "file"
+    },
+    "windows": {
+      "asset_pattern": "^Dusklight-v[0-9.]+-win32-x86_64\\.zip$",
+      "platform": "windows",
+      "format": "zip",
+      "required_members": [
+        "dusklight.exe"
+      ]
+    },
+    "handheld": {
+      "asset_pattern": "^Dusklight-v[0-9.]+-linux-arm64\\.AppImage$",
+      "platform": "handheld",
+      "format": "file"
+    }
+  },
+  "inputs": [
+    {
+      "id": "disc",
+      "label": "The Legend of Zelda: Twilight Princess (USA) GameCube disc image",
+      "kind": "file",
+      "platform_hint": "ngc",
+      "name_hint": "(?i)twilight princess",
+      "accepted": [
+        {
+          "label": "USA GameCube disc (CISO dump verified 2026-10-11)",
+          "sha256": "9bc05f5ff9f41c1f5b881ab7b68e52b21e48cb12c35082e96d1d2bb0c0a13aaf"
+        }
+      ],
+      "max_bytes": 2147483648,
+      "notes": "Dusklight reads the disc image directly; other dumps need their own reviewed hash."
+    }
+  ],
+  "operations": [
+    {
+      "op": "unpack_download",
+      "download": "linux",
+      "to": "$package",
+      "file_name": "Dusklight.AppImage",
+      "targets": [
+        "linux"
+      ]
+    },
+    {
+      "op": "unpack_download",
+      "download": "handheld",
+      "to": "$package",
+      "file_name": "Dusklight.AppImage",
+      "targets": [
+        "handheld"
+      ]
+    },
+    {
+      "op": "unpack_download",
+      "download": "windows",
+      "to": "$package",
+      "targets": [
+        "windows"
+      ]
+    },
+    {
+      "op": "stage_input",
+      "input": "disc",
+      "to": "$package/game.ciso"
+    },
+    {
+      "op": "launcher",
+      "targets": [
+        "linux",
+        "handheld"
+      ],
+      "path": "Launch Dusklight.sh",
+      "template": "posix",
+      "mkdir": [
+        "data"
+      ],
+      "chmod_exec": true,
+      "env": {
+        "APPIMAGE_EXTRACT_AND_RUN": "1"
+      },
+      "exec": "Dusklight.AppImage",
+      "args": [
+        "--dvd",
+        "game.ciso",
+        "--user-dir",
+        "$PWD/data"
+      ]
+    },
+    {
+      "op": "launcher",
+      "targets": [
+        "windows"
+      ],
+      "path": "Launch Dusklight.cmd",
+      "template": "windows_cmd",
+      "mkdir": [
+        "data"
+      ],
+      "exec": "dusklight.exe",
+      "args": [
+        "--dvd",
+        "game.ciso",
+        "--user-dir",
+        "%~dp0data"
+      ]
+    },
+    {
+      "op": "write_text",
+      "path": "$package/PORTABLE-README.txt",
+      "text": "Extract this entire ZIP into a writable folder, then run {launch_command}.\nThe launcher selects the included owned disc automatically. Saves, settings and user data stay in the data folder beside the game.\nPackaging checks file structure only.\n"
+    }
+  ],
+  "outputs": {
+    "linux": {
+      "expected_files": [
+        "Dusklight.AppImage",
+        "game.ciso",
+        "Launch Dusklight.sh",
+        "PORTABLE-README.txt"
+      ],
+      "max_bytes": 4294967296
+    },
+    "windows": {
+      "expected_files": [
+        "dusklight.exe",
+        "res/icon.png",
+        "game.ciso",
+        "Launch Dusklight.cmd",
+        "PORTABLE-README.txt"
+      ],
+      "max_bytes": 4294967296
+    },
+    "handheld": {
+      "expected_files": [
+        "Dusklight.AppImage",
+        "game.ciso",
+        "Launch Dusklight.sh",
+        "PORTABLE-README.txt"
+      ],
+      "max_bytes": 4294967296
+    }
+  },
+  "launch": {
+    "linux": {
+      "command": "Launch Dusklight.sh",
+      "instructions": "Extract the whole ZIP and run Launch Dusklight.sh (with sh if your file manager opens it as text)."
+    },
+    "windows": {
+      "command": "Launch Dusklight.cmd",
+      "instructions": "Extract the whole ZIP and run Launch Dusklight.cmd."
+    },
+    "handheld": {
+      "command": "Launch Dusklight.sh",
+      "instructions": "ARM64 Linux handhelds: extract and run Launch Dusklight.sh."
+    }
+  },
+  "saves": "--user-dir points at data/ beside the game.",
+  "dependencies": {
+    "linux": [
+      "x86-64 Linux"
+    ],
+    "windows": [
+      "Windows x64"
+    ],
+    "handheld": [
+      "ARM64 Linux"
+    ]
+  },
+  "limitations": [
+    "The ARM64 handheld package has not been launched."
+  ],
+  "verified_releases": [
+    {
+      "release": "v2.0.3",
+      "assets": {
+        "Dusklight-v2.0.3-linux-x86_64.AppImage": "87ec251963c984ad2b3ac075281431d2221db2297dc19f2ab5daad92e969fc06",
+        "Dusklight-v2.0.3-win32-x86_64.zip": "ac63514eeb13cd4e9bd22be02dabee4952d1331a78f0496326bba2b577b12caf"
+      },
+      "evidence": "Portkeeper-built v2.0.3 Linux package launch-checked; Windows packaged."
+    }
+  ]
+}

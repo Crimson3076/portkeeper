@@ -1,0 +1,183 @@
+{
+  "schema": 2,
+  "id": "bloodborne-bbport-windows",
+  "revision": 1,
+  "name": "Bloodborne bbport Windows",
+  "game": "Bloodborne",
+  "package_prefix": "Bloodborne-bbport",
+  "summary": "Supermedo's Windows bbport build with your extracted CUSA00900 game and 1.09 update in a portable folder.",
+  "runner": "operations",
+  "runner_version": 1,
+  "upstream": {
+    "repository": "Supermedo/bloodborne_pc",
+    "documentation": [
+      "https://github.com/Supermedo/bloodborne_pc#readme"
+    ],
+    "release_rules": {
+      "stable_only": true,
+      "tag_pattern": "windows-v[0-9]+\\.[0-9]+",
+      "notes": "windows-vN.N releases containing Bloodborne-Windows.zip with a bbport-windows folder."
+    }
+  },
+  "targets": [
+    "windows"
+  ],
+  "downloads": {
+    "windows": {
+      "asset_pattern": "^Bloodborne-Windows\\.zip$",
+      "platform": "windows",
+      "format": "zip",
+      "strip_prefix": "bbport-windows",
+      "required_members": [
+        "Bloodborne.exe"
+      ],
+      "description": "Windows build; files are moved out of its bbport-windows folder."
+    },
+    "pkgtool": {
+      "repository": "maxton/LibOrbisPkg",
+      "tag": "v0.2",
+      "asset": "PkgTool.Core-linux-x64-0.2.231.zip",
+      "sha256": "ac897d06a0c90256f4297712cb503eb29173fbc6d7f8a936ff476c4b72e5f36e",
+      "platform": "any",
+      "format": "zip",
+      "required_members": [
+        "PkgTool.Core"
+      ],
+      "description": "LibOrbisPkg PkgTool 0.2.231 for Linux, used only to extract your PKG files."
+    }
+  },
+  "inputs": [
+    {
+      "id": "game_pkg",
+      "label": "Bloodborne (USA) CUSA00900 base game PKG",
+      "kind": "file",
+      "platform_hint": "ps4",
+      "name_hint": "(?i)CUSA00900.*Game.*\\.pkg$",
+      "verify": "downstream",
+      "max_bytes": 34359738368,
+      "notes": "Checked after extraction: title CUSA00900, version 01.09 with the update, and an accepted eboot.bin hash."
+    },
+    {
+      "id": "update_pkg",
+      "label": "Bloodborne CUSA00900 1.09 update PKG",
+      "kind": "file",
+      "platform_hint": "ps4",
+      "name_hint": "(?i)CUSA00900.*Update.*1\\.09.*\\.pkg$",
+      "verify": "downstream",
+      "max_bytes": 17179869184
+    },
+    {
+      "id": "prepared_game",
+      "label": "Previously extracted game folder (optional)",
+      "kind": "directory",
+      "required": false,
+      "verify": "downstream",
+      "max_bytes": 68719476736,
+      "notes": "A folder under the app data prepared/ directory that already contains the extracted game. It is used only when it passes the same title, version and eboot.bin checks.",
+      "name_hint": "^uroot$"
+    }
+  ],
+  "operations": [
+    {
+      "op": "tool",
+      "tool": "ps4_pkg_extract",
+      "tool_download": "pkgtool",
+      "packages": [
+        "game_pkg",
+        "update_pkg"
+      ],
+      "prepared_input": "prepared_game",
+      "title_id": "CUSA00900",
+      "app_version": "01.09",
+      "accepted_eboot_sha256": [
+        "d65f0b4f01d59166aed16f8604196d8b7dd805abbf0758b356e8f1354c9429f9"
+      ],
+      "to": "$shared/game",
+      "timeout_minutes": 240
+    },
+    {
+      "op": "unpack_download",
+      "download": "windows",
+      "to": "$package"
+    },
+    {
+      "op": "write_text",
+      "path": "$package/data/config/bbport-launcher/settings.json",
+      "text": "{\n  \"game_dir\": \"game\",\n  \"user_dir\": \"data/user\",\n  \"mods_dir\": \"data/mods\",\n  \"patches_dir\": \"data/patches\",\n  \"fps_mode\": \"30\",\n  \"ui_language\": \"en\",\n  \"online\": false,\n  \"fullscreen\": false\n}"
+    },
+    {
+      "op": "write_text",
+      "path": "$package/data/bbport.ini",
+      "text": "upscaler=fsr3\noutput_res=1920x1080\nlive_resolution=0\n"
+    },
+    {
+      "op": "include_tree",
+      "from": "$shared/game",
+      "as": "game"
+    },
+    {
+      "op": "launcher",
+      "path": "Launch.cmd",
+      "template": "windows_cmd",
+      "env": {
+        "APPDATA": "%CD%\\data\\config",
+        "BB_DATA_DIR": "%CD%\\data",
+        "BB_USER_DIR": "%CD%\\data\\user",
+        "BB_GPU_USER_DIR": "%CD%\\data\\user",
+        "BB_GAME_DIR": "%CD%\\game"
+      },
+      "exec": "Bloodborne.exe"
+    },
+    {
+      "op": "write_text",
+      "path": "$package/PORTABLE-README.txt",
+      "text": "Bloodborne bbport Windows {version} portable test package with your CUSA00900 game and 1.09 update.\nExtract the entire ZIP to a writable folder. Windows 10/11 x64 needs a Vulkan 1.3 driver; run Launch.cmd (or Launch.cmd --play).\nSaves, settings, mods and generated files stay in data/. Move the complete folder together.\nOfficial upstream: https://github.com/{repository}\nExperimental: not launched on Windows.\n"
+    }
+  ],
+  "outputs": {
+    "windows": {
+      "expected_files": [
+        "Bloodborne.exe",
+        "Launch.cmd",
+        "data/bbport.ini",
+        "data/config/bbport-launcher/settings.json",
+        "game/eboot.bin",
+        "game/sce_sys/param.sfo",
+        "PORTABLE-README.txt"
+      ],
+      "compression": "stored",
+      "max_bytes": 68719476736
+    }
+  },
+  "launch": {
+    "windows": {
+      "command": "Launch.cmd",
+      "instructions": "Extract the whole ZIP to a writable folder and run Launch.cmd, or Launch.cmd --play to skip the launcher."
+    }
+  },
+  "saves": "Launch.cmd points APPDATA and BB_* directories at data\\ inside the package.",
+  "dependencies": {
+    "windows": [
+      "Windows 10/11 x64",
+      "Vulkan 1.3 driver"
+    ]
+  },
+  "limitations": [
+    "Experimental. Gameplay has not been confirmed on any platform.",
+    "No separate DLC entitlement is added.",
+    "Each package is about 30 GB and is stored uncompressed.",
+    "Not launched on native Windows. Wine/Proton results would not establish native Windows compatibility."
+  ],
+  "verified_releases": [
+    {
+      "release": "windows-v1.6",
+      "assets": {
+        "Bloodborne-Windows.zip": "8410d1ca83c5335c2178c742c8a077b9cb07bf262018537f85fba7ac1808bd7d"
+      },
+      "evidence": "Manual 2026-10-11 package assembled and CRC-checked; not launched (RomM 12972)."
+    }
+  ],
+  "history": [
+    "2026-10-11: assembled by hand with outputs/package-bloodborne.py. This definition automates the same steps."
+  ]
+}

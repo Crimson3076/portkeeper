@@ -1,5 +1,7 @@
 # Recipe guide
 
+Projects now use [packaging definitions](PACKAGING.md). A schema 1 recipe described here still runs unchanged inside a definition with `runner: "recipe"`, and new custom projects can start from one.
+
 A recipe describes one repeatable way to preserve or package a project. It is saved as JSON and interpreted by Portkeeper. Arbitrary host shell execution is not a recipe feature. Reviewed profiles use their separate fixed runner.
 
 Always begin with a manual run against known inputs. Expected-file checks establish package structure; testing the resulting game on the intended device remains a separate step.

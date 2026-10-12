@@ -66,8 +66,13 @@ def validate_recipe(recipe, allow_overrides=True):
     if any(key not in fields for key in recipe):
         raise Invalid("Recipe contains unsupported fields; keep credentials in Settings")
     mode = recipe.get("mode")
-    if mode not in ("capture", "assemble", "docker", "profile"):
+    if mode not in ("capture", "assemble", "docker", "profile", "definition"):
         raise Invalid("Recipe mode must be capture, assemble, docker, or profile")
+    if mode == "definition":
+        # Placeholder kept beside a packaging definition; the definition holds the instructions.
+        if set(recipe) - {"version", "mode", "notes"}:
+            raise Invalid("Definition-backed recipes are edited through the packaging definition")
+        return recipe
     if mode == "profile":
         if recipe.get("profile") != "shipwright" or any(recipe.get(key) for key in ("command", "image", "network", "target_overrides")):
             raise Invalid("Profile recipes use the fixed reviewed Shipwright runner; arbitrary commands and overrides are not allowed")
@@ -154,10 +159,14 @@ def target_recipe(recipe, target):
     return validate_recipe(effective)
 
 
-def safe_extract(archive, destination):
-    """Extract only ordinary files/directories; reject traversal, links and bombs."""
+def safe_extract(archive, destination, windows_names=False, max_expanded=None):
+    """Extract only ordinary files/directories; reject traversal, links and bombs.
+
+    windows_names accepts ZIP members written with backslash separators by Windows tools.
+    """
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=True)
+    max_expanded = MAX_EXPANDED if max_expanded is None else max_expanded
     total = 0
     if zipfile.is_zipfile(archive):
         with zipfile.ZipFile(archive) as bundle:
@@ -165,7 +174,7 @@ def safe_extract(archive, destination):
             if len(members) > MAX_MEMBERS:
                 raise Invalid("Archive contains too many members")
             for item in members:
-                name = item.filename.rstrip("/")
+                name = (item.filename.replace("\\", "/") if windows_names else item.filename).rstrip("/")
                 if not name:
                     continue
                 output = confined(destination, name)
@@ -173,9 +182,9 @@ def safe_extract(archive, destination):
                 if stat.S_ISLNK(mode) or (stat.S_IFMT(mode) and not (stat.S_ISREG(mode) or stat.S_ISDIR(mode))):
                     raise Invalid("Archive contains a symlink or special file")
                 total += item.file_size
-                if item.file_size > MAX_FILE or total > MAX_EXPANDED:
+                if item.file_size > MAX_FILE or total > max_expanded:
                     raise Invalid("Expanded archive exceeds size limit")
-                if item.is_dir():
+                if item.is_dir() or item.filename.endswith("\\"):
                     output.mkdir(parents=True, exist_ok=True)
                 else:
                     output.parent.mkdir(parents=True, exist_ok=True)
@@ -196,7 +205,7 @@ def safe_extract(archive, destination):
                     name = name[2:]
                 output = confined(destination, name)
                 total += item.size
-                if item.size > MAX_FILE or total > MAX_EXPANDED:
+                if item.size > MAX_FILE or total > max_expanded:
                     raise Invalid("Expanded archive exceeds size limit")
                 if item.isdir():
                     output.mkdir(parents=True, exist_ok=True)

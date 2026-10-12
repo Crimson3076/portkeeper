@@ -1,0 +1,165 @@
+{
+  "schema": 2,
+  "id": "shipwright",
+  "revision": 1,
+  "name": "Ship of Harkinian",
+  "game": "The Legend of Zelda: Ocarina of Time",
+  "package_prefix": "Ship-of-Harkinian",
+  "summary": "Extract your verified Ocarina of Time ROM and package matching official runtimes.",
+  "runner": "profile",
+  "runner_version": 1,
+  "profile": "shipwright",
+  "upstream": {
+    "repository": "HarbourMasters/Shipwright",
+    "documentation": [
+      "https://github.com/HarbourMasters/Shipwright/blob/9.3.0/docs/supportedHashes.json",
+      "https://github.com/HarbourMasters/Shipwright/blob/9.3.0/docs/BUILDING.md",
+      "https://github.com/HarbourMasters/Shipwright/releases/tag/9.3.0"
+    ],
+    "release_rules": {
+      "stable_only": true,
+      "tag_pattern": "9\\.3\\.0",
+      "notes": "The reviewed profile builds only 9.3.0 at commit ecd889c2019b87e78b0a3d942a6a3fe98b7efaed. Newer releases are preserved and held until the profile is updated in Portkeeper (a container update)."
+    }
+  },
+  "targets": [
+    "linux",
+    "windows"
+  ],
+  "downloads": {},
+  "inputs": [
+    {
+      "id": "rom",
+      "label": "The Legend of Zelda: Ocarina of Time N64 ROM",
+      "kind": "file",
+      "platform_hint": "n64",
+      "normalize": "n64_big_endian",
+      "accepted": [
+        {
+          "label": "PAL 1.0",
+          "sha1": "328a1f1beba30ce5e178f031662019eb32c5f3b5"
+        },
+        {
+          "label": "PAL 1.1",
+          "sha1": "cfbb98d392e4a9d39da8285d10cbef3974c2f012"
+        },
+        {
+          "label": "PAL GC",
+          "sha1": "0227d7c0074f2d0ac935631990da8ec5914597b4"
+        },
+        {
+          "label": "PAL MQ",
+          "sha1": "f46239439f59a2a594ef83cf68ef65043b1bffe2"
+        },
+        {
+          "label": "PAL GC (Debug)",
+          "sha1": "cee6bc3c2a634b41728f2af8da54d9bf8cc14099"
+        },
+        {
+          "label": "PAL MQ (Debug)",
+          "sha1": "079b855b943d6ad8bd1eb026c0ed169ecbdac7da"
+        },
+        {
+          "label": "PAL MQ (Debug)",
+          "sha1": "50bebedad9e0f10746a52b07239e47fa6c284d03"
+        },
+        {
+          "label": "PAL MQ (Debug)",
+          "sha1": "cfecfdc58d650e71a200c81f033de4e6d617a9f6"
+        },
+        {
+          "label": "NTSC 1.0 (US)",
+          "sha1": "ad69c91157f6705e8ab06c79fe08aad47bb57ba7"
+        },
+        {
+          "label": "NTSC 1.1 (US)",
+          "sha1": "d3ecb253776cd847a5aa63d859d8c89a2f37b364"
+        },
+        {
+          "label": "NTSC 1.2 (US)",
+          "sha1": "41b3bdc48d98c48529219919015a1af22f5057c2"
+        },
+        {
+          "label": "NTSC 1.0 (JP)",
+          "sha1": "c892bbda3993e66bd0d56a10ecd30b1ee612210f"
+        },
+        {
+          "label": "NTSC 1.1 (JP)",
+          "sha1": "dbfc81f655187dc6fefd93fa6798face770d579d"
+        },
+        {
+          "label": "NTSC 1.2 (JP)",
+          "sha1": "fa5f5942b27480d60243c2d52c0e93e26b9e6b86"
+        },
+        {
+          "label": "NTSC GC (US)",
+          "sha1": "b82710ba2bd3b4c6ee8aa1a7e9acf787dfc72e9b"
+        },
+        {
+          "label": "NTSC MQ (US)",
+          "sha1": "8b5d13aac69bfbf989861cfdc50b1d840945fc1d"
+        },
+        {
+          "label": "NTSC GC (JP)",
+          "sha1": "0769c84615422d60f16925cd859593cdfa597f84"
+        },
+        {
+          "label": "NTSC GC (JP) (Collector's Edition)",
+          "sha1": "2ce2d1a9f0534c9cd9fa04ea5317b80da21e5e73"
+        },
+        {
+          "label": "NTSC MQ (JP)",
+          "sha1": "dd14e143c4275861fe93ea79d0c02e36ae8c6c2f"
+        }
+      ],
+      "max_bytes": 67108864,
+      "notes": "Selected and checked through the worker wizard (RomM file or local input)."
+    }
+  ],
+  "outputs": {
+    "linux": {
+      "expected_files": [
+        "oot.o2r"
+      ]
+    },
+    "windows": {
+      "expected_files": [
+        "oot.o2r"
+      ]
+    }
+  },
+  "launch": {
+    "linux": {
+      "command": "launch.sh",
+      "instructions": "Extract the whole ZIP, open its package folder and run launch.sh. SHIP_HOME keeps assets, settings and saves local."
+    },
+    "windows": {
+      "command": "launch.bat",
+      "instructions": "Extract the whole ZIP, open its package folder and run launch.bat."
+    }
+  },
+  "saves": "The launchers set SHIP_HOME to the package folder.",
+  "dependencies": {
+    "linux": [
+      "x86-64 Linux / Steam Deck"
+    ],
+    "windows": [
+      "Windows x64"
+    ]
+  },
+  "limitations": [
+    "Windows packages assemble the official prebuilt runtime; native Windows has not been launched.",
+    "Unsupported: macOS, ARM handhelds, Nintendo Switch."
+  ],
+  "verified_releases": [
+    {
+      "release": "9.3.0",
+      "commit": "ecd889c2019b87e78b0a3d942a6a3fe98b7efaed",
+      "assets": {
+        "SoH-Dewey-Alpha.appimage": "8507bb70413e130e452ebaf5f156bfd78013ee0144364b7968680e8cf064a0fa",
+        "SoH-Dewey-Alpha-Win64.zip": "bf46cfc41be17f3b63901db46dac46ac2a63ed3851aa13e3ba6c9ec5d0ac2632"
+      },
+      "evidence": "docs/VALIDATION.md"
+    }
+  ]
+}

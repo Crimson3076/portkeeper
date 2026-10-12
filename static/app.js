@@ -6,7 +6,7 @@ const projectPageHome = projectPageElement.parentElement;
 const targetLabels = { linux: "Linux / Steam Deck", windows: "Windows", handheld: "Handheld", capture: "Source" };
 const targetGlyphs = { linux: "◈", windows: "▦", handheld: "▤", capture: "◇" };
 const captureRecipe = { version: 1, mode: "capture", payload: { kind: "source" }, notes: "Preserve tagged upstream source. Add a tested recipe to build a package." };
-const activeStatuses = new Set(["queued", "running", "checking", "capturing", "building", "preserving", "downloading_rom", "extracting", "packaging_linux", "packaging_windows", "preserving_source", "preserving_assets", "capturing_dependencies", "building_extractor", "preparing", "validating"]);
+const activeStatuses = new Set(["queued", "running", "checking", "capturing", "building", "preserving", "downloading_rom", "extracting", "packaging_linux", "packaging_windows", "preserving_source", "preserving_assets", "capturing_dependencies", "building_extractor", "preparing", "validating", "publishing", "verifying_inputs", "preparing_inputs", "archiving"]);
 const busy = new Set();
 const preservationCache = new Map();
 const preservationLoading = new Set();
@@ -117,7 +117,7 @@ function statusBadge(status, override) {
   const labels = {
     idle: "Waiting", ready: "Packaged", watching: "Watching", captured: "Source preserved", archived: "Source preserved", succeeded: "Complete", success: "Complete", completed: "Complete", published: "In local library", built: "Packaged", unchanged: "Up to date",
     failed: "Needs attention", error: "Needs attention", needs_attention: "Needs attention", blocked: "Needs attention", needs_rom: "Needs a ROM", missing_inputs: "Needs game files", capture_only: "Source only", unsupported_version: "Recipe update needed",
-    queued: "Queued", running: "Working", checking: "Checking upstream", capturing: "Preserving source", preserving: "Preserving source", downloading_rom: "Downloading ROM", extracting: "Extracting game assets", packaging_linux: "Packaging Linux", packaging_windows: "Packaging Windows", building: "Building package", preserving_source: "Preserving source", preserving_assets: "Preserving releases", capturing_dependencies: "Preserving dependencies", building_extractor: "Building extractor", preparing: "Preparing inputs", validating: "Validating package", complete: "Complete"
+    queued: "Queued", running: "Working", checking: "Checking upstream", capturing: "Preserving source", preserving: "Preserving source", downloading_rom: "Downloading ROM", extracting: "Extracting game assets", packaging_linux: "Packaging Linux", packaging_windows: "Packaging Windows", building: "Building package", preserving_source: "Preserving source", preserving_assets: "Preserving releases", capturing_dependencies: "Preserving dependencies", building_extractor: "Building extractor", preparing: "Preparing inputs", validating: "Validating package", complete: "Complete", publishing: "Publishing to RomM", verifying_inputs: "Checking game files", preparing_inputs: "Preparing game files", archiving: "Writing package"
   };
   let tone = "";
   if (["ready", "watching", "captured", "archived", "succeeded", "success", "completed", "published", "built", "unchanged", "complete"].includes(value)) tone = "good";
@@ -182,25 +182,26 @@ function testStatus(artifact, rom) {
 }
 function testStatusBadge(artifact, rom) {
   const result = testStatus(artifact, rom);
-  return el("span", `validation-label ${result === "played" ? "confirmed" : result === "starts" ? "launch" : result === "failed" ? "failed" : ""}`, testResultLabels[result]);
+  const wine = reviewFor(artifact, rom)?.environment === "wine_proton";
+  return el("span", `validation-label ${result === "played" ? "confirmed" : result === "starts" ? "launch" : result === "failed" ? "failed" : ""}`, testResultLabels[result] + (wine ? " under Wine/Proton" : ""));
 }
 function downloadDetails(artifact, rom) {
   const details = artifact?.manifest || rom?.package_details || {};
   const review = reviewFor(artifact, rom);
   const version = artifact?.version || details.version;
   const revision = details.package_revision;
-  const revisionLabel = typeof revision === "string" && /^nvidiafix\d+$/.test(revision) ? `Portkeeper fix ${revision.match(/\d+$/)[0]}` : revision;
+  const revisionLabel = typeof revision === "string" && /^nvidiafix\d+$/.test(revision) ? `Portkeeper fix ${revision.match(/\d+$/)[0]}` : Number.isInteger(revision) ? `Package revision ${revision}${details.definition ? ` · definition ${details.definition.id} r${details.definition.revision}` : ""}` : revision;
   const section = el("div", "download-details");
   section.append(el("p", "package-revision", `${version ? `Upstream ${version}` : "Upstream version: Unknown"} · ${revisionLabel || "Package revision: Unknown"}`));
   const text = value => typeof value === "string" ? value : Array.isArray(value) ? value.filter(item => typeof item === "string").join("; ") : "";
   const summary = rom?.summary || "";
-  const requirements = text(details.requirements) || summary.split(/(?<=[.!?])\s+/).filter(sentence => /\b(requires?|needs?|writable|Windows 10|Python 3|Vulkan 1)\b/i.test(sentence)).join(" ");
+  const requirements = text(details.requirements) || text(details.dependencies) || summary.split(/(?<=[.!?])\s+/).filter(sentence => /\b(requires?|needs?|writable|Windows 10|Python 3|Vulkan 1)\b/i.test(sentence)).join(" ");
   const changes = text(details.changes) || (revision ? text(details.validation) || review?.notes : "");
-  const issues = text(details.known_issues) || (review?.result === "failed" ? review.notes : "");
+  const issues = text(details.known_issues) || text(details.limitations) || (review?.result === "failed" ? review.notes : "");
   [["What changed", changes], ["Requirements", requirements], ["Known issues", issues]].forEach(([label, value]) => section.append(el("p", "download-detail-line", [el("strong", "", `${label}: `), value || "Unknown — not recorded for this download."])));
   const fileNames = [...Object.keys(details.files || {}), ...(details.recipe?.expected_files || [])];
   const launcher = fileNames.find(name => typeof name === "string" && /(?:^|\/)(?:launch[^/]*\.(?:sh|cmd|bat))$/i.test(name));
-  const launch = text(details.launch_instructions) || (launcher ? `Extract the complete ZIP to a writable folder, then run ${launcher}. See the included README for saves, settings and dependencies.` : "") || (rom?.summary || "").split(/(?<=[.!?])\s+/).filter(sentence => /\b(extract|run|saves|settings)\b/i.test(sentence)).join(" ");
+  const launch = text(details.launch_instructions) || text(details.launch?.instructions) || (launcher ? `Extract the complete ZIP to a writable folder, then run ${launcher}. See the included README for saves, settings and dependencies.` : "") || (rom?.summary || "").split(/(?<=[.!?])\s+/).filter(sentence => /\b(extract|run|saves|settings)\b/i.test(sentence)).join(" ");
   section.append(el("h4", "", "Launch instructions"), el("p", "download-detail-line", launch || "Not recorded for this download. Consult the README included in the archive or the upstream documentation before launching."));
   const result = testStatus(artifact, rom);
   section.append(el("p", "compact-note", {starts:"Startup checked; gameplay has not been confirmed.",played:"Gameplay confirmed for this exact download. See the device and testing notes.",failed:"A test reported a problem. See the testing notes before downloading.",untested:"No startup or gameplay check has been recorded for this exact download."}[result]));
@@ -268,7 +269,7 @@ function table(headers, rows) {
 function rommConfig() { return state.romm || state.settings?.romm || {}; }
 function rommReady() { const config = rommConfig(); return Boolean(config.url && (config.token_configured || config.has_token)); }
 function notificationTitle(notification) {
-  const names = { ready: "Package ready", build_failed: "Build needs attention", needs_input: "Game input required", upstream_unavailable: "Upstream unavailable" };
+  const names = { ready: "Package ready", build_failed: "Build needs attention", needs_input: "Game input required", upstream_unavailable: "Upstream unavailable", needs_review: "Release needs review" };
   const title = notification.title || names[notification.kind] || "Game update";
   return notification.project_name ? `${notification.project_name} · ${title}` : title;
 }
@@ -439,7 +440,7 @@ function renderSettings() {
   const missing = state.runner?.missing || state.runner?.missing_tools || state.runner?.profile_tools_missing || state.runner?.profile_runner?.missing_tools || state.runner?.profile_runner?.missing;
   if (Array.isArray(missing) && missing.length) buildNote.append(el("p", "", `Required tools missing: ${missing.join(", ")}`));
   detail.append(buildNote, el("p", "quiet-note", "Device support is defined by each profile or recipe. The current Ship of Harkinian profile supports Linux, Steam Deck through Linux, and Windows."));
-  renderNotificationPreference(); renderToolchain();
+  renderNotificationPreference(); renderToolchain(); renderCatalog();
 }
 function renderNotificationPreference() {
   const supported = "Notification" in window;
@@ -510,7 +511,7 @@ function checkProject(id) { return runAction(`check-${id}`, `/api/projects/${enc
 function buildProject(id) { return runAction(`build-${id}`, `/api/projects/${encodeURIComponent(id)}/build`, {}, "Build queued. Follow its progress in Activity."); }
 function testBuild(id) { return runAction(`build-${id}`, `/api/projects/${encodeURIComponent(id)}/test-build`, {}, "Test build queued. Source will be preserved before packaging."); }
 function retryJob(id) { return runAction(`retry-${id}`, `/api/jobs/${encodeURIComponent(id)}/retry`, {}, "Retry queued for the failed step."); }
-function publishArtifact(id) { return runAction(`publish-${id}`, `/api/artifacts/${encodeURIComponent(id)}/publish`, {}, "This version is now in your local library folder."); }
+function publishArtifact(id) { return runAction(`publish-${id}`, `/api/artifacts/${encodeURIComponent(id)}/publish`, {}, "This version is now in your local library folder. That folder is separate from RomM unless it is RomM's own platform folder."); }
 function pinArtifact(artifact) { return runAction(`pin-${artifact.id}`, `/api/artifacts/${encodeURIComponent(artifact.id)}/pin`, { pinned: !artifact.pinned }, artifact.pinned ? "Version unpinned." : "Version pinned. Retention will keep it."); }
 function setKnownGood(id) { return runAction(`good-${id}`, `/api/artifacts/${encodeURIComponent(id)}/known-good`, {}, "Known-good version saved for this target."); }
 function markRead(id) { return runAction(`read-${id}`, `/api/notifications/${encodeURIComponent(id)}/read`, {}, ""); }
@@ -530,9 +531,10 @@ function renderProject() {
   if (cover) title.prepend(cover);
   const working = Boolean(projectActiveJob(project)) || busy.has(`check-${project.id}`) || busy.has(`build-${project.id}`);
   const actions = el("div", "project-header-actions", statusBadge(projectStatus(project)));
-  if (!project.demo) actions.append(button("Check update", "button secondary small", () => checkProject(project.id), working));
+  if (!project.demo) actions.append(button("Check upstream", "button secondary small", () => checkProject(project.id), working));
   if (project.profile) actions.append(button("Test build", "button primary small", () => testBuild(project.id), working));
-  else if (project.recipe?.mode !== "capture") actions.append(button("Build package", "button primary small", () => buildProject(project.id), working || !project.capture_id));
+  if (project.recipe?.mode !== "capture" && !project.demo) actions.append(button("Build now…", project.profile ? "button secondary small" : "button primary small", () => openBuild(project.id), working || !project.capture_id));
+  else if (project.demo) actions.append(button("Build package", "button primary small", () => buildProject(project.id), working || !project.capture_id));
   heading.append(title, statusBadge(gameNeedsAttention(project) ? "needs_attention" : hasDownloads(project) ? "ready" : "capture_only", gameAvailability(project)));
   if (route.tab === "overview") { renderOverview(project, content); content.querySelector(".update-details .detail-card")?.append(actions); }
   else heading.append(actions);
@@ -604,7 +606,7 @@ function renderOverview(project, content) {
 function progressSteps(job, project) {
   const stage = job.stage || job.status;
   if (Array.isArray(job.checkpoints) && job.checkpoints.length) {
-    const names = { checking: "Check upstream", preserving_source: "Preserve source", preserving_assets: "Preserve release assets", capturing_dependencies: "Preserve pinned dependencies", building_extractor: "Build reviewed extractor", downloading_rom: "Verify game input", extracting: "Extract game assets", packaging_linux: "Package Linux / Steam Deck", packaging_windows: "Package Windows", preparing: "Prepare inputs", validating: "Validate package", complete: job.target === "capture" ? "Save preservation checkpoint" : "Archive package" };
+    const names = { checking: "Check upstream", preserving_source: "Preserve source", preserving_assets: "Preserve release assets", capturing_dependencies: "Preserve pinned dependencies", building_extractor: "Build reviewed extractor", downloading_rom: "Verify game input", extracting: "Extract game assets", packaging_linux: "Package Linux / Steam Deck", packaging_windows: "Package Windows", preparing: "Prepare inputs", verifying_inputs: "Check game files", preparing_inputs: "Copy game files", archiving: "Write package", publishing: "Publish to RomM", validating: "Validate package", complete: job.target === "capture" ? "Save preservation checkpoint" : "Archive package" };
     const list = el("ol", "progress-steps");
     job.checkpoints.forEach((checkpoint, index) => {
       const failed = job.status === "failed" && index === job.checkpoints.length - 1;
@@ -694,7 +696,9 @@ function renderVersions(project, content) {
     const labels = [validationLabel(artifact)];
     if (artifact.pinned) labels.push(statusBadge("watching", "Pinned"));
     if (knownGood(artifact, project)) labels.push(statusBadge("ready", "Known good"));
-    if (artifact.published) labels.push(statusBadge("published"));
+    if (artifact.published) labels.push(statusBadge("published", "In local library folder"));
+    if (rommBadge(artifact)) labels.push(rommBadge(artifact));
+    if (artifact.release_review === "compatible") labels.push(statusBadge("watching", "New release · untested"));
     const actions = el("div", "version-actions", [artifactDownload(artifact), button(artifact.pinned ? "Unpin" : "Pin version", "table-action", () => pinArtifact(artifact), busy.has(`pin-${artifact.id}`))]);
     if (!knownGood(artifact, project)) {
       const goodButton = button("Set known good", "table-action", () => setKnownGood(artifact.id), busy.has(`good-${artifact.id}`) || !["launch_checked", "user_confirmed_playable"].includes(validationLevel(artifact)));
@@ -702,10 +706,12 @@ function renderVersions(project, content) {
       actions.append(goodButton);
     }
     if (!artifact.demo && !project.demo) actions.append(button("Record test result", "table-action", () => openValidation(artifact)));
-    if (!artifact.published) actions.append(button("Use in local library", "table-action", () => publishArtifact(artifact.id), busy.has(`publish-${artifact.id}`)));
+    if (!artifact.demo && !["in_romm", "uploading"].includes(artifact.romm?.status)) actions.append(button(artifact.romm?.status === "failed" ? "Retry RomM upload" : "Publish to RomM", "table-action", () => publishToRomM(artifact.id), busy.has(`romm-${artifact.id}`) || !rommReady()));
+    if (artifact.romm?.rom_id && rommConfig().url) { const link = el("a", "table-action", "Open in RomM"); link.href = `${rommConfig().url}/rom/${artifact.romm.rom_id}`; link.target = "_blank"; link.rel = "noopener noreferrer"; actions.append(link); }
+    if (!artifact.published) actions.append(button("Copy to local library folder", "table-action", () => publishArtifact(artifact.id), busy.has(`publish-${artifact.id}`)));
     list.append(el("article", "version-card", [el("div", "version-heading", [el("h3", "", artifact.version || "Archived version"), targetPill(artifact.target)]), el("div", "version-labels", labels), el("div", "version-meta", [el("span", "", bytes(artifact.size)), el("span", "", dateLabel(artifact.created_at))]), ...(artifact.validation?.notes ? [el("p", "version-description", artifact.validation.notes)] : !artifact.demo && !project.demo && validationLevel(artifact) === "packaged" ? [el("p", "version-description", "Confirm gameplay after trying this package to select it as a known-good version.")] : []), actions]));
   });
-  content.append(el("p", "section-intro", "Selecting an older version for the local library rolls it back. Pinned and known-good packages are protected from retention cleanup."), el("div", "inline-actions", button("Retention settings →", "text-button", () => navigateProject(project.id))), list);
+  content.append(el("p", "section-intro", "Publish to RomM uploads a package through RomM's API; older versions stay in RomM as separate files. Copying an older version to the local library folder rolls that folder back. Pinned and known-good packages are protected from retention cleanup."), el("div", "inline-actions", button("Retention settings →", "text-button", () => navigateProject(project.id))), list);
   list.style.marginTop = "22px";
 }
 function unifiedActivity() {
@@ -717,7 +723,7 @@ function unifiedActivity() {
 function activityEvent(event) {
   const project = projectById(event.project_id);
   const title = event.kind === "import" ? "Found in RomM" : event.kind === "test" ? (event.origin === "setup_check" ? "Setup test result" : "Manual test result") : event.title;
-  const result = event.kind === "test" ? el("span", `validation-label ${event.result === "failed" ? "failed" : event.result === "played" ? "confirmed" : ""}`, testResultLabels[event.result]) : event.kind === "import" ? statusBadge("published", "In RomM") : statusBadge(event.result);
+  const result = event.kind === "test" ? el("span", `validation-label ${event.result === "failed" ? "failed" : event.result === "played" ? "confirmed" : ""}`, testResultLabels[event.result] + (event.environment === "wine_proton" ? " under Wine/Proton" : "")) : event.kind === "import" ? statusBadge("published", "In RomM") : statusBadge(event.result);
   const header = el("div", "activity-event-heading", [el("h3", "", title), result]);
   const body = el("div", "activity-event-body", [header, el("p", "activity-event-game", [project?.name || event.project_name || "Game", " · ", targetLabels[event.target] || "Update check"]), el("p", "field-help", event.notes || event.message || ""), el("span", "activity-event-date", `${event.device ? event.device + " · " : ""}${dateLabel(event.created_at)}`)]);
   if (event.package_name) body.append(el("p", "activity-package-name", event.package_name));
@@ -730,7 +736,154 @@ function renderProjectActivity(project, content) {
   const events = unifiedActivity().filter((event) => ids.has(event.project_id));
   content.append(events.length ? el("div", "activity-timeline", events.map(activityEvent)) : emptyState("◷", "No activity recorded yet", "No import discovery, test result, build or update check has been recorded for this game. Existing RomM imports appear after the library connection is checked; Record test result adds a testing event."));
 }
+const runnerLabels = { operations: "Automated packaging", profile: "Reviewed build profile", recipe: "Saved recipe", capture: "Preserve only" };
+const releaseLabels = { packaged: "Packaged", preserved: "Preserved only", needs_review: "Needs review", incomplete: "Capture incomplete" };
+const rommLabels = { uploading: "Uploading to RomM", awaiting_scan: "Uploaded · waiting for RomM", in_romm: "In RomM", failed: "RomM upload failed" };
+let buildProjectId = null;
+function externalLink(label, url) {
+  const node = el("a", "text-button", label);
+  if (typeof url === "string" && /^https:\/\//.test(url)) { node.href = url; node.target = "_blank"; node.rel = "noopener noreferrer"; }
+  return node;
+}
+function releaseBadge(release) {
+  const tone = { packaged: "ready", preserved: "capture_only", needs_review: "needs_attention", incomplete: "needs_attention" }[release.status] || "idle";
+  return statusBadge(tone, releaseLabels[release.status] || release.status);
+}
+function rommBadge(artifact) {
+  const romm = artifact.romm || {};
+  if (!romm.status) return null;
+  const node = statusBadge({ uploading: "running", awaiting_scan: "watching", in_romm: "ready", failed: "failed" }[romm.status] || "idle", rommLabels[romm.status] || romm.status);
+  node.title = romm.status === "failed" ? romm.error || "" : romm.note || (romm.filename ? `${romm.filename}${romm.rom_id ? " · RomM entry " + romm.rom_id : ""}` : "");
+  return node;
+}
+function definitionInstructions(project) {
+  const definition = project.packaging, view = project.packaging_view || {};
+  const section = el("section", "detail-card packaging-instructions");
+  section.append(el("h2", "", "Packaging instructions"), el("p", "detail-note", definition.summary || "Generated from this game's packaging definition."));
+  section.append(el("div", "detail-facts", [meta("Method", runnerLabels[definition.runner] || definition.runner), meta("Definition", `${definition.id} · revision ${definition.revision}`), meta("Platforms", definition.targets.map((target) => targetLabels[target] || target).join(", "))]));
+  if (view.requirements && !view.requirements.supported) section.append(el("p", "project-error", view.requirements.reason));
+  if (project.catalog_update) section.append(el("div", "inline-actions", [el("span", "field-help", `Catalog revision ${project.catalog_update.revision} is available; this game uses revision ${project.catalog_update.current_revision}.`), button("Apply catalog revision", "button secondary small", () => applyCatalogDefinition(project.id), busy.has(`catalog-${project.id}`))]));
+  if (definition.runner === "capture") section.append(el("p", "detail-note", "Releases are only preserved. No packaging steps are defined, so Portkeeper does not produce a download. Existing RomM imports were assembled separately."));
+  const list = el("div", "instruction-sections");
+  const group = (heading, nodes) => list.append(el("section", "instruction-section", [el("h3", "", heading), ...nodes]));
+  const rules = definition.upstream.release_rules || {};
+  group("1. Upstream & release rules", [repoLink(definition.upstream.repository), ...(definition.upstream.documentation || []).map((url) => el("p", "", externalLink(url.replace(/^https:\/\//, "") + " ↗", url))),
+    el("p", "field-help", `${rules.stable_only === false ? "Pre-releases are allowed" : "Stable releases only"}${rules.tag_pattern ? ` · the tag must match ${rules.tag_pattern}` : ""}`), ...(rules.notes ? [el("p", "field-help", rules.notes)] : [])]);
+  const downloads = Object.entries(definition.downloads || {}).map(([key, item]) => el("p", "", [el("strong", "", `${key}${item.platform && item.platform !== "any" ? " · " + (targetLabels[item.platform] || item.platform) : ""}: `), item.repository ? `${item.repository} ${item.tag} · ${item.asset} · SHA-256 ${item.sha256}` : `the release file matching ${item.asset_pattern}`, item.required_members?.length ? el("span", "field-help", ` · must contain ${item.required_members.join(", ")}`) : "", item.description ? el("span", "field-help", ` · ${item.description}`) : ""]));
+  (definition.verified_releases || []).forEach((release) => downloads.push(el("details", "diagnostics-list", [el("summary", "table-action", `Reviewed release ${release.release}: file checksums`), ...Object.entries(release.assets || {}).map(([name, hash]) => el("p", "field-help", `${name} · SHA-256 ${hash}`)), ...(release.evidence ? [el("p", "field-help", release.evidence)] : [])])));
+  if (!downloads.length) downloads.push(el("p", "field-help", definition.runner === "profile" ? "The reviewed profile pins its runtime downloads; see the reviewed release checksums." : "No release files are selected."));
+  group("2. Selected downloads & checksums", downloads);
+  group("3. Your game files", inputsSection(project));
+  group("4. Build steps", view.steps?.length ? [el("ol", "instruction-steps", view.steps.map((step) => el("li", "", step.text)))] : [el("p", "field-help", "No build steps are defined.")]);
+  group("5. Platform packages & launch", definition.targets.map((target) => {
+    const output = (definition.outputs || {})[target] || {}, launch = (definition.launch || {})[target] || {}, dependencies = (definition.dependencies || {})[target] || [];
+    return el("div", "instruction-platform", [el("h4", "", targetLabels[target] || target), el("p", "field-help", `Launch: ${launch.command || "not recorded"}${launch.instructions ? " — " + launch.instructions : ""}`), el("p", "field-help", `Expected files: ${(output.expected_files || []).join(", ") || "not recorded"}`), el("p", "field-help", `Requirements: ${dependencies.join("; ") || "not recorded"}`)]);
+  }));
+  group("6. Saves, new-release checks & known limitations", [el("p", "field-help", `Saves & settings: ${definition.saves || "Not recorded."}`), ...(definition.source_checks || []).map((check) => el("p", "field-help", `New-release check: ${check.description} (${check.path})`)), ...(definition.limitations || []).map((item) => el("p", "review-notes", item))]);
+  if ((definition.history || []).length) group("History", definition.history.map((item) => el("p", "field-help", item)));
+  section.append(list);
+  return section;
+}
+function inputsSection(project) {
+  const definition = project.packaging, bindings = project.input_bindings || {};
+  if (definition.runner === "profile") return [el("p", "field-help", "Chosen and verified in the worker wizard: " + (project.rom_source?.member || project.rom_source?.filename || project.rom_source?.path || "not selected"))];
+  if (!(definition.inputs || []).length) return [el("p", "field-help", definition.runner === "recipe" ? "Declared in the saved recipe's inputs." : "No game files are needed.")];
+  return definition.inputs.map((item) => {
+    const binding = bindings[item.id], key = `input-${project.id}`;
+    const node = el("div", "instruction-input", [el("h4", "", item.label + (item.required === false ? " (optional)" : "")),
+      el("p", "field-help", item.accepted?.length ? `Accepted: ${item.accepted.map((entry) => entry.label).join(", ")}${item.normalize ? " (checked after byte-order normalization)" : ""}` : "Validated after extraction; see the build steps."),
+      ...(item.notes ? [el("p", "field-help", item.notes)] : []),
+      el("p", "field-help", binding ? `Selected: ${binding.source === "prepared" ? "app data prepared/" : ""}${binding.path}${binding.accepted ? " · verified as " + binding.accepted : ""}` : item.required === false ? "Not selected." : "Not selected yet. Portkeeper searches your game files folder when a build starts.")]);
+    const path = input(`input-path-${project.id}-${item.id}`, "text", binding?.path || "");
+    path.placeholder = item.kind === "directory" ? "Folder under the app data prepared/ folder" : "Path below your game files folder, such as n64/roms/game.z64";
+    path.setAttribute("aria-label", `${item.label} path`);
+    node.append(el("div", "inline-actions input-binding", [path, button("Save path", "button secondary small", () => bindInput(project.id, item.id, { path: path.value.trim(), source: item.kind === "directory" ? "prepared" : "inputs" }), busy.has(key) || !path.value), button("Find automatically", "button secondary small", () => bindInput(project.id, item.id, {}), busy.has(key)), ...(binding ? [button("Clear", "text-button", () => bindInput(project.id, item.id, { clear: true }), busy.has(key))] : [])]));
+    path.addEventListener("input", () => { node.querySelector(".input-binding button").disabled = !path.value.trim(); });
+    return node;
+  });
+}
+async function bindInput(projectId, inputId, body) {
+  const result = await runAction(`input-${projectId}`, `/api/projects/${encodeURIComponent(projectId)}/inputs`, { input: inputId, ...body }, "");
+  if (!result) return;
+  if (result.found && result.found.length !== 1) toast(`${result.message}${result.found.length ? ": " + result.found.map((item) => item.path).join(", ") : ""}`, true);
+  else toast(body.clear ? "Game file selection cleared." : "Game file saved for future builds.");
+}
+function applyCatalogDefinition(id) { return runAction(`catalog-${id}`, `/api/projects/${encodeURIComponent(id)}/catalog-definition`, {}, "Catalog packaging definition applied. New packages get a new revision."); }
+function releasesCard(project) {
+  const card = el("section", "detail-card", [el("h2", "", "Releases & packaging status"), el("p", "detail-note", "Preserved means the upstream release is archived only. Packaged means Portkeeper produced a download from it. In RomM means the upload was indexed by RomM.")]);
+  const releases = project.releases || [];
+  if (!releases.length) { card.append(el("p", "detail-empty", "No release has been preserved yet. Select Check upstream.")); return card; }
+  const rows = releases.slice(0, 10).map((release) => {
+    const problems = release.review?.status === "needs_review" ? el("ul", "review-problems", release.review.problems.map((problem) => el("li", "", problem))) : release.review?.notes?.length ? el("p", "field-help", release.review.notes.join(" ")) : "";
+    const status = el("div", "", [releaseBadge(release), release.packaged_targets.length ? el("span", "field-help", ` ${release.packaged_targets.map((t) => targetLabels[t] || t).join(", ")}`) : "", release.romm_targets.length ? el("span", "field-help", ` · in RomM: ${release.romm_targets.map((t) => targetLabels[t] || t).join(", ")}`) : ""]);
+    const canBuild = project.packaging?.runner !== "capture" && release.complete && release.status !== "needs_review";
+    return el("tr", "", [el("td", "", [el("span", "table-title", release.version || "Release"), el("span", "table-detail", `${(release.commit || "").slice(0, 12)} · ${dateLabel(release.created_at)}`)]), el("td", "", [status, problems]), el("td", "", canBuild ? button("Build…", "table-action", () => openBuild(project.id, release.capture_id)) : "")]);
+  });
+  card.append(table(["Release", "Status", ""], rows));
+  return card;
+}
+function automationCard(project) {
+  const card = el("section", "detail-card", [el("h2", "", "Automation"), el("p", "detail-note", "New releases are checked against this game's compatibility rules. Compatible ones can be packaged and published without you; anything unexpected is preserved and reported for review instead.")]);
+  const autoBuild = input(`auto-build-${project.id}`, "checkbox"), autoPublish = input(`auto-publish-${project.id}`, "checkbox");
+  autoBuild.checked = Boolean(project.auto_build); autoPublish.checked = Boolean(project.auto_publish); autoPublish.disabled = !autoBuild.checked;
+  const destination = el("select"); destination.id = `auto-destination-${project.id}`; destination.setAttribute("aria-label", "Automatic publication destination");
+  [["romm", "Upload to RomM"], ["library", "Copy to the local library folder only"]].forEach(([value, label]) => { const option = el("option", "", label); option.value = value; destination.append(option); });
+  destination.value = project.auto_publish_destination || "romm"; destination.disabled = !autoPublish.checked;
+  autoBuild.addEventListener("change", () => { autoPublish.disabled = !autoBuild.checked; if (!autoBuild.checked) autoPublish.checked = false; destination.disabled = !autoPublish.checked; });
+  autoPublish.addEventListener("change", () => { destination.disabled = !autoPublish.checked; });
+  const capture = project.packaging?.runner === "capture" || project.recipe?.mode === "capture";
+  if (capture) { autoBuild.disabled = true; autoPublish.disabled = true; destination.disabled = true; }
+  card.append(el("label", "checkbox-line", [autoBuild, "Automatically build compatible new releases"]), el("label", "checkbox-line", [autoPublish, "Automatically publish successful packages"]), destination,
+    el("p", "field-help", "RomM uploads use RomM's upload API and need a token with roms.write. RomM adds the file to its library after its filesystem watcher rescans; Portkeeper confirms the new entry. A local library folder copy reaches RomM only if that folder is RomM's own platform folder."),
+    el("p", "field-help", capture ? "This game preserves releases only, so automatic builds are unavailable until it has packaging steps." : `Checks upstream every ${project.poll_minutes || 60} minutes.`),
+    el("div", "inline-actions", button("Save automation", "button secondary small", () => saveAutomation(project.id, autoBuild.checked, autoPublish.checked, destination.value), busy.has(`automation-${project.id}`) || capture)));
+  return card;
+}
+async function saveAutomation(id, autoBuild, autoPublish, destination) {
+  busy.add(`automation-${id}`); render();
+  try { await api(`/api/projects/${encodeURIComponent(id)}`, { method: "PATCH", body: { auto_build: autoBuild, auto_publish: autoBuild && autoPublish, auto_publish_destination: destination } }); toast("Automation settings saved."); await refresh(); }
+  catch (error) { toast(error.message, true); }
+  finally { busy.delete(`automation-${id}`); render(); }
+}
+function openBuild(id, captureId) {
+  const project = projectById(id); if (!project) return; buildProjectId = id;
+  const releases = (project.releases || []).filter((release) => release.complete && release.status !== "needs_review");
+  const select = $("build-release"); select.replaceChildren();
+  if (!releases.length && project.capture_id) { const option = el("option", "", project.latest_version || "Latest preserved release"); option.value = project.capture_id; select.append(option); }
+  releases.forEach((release) => { const option = el("option", "", `${release.version} · ${releaseLabels[release.status] || release.status}`); option.value = release.capture_id; select.append(option); });
+  if (captureId) select.value = captureId;
+  const targets = $("build-targets"); targets.replaceChildren();
+  project.targets.forEach((target) => { const box = input(`build-target-${target}`, "checkbox"); box.value = target; box.checked = true; targets.append(el("label", "", [box, targetLabels[target] || target])); });
+  $("build-heading").textContent = `Build ${project.name}`;
+  $("build-note").textContent = project.packaging?.runner === "operations" ? "Builds run the packaging definition with your verified game files. Large games need time and free disk space; progress and errors appear under Build diagnostics." : "Builds run this game's saved build instructions.";
+  $("build-error").textContent = ""; $("build-submit").disabled = !select.options.length; $("build-dialog").showModal();
+}
+async function submitBuild(event) {
+  event.preventDefault(); const project = projectById(buildProjectId); if (!project) return;
+  const targets = [...$("build-targets").querySelectorAll("input:checked")].map((node) => node.value);
+  if (!targets.length) { $("build-error").textContent = "Choose at least one platform."; return; }
+  $("build-submit").disabled = true;
+  try { await api(`/api/projects/${encodeURIComponent(project.id)}/build`, { method: "POST", body: { targets, capture_id: $("build-release").value || undefined } }); $("build-dialog").close(); toast("Build queued. Follow its progress under Build diagnostics."); navigateProject(project.id, "advanced"); await refresh(); }
+  catch (error) { $("build-error").textContent = error.message; }
+  finally { $("build-submit").disabled = false; }
+}
+function publishToRomM(id) { return runAction(`romm-${id}`, `/api/artifacts/${encodeURIComponent(id)}/publish-romm`, {}, "Upload to RomM queued. Its progress appears under Build diagnostics."); }
+function refreshCatalog() { return runAction("catalog-refresh", "/api/catalog/refresh", {}, "Catalog refreshed."); }
+function renderCatalog() {
+  const catalog = state.catalog || {}, node = $("catalog-content"); if (!node) return;
+  node.replaceChildren();
+  const age = catalog.age_seconds == null ? "never fetched from GitHub" : catalog.age_seconds < 3600 ? `${Math.max(1, Math.round(catalog.age_seconds / 60))} minutes old` : catalog.age_seconds < 172800 ? `${Math.round(catalog.age_seconds / 3600)} hours old` : `${Math.round(catalog.age_seconds / 86400)} days old`;
+  node.append(el("div", "detail-facts", [meta("Using", catalog.using || "bundled catalog"), meta("Source", catalog.source || "—", true), meta("Age", age), meta("Last checked", catalog.checked_at ? dateLabel(catalog.checked_at) : "Not yet")]));
+  if (catalog.error) node.append(el("p", "project-error", catalog.error));
+  node.append(el("div", "inline-actions", button(busy.has("catalog-refresh") ? "Refreshing…" : "Refresh catalog", "button secondary", refreshCatalog, busy.has("catalog-refresh"))), el("p", "field-help", catalog.explanation || ""));
+  const definitions = catalog.definitions || [];
+  if (definitions.length) node.append(table(["Packaging definition", "Revision", "Status"], definitions.map((item) => el("tr", "", [el("td", "", [el("span", "table-title", item.name), el("span", "table-detail", `${item.id}${item.repository ? " · " + item.repository : ""}`)]), el("td", "", String(item.revision ?? "—")), el("td", "", item.supported ? statusBadge("ready", item.origin === "github" ? "From GitHub" : "Bundled") : [statusBadge("unsupported_version", "Needs a Portkeeper update"), el("p", "field-help", item.reason || "")])]))));
+  const scopes = [];
+  (catalog.projects || []).forEach((project) => (project.verification_scopes || []).forEach((scope) => scopes.push(el("tr", "", [el("td", "", [el("span", "table-title", project.name), el("span", "table-detail", project.repository)]), el("td", "", `${scope.release} · ${targetLabels[scope.platform] || scope.platform}${scope.package_revision ? " · package " + scope.package_revision : ""}`), el("td", "", [statusBadge(scope.status === "verified" ? "ready" : scope.status === "needs_review" ? "needs_attention" : "watching", { verified: "Verified packaging profile", candidate: "Candidate · not approved", needs_review: "Needs review" }[scope.status] || scope.status), el("p", "field-help", Object.entries(scope.checks || {}).map(([key, value]) => `${key}: ${value}`).join(" · "))])]))));
+  if (scopes.length) node.append(el("h3", "", "Verification scopes"), el("p", "field-help", "Verification applies to the named release, package revision and platform only. It never changes a download's own test result."), table(["Project", "Scope", "Status & evidence"], scopes));
+}
 function packagingInstructions(project) {
+  if (project.packaging) return definitionInstructions(project);
   const recipe = project.recipe || captureRecipe, profile = profiles.find(item => item.id === project.profile);
   const capture = project.preserved_release || {}, section = el("section", "detail-card packaging-instructions");
   section.append(el("h2", "", "Packaging instructions"), el("p", "detail-note", recipe.mode === "capture" ? "Packaging instructions not configured yet. This project preserves upstream source and releases; existing RomM downloads were assembled separately and do not prove automatic packaging is configured." : "These instructions explain the saved configuration Portkeeper uses to produce platform downloads."));
@@ -768,9 +921,11 @@ function packagingInstructions(project) {
 function renderAdvanced(project, content, openJobs) {
   const stack = el("div", "advanced-stack");
   stack.append(packagingInstructions(project));
-  const configuration = el("section", "detail-card", [el("h2", "", "Saved configuration & automation"), el("p", "detail-note", project.profile ? "This game uses fixed, reviewed build instructions for its supported release. Automation settings are editable; changing trusted build execution requires a profile update. New unsupported releases are preserved for review." : "A custom recipe controls required inputs, outputs, and the build runner.")]);
-  configuration.append(el("div", "detail-facts", [meta("Packaging method", project.recipe?.mode || "capture"), meta("Automatic build", project.auto_build ? "Enabled" : "Disabled"), meta("Automatic local library copy", project.auto_publish ? "Enabled" : "Disabled"), meta("Polling interval", `${project.poll_minutes || 60} minutes`)]), button("Edit packaging instructions", "button secondary small", () => openRecipe(project.id)));
-  const json = el("details", "diagnostics-list"); json.append(el("summary", "table-action", "Executable configuration (JSON)"), el("pre", "json-preview", JSON.stringify(project.recipe || captureRecipe, null, 2))); configuration.append(json); stack.append(configuration);
+  if (project.packaging) stack.append(releasesCard(project), automationCard(project));
+  const configuration = el("section", "detail-card", [el("h2", "", project.packaging ? "Packaging definition (JSON)" : "Saved configuration & automation"), el("p", "detail-note", project.packaging ? "The readable instructions above are generated from this definition. Editing it creates a new definition revision, so new packages and their tests are never confused with older ones." + (project.profile ? " The reviewed profile's build commands stay fixed." : "") : project.profile ? "This game uses fixed, reviewed build instructions for its supported release. Automation settings are editable; changing trusted build execution requires a profile update. New unsupported releases are preserved for review." : "A custom recipe controls required inputs, outputs, and the build runner.")]);
+  if (!project.packaging) configuration.append(el("div", "detail-facts", [meta("Packaging method", project.recipe?.mode || "capture"), meta("Automatic build", project.auto_build ? "Enabled" : "Disabled"), meta("Automatic local library copy", project.auto_publish ? "Enabled" : "Disabled"), meta("Polling interval", `${project.poll_minutes || 60} minutes`)]));
+  configuration.append(button(project.packaging ? "Edit packaging definition" : "Edit packaging instructions", "button secondary small", () => openRecipe(project.id)));
+  const json = el("details", "diagnostics-list"); json.append(el("summary", "table-action", project.packaging ? "View definition JSON" : "Executable configuration (JSON)"), el("pre", "json-preview", JSON.stringify(project.packaging || project.recipe || captureRecipe, null, 2))); configuration.append(json); stack.append(configuration);
   const assistant = el("section", "detail-card", [el("h2", "", "Draft packaging instructions with Ollama"), el("p", "detail-note", project.profile ? "A local model can draft notes for this verified profile. Its reviewed build instructions remain fixed; proposals are reviewed before saving." : "Describe a required change or a build error. A local model can draft a proposal; you review the JSON before saving it.")]);
   const prompt = el("textarea", "assistant-prompt"); prompt.id = "assistant-project-prompt"; prompt.rows = 3; prompt.placeholder = "Explain the change you want to make…"; prompt.value = assistantPromptDrafts.get(project.id) || ""; prompt.addEventListener("input", () => assistantPromptDrafts.set(project.id, prompt.value));
   field(assistant, "Requested change", prompt);
@@ -1046,6 +1201,11 @@ async function submitProject(event) {
 }
 function openRecipe(id) {
   const project = projectById(id); if (!project) return; recipeProjectId = id;
+  if (project.packaging) {
+    $("recipe-heading").textContent = `${project.name} packaging definition`; $("recipe-dialog").querySelector(".dialog-intro").textContent = "This JSON is the source of truth for the readable instructions, builds and compatibility checks. Saving a change creates a new revision. Operations and tools are limited to what this Portkeeper version supports.";
+    $("recipe-json").value = JSON.stringify(project.packaging, null, 2); $("recipe-json").readOnly = false; $("recipe-template").disabled = true; $("apply-template").disabled = true;
+    $("recipe-auto-build").checked = Boolean(project.auto_build); $("recipe-auto-publish").checked = Boolean(project.auto_publish); syncAutoPublish(); $("recipe-template").value = ""; $("recipe-form-error").textContent = ""; $("recipe-dialog").showModal(); return;
+  }
   $("recipe-heading").textContent = `${project.name} packaging instructions`; $("recipe-dialog").querySelector(".dialog-intro").textContent = project.profile ? "This profile’s reviewed build instructions are fixed. You can edit the automation settings below." : "Saved recipes run repeatably. Device-specific overrides define each package’s outputs."; $("recipe-json").value = JSON.stringify(project.recipe || captureRecipe, null, 2); $("recipe-json").readOnly = Boolean(project.profile); $("recipe-template").disabled = Boolean(project.profile); $("apply-template").disabled = Boolean(project.profile); $("recipe-auto-build").checked = Boolean(project.auto_build); $("recipe-auto-publish").checked = Boolean(project.auto_publish); syncAutoPublish(); $("recipe-template").value = ""; $("recipe-form-error").textContent = ""; $("recipe-dialog").showModal();
 }
 function syncAutoPublish() { const enabled = $("recipe-auto-build").checked; $("recipe-auto-publish").disabled = !enabled; if (!enabled) $("recipe-auto-publish").checked = false; }
@@ -1055,7 +1215,8 @@ async function submitRecipe(event) {
     let recipe; try { recipe = JSON.parse($("recipe-json").value); } catch (error) { throw new Error(`The recipe must be valid JSON. ${error.message}`); }
     if (!recipe || Array.isArray(recipe) || typeof recipe !== "object") throw new Error("The recipe must be a JSON object.");
     submit.disabled = true; submit.textContent = "Saving…";
-    await api(`/api/projects/${encodeURIComponent(recipeProjectId)}`, { method: "PATCH", body: { recipe, auto_build: $("recipe-auto-build").checked, auto_publish: $("recipe-auto-publish").checked } }); $("recipe-dialog").close(); toast("Packaging instructions and automation saved."); await refresh();
+    const definitionBacked = Boolean(projectById(recipeProjectId)?.packaging);
+    await api(`/api/projects/${encodeURIComponent(recipeProjectId)}`, { method: "PATCH", body: { ...(definitionBacked ? { packaging: recipe } : { recipe }), auto_build: $("recipe-auto-build").checked, auto_publish: $("recipe-auto-publish").checked } }); $("recipe-dialog").close(); toast("Packaging instructions and automation saved."); await refresh();
   } catch (error) { $("recipe-form-error").textContent = error.message; }
   finally { submit.disabled = false; submit.textContent = "Save recipe"; }
 }
@@ -1069,6 +1230,7 @@ function openReview(project, artifact, rom) {
   $("validation-device").value = review?.device || "";
   $("validation-notes").value = review?.notes || "";
   $("validation-result").value = review?.result || "";
+  $("validation-environment-field").hidden = target !== "windows"; $("validation-environment").value = review?.environment || "native";
   $("validation-error").textContent = ""; syncReviewFields(); $("validation-dialog").showModal();
 }
 function syncReviewFields() {
@@ -1082,7 +1244,7 @@ async function submitValidation(event) {
   event.preventDefault(); const submit = $("validation-submit"); if (submit.disabled || !reviewContext) return; submit.disabled = true; $("validation-error").textContent = "";
   const {artifact,rom,projectId} = reviewContext;
   try {
-    await api(`/api/projects/${projectId}/playtest`, {method:"POST",body:{...(artifact ? {artifact_id:artifact.id,signature:artifact.sha256} : {romm_rom_id:rom.id,signature:rom.package_signature}),result:$("validation-result").value,device:$("validation-device").value.trim(),notes:$("validation-notes").value.trim(),confirmed:$("validation-confirm").checked}});
+    await api(`/api/projects/${projectId}/playtest`, {method:"POST",body:{...(artifact ? {artifact_id:artifact.id,signature:artifact.sha256} : {romm_rom_id:rom.id,signature:rom.package_signature}),result:$("validation-result").value,environment:$("validation-environment-field").hidden ? "native" : $("validation-environment").value,device:$("validation-device").value.trim(),notes:$("validation-notes").value.trim(),confirmed:$("validation-confirm").checked}});
     $("validation-dialog").close(); toast("Test result saved for this download and added to Activity.");
     rommImports.clear(); await refresh(true);
   } catch (error) { $("validation-error").textContent = error.message; }
@@ -1233,6 +1395,7 @@ $("add-project").addEventListener("click", openWizard);
 $("manual-project").addEventListener("click", openCustomProject);
 $("refresh").addEventListener("click", () => refresh(true));
 $("metadata-form").addEventListener("submit", saveMetadata);
+$("build-form").addEventListener("submit", submitBuild);
 $("cover-form").addEventListener("submit", searchCovers);
 $("cover-apply").addEventListener("click", applyCover);
 document.querySelectorAll('[name="library-layout"]').forEach((node) => node.addEventListener("change", () => {

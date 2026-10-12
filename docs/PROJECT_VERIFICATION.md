@@ -46,10 +46,10 @@ A Windows catalog scope cannot be promoted to verified on static checks or Wine/
 
 ## Catalog contract
 
-`catalog/projects.json` is the human-editable catalog source. Schema version 1 uses a `projects` array. Each project has `id`, `name`, `repository`, `procedure_kind`, `build_profile_available`, `verification_scopes`, and `notes`.
+`catalog/projects.json` is the human-editable catalog source. Schema version 1 uses a `projects` array. Each project has `id`, `name`, `repository`, `procedure_kind`, `build_profile_available`, `verification_scopes`, and `notes`, and optionally `definition`, the path of its packaging definition under `catalog/definitions/`.
 
 Every scope records `release`, `package_revision`, `platform`, `status` (`candidate`, `verified`, `needs_review`), `archive_sha256`, `evidence`, `device`, `checks`, and `approval`. Missing historical facts remain null/unknown. Checks identify `packaging`, `portability`, `startup`, and `gameplay` separately. An approval records `by`, `at`, `reference`, and `scope`; null means approval has not been established.
 
 GitHub entries describe reviewed support and evidence. They must not be treated as arbitrary executable commands. Catalog membership does not install a new build runner or bypass the app's pinned build-profile guards.
 
-The initial catalog is an evidence inventory, not a retroactive approval. The current application still reads its bundled profiles; fetching and caching this catalog is a separate implementation step. When implemented, invalid/unavailable remote data should retain the last valid cache, report its age/source, and fall back to bundled support on first use. Refreshing a catalog must not mark an existing download playable.
+The initial catalog is an evidence inventory, not a retroactive approval. Portkeeper fetches it from GitHub daily and on **Refresh catalog**. Invalid or unavailable remote data retains the last valid cache, the age and source are shown, and the catalog bundled in the image is used on first use. Refreshing a catalog never marks a download playable and never applies a definition to a project by itself. A verified scope must name who approved it and an approval reference, or the refresh is rejected.

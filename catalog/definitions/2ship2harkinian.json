@@ -1,0 +1,204 @@
+{
+  "schema": 2,
+  "id": "2ship2harkinian",
+  "revision": 1,
+  "name": "2 Ship 2 Harkinian",
+  "game": "The Legend of Zelda: Majora's Mask",
+  "package_prefix": "2-Ship-2-Harkinian",
+  "summary": "Official 2 Ship 2 Harkinian runtimes with mm.o2r generated from your Majora's Mask ROM, in a portable folder.",
+  "runner": "operations",
+  "runner_version": 1,
+  "upstream": {
+    "repository": "2ship2harkinian/2ship2harkinian",
+    "documentation": [
+      "https://github.com/2ship2harkinian/2ship2harkinian#readme",
+      "https://github.com/2ship2harkinian/2ship2harkinian/blob/5.0.1/docs/supportedHashes.json"
+    ],
+    "release_rules": {
+      "stable_only": true,
+      "tag_pattern": "[0-9]+\\.[0-9]+\\.[0-9]+",
+      "notes": "Stable numbered releases only. Each release ships Linux and Win64 ZIPs named 2Ship-<Codename>-<Platform>.zip."
+    }
+  },
+  "targets": [
+    "linux",
+    "windows"
+  ],
+  "downloads": {
+    "linux": {
+      "asset_pattern": "^2Ship-[A-Za-z]+-[A-Za-z]+-Linux\\.zip$",
+      "platform": "linux",
+      "format": "zip",
+      "required_members": [
+        "2ship.appimage"
+      ],
+      "description": "Official Linux AppImage. Also used to generate mm.o2r for every platform."
+    },
+    "windows": {
+      "asset_pattern": "^2Ship-[A-Za-z]+-[A-Za-z]+-Win64\\.zip$",
+      "platform": "windows",
+      "format": "zip",
+      "required_members": [
+        "2ship.exe",
+        "2ship.o2r"
+      ],
+      "description": "Official Windows x64 build."
+    }
+  },
+  "inputs": [
+    {
+      "id": "rom",
+      "label": "The Legend of Zelda: Majora's Mask (USA) N64 ROM",
+      "kind": "file",
+      "platform_hint": "n64",
+      "name_hint": "(?i)majora",
+      "normalize": "n64_big_endian",
+      "accepted": [
+        {
+          "label": "NTSC-U 1.0",
+          "sha1": "d6133ace5afaa0882cf214cf88daba39e266c078"
+        }
+      ],
+      "max_bytes": 67108864,
+      "notes": "SHA-1 is checked after byte-order normalization. Upstream also lists NTSC-U GC; it has not been packaged here."
+    }
+  ],
+  "source_checks": [
+    {
+      "description": "Upstream still lists your ROM revision as supported",
+      "path": "docs/supportedHashes.json",
+      "contains_input_hash": "rom"
+    }
+  ],
+  "operations": [
+    {
+      "op": "unpack_download",
+      "download": "linux",
+      "to": "$package",
+      "targets": [
+        "linux"
+      ]
+    },
+    {
+      "op": "unpack_download",
+      "download": "windows",
+      "to": "$package",
+      "targets": [
+        "windows"
+      ]
+    },
+    {
+      "op": "stage_input",
+      "input": "rom",
+      "to": "$shared/mm.z64"
+    },
+    {
+      "op": "tool",
+      "tool": "ship_o2r_headless",
+      "download": "linux",
+      "appimage": "2ship.appimage",
+      "rom": "$shared/mm.z64",
+      "output": "mm.o2r",
+      "to": "$shared/mm.o2r",
+      "min_entries": 40000,
+      "timeout_minutes": 20
+    },
+    {
+      "op": "copy",
+      "from": "$shared/mm.o2r",
+      "to": "$package/mm.o2r"
+    },
+    {
+      "op": "launcher",
+      "targets": [
+        "linux"
+      ],
+      "path": "Launch.sh",
+      "template": "posix",
+      "env": {
+        "SHIP_HOME": "$PWD",
+        "APPIMAGE_EXTRACT_AND_RUN": "1"
+      },
+      "chmod_exec": true,
+      "exec": "2ship.appimage"
+    },
+    {
+      "op": "launcher",
+      "targets": [
+        "windows"
+      ],
+      "path": "Launch.cmd",
+      "template": "windows_cmd",
+      "env": {
+        "SHIP_HOME": "%CD%"
+      },
+      "exec": "2ship.exe"
+    },
+    {
+      "op": "write_text",
+      "path": "$package/PORTABLE-README.txt",
+      "text": "2 Ship 2 Harkinian {version} portable package.\nExtract the entire ZIP to a writable folder, then run {launch_command}.\nmm.o2r was generated from your verified Majora's Mask ROM. SHIP_HOME keeps settings and saves in this folder; keep the whole folder together when moving it.\nOfficial upstream: https://github.com/{repository}\nPackaging checks file structure only. Record startup or gameplay results separately for this exact download.\n"
+    }
+  ],
+  "outputs": {
+    "linux": {
+      "expected_files": [
+        "2ship.appimage",
+        "mm.o2r",
+        "Launch.sh",
+        "PORTABLE-README.txt"
+      ],
+      "compression": "deflate",
+      "max_bytes": 1073741824
+    },
+    "windows": {
+      "expected_files": [
+        "2ship.exe",
+        "2ship.o2r",
+        "mm.o2r",
+        "Launch.cmd",
+        "PORTABLE-README.txt"
+      ],
+      "compression": "deflate",
+      "max_bytes": 1073741824
+    }
+  },
+  "launch": {
+    "linux": {
+      "command": "Launch.sh",
+      "instructions": "Extract the whole ZIP to a writable folder and run Launch.sh. It sets SHIP_HOME to the package folder and runs the AppImage without FUSE."
+    },
+    "windows": {
+      "command": "Launch.cmd",
+      "instructions": "Extract the whole ZIP to a writable folder and run Launch.cmd. It sets SHIP_HOME to the package folder."
+    }
+  },
+  "saves": "SHIP_HOME points at the package folder, so 2ship2harkinian.json settings, saves and logs stay beside the game. Carry them forward when replacing the folder.",
+  "dependencies": {
+    "linux": [
+      "x86-64 Linux desktop with working graphics drivers",
+      "No FUSE needed; the launcher sets APPIMAGE_EXTRACT_AND_RUN=1"
+    ],
+    "windows": [
+      "Windows x64 (requirements as published upstream)"
+    ]
+  },
+  "limitations": [
+    "mm.o2r is generated by the Linux AppImage under a virtual display. Its archive is not byte-for-byte reproducible: a few limb resources differ between runs, so packages are compared by checksum per build, not across builds.",
+    "The Windows package reuses the mm.o2r generated by the Linux AppImage of the same release.",
+    "Windows packages have not been launched on native Windows."
+  ],
+  "verified_releases": [
+    {
+      "release": "5.0.1",
+      "assets": {
+        "2Ship-Battler-Bravo-Linux.zip": "6cdd4fe06f3f9b095e99c86fef70b9265cc921fb6faa7ba1e18e94e90ed0b345",
+        "2Ship-Battler-Bravo-Win64.zip": "a46664a01623ad5d7cc82d29a9889699f6a98c9501c7a959a089f34380c1f078"
+      },
+      "evidence": "Manual 2026-10-11 package: Linux startup checked on Fedora; Windows assembled, not launched (RomM 12963 / 12966)."
+    }
+  ],
+  "history": [
+    "2026-10-11: first packages assembled with outputs/package-native-ports.py after running the AppImage with the ROM on a desktop to create mm.o2r. This definition automates the same steps."
+  ]
+}

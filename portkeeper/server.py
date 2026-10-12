@@ -174,6 +174,21 @@ class Handler(BaseHTTPRequestHandler):
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/test-build", path) and method == "POST":
                 self.body()
                 self.json(202, self.engine.test_build(path.split("/")[3]))
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/inputs", path) and method == "POST":
+                self.json(200, self.engine.bind_input(path.split("/")[3], self.body()))
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/catalog-definition", path) and method == "POST":
+                self.body()
+                self.json(200, self.engine.catalog.apply(path.split("/")[3]))
+            elif method == "GET" and path == "/api/catalog":
+                self.json(200, self.engine.catalog.status())
+            elif method == "POST" and path == "/api/catalog/refresh":
+                self.body()
+                self.json(200, self.engine.catalog.refresh())
+            elif re.fullmatch(r"/api/artifacts/[a-f0-9]{32}/publish-romm", path) and method == "POST":
+                self.body()
+                self.json(202, self.engine.publisher.queue(path.split("/")[3]))
+            elif re.fullmatch(r"/api/jobs/[a-f0-9]{32}", path) and method == "GET":
+                self.json(200, self.engine.store.get("jobs", path.split("/")[3]))
             elif re.fullmatch(r"/api/jobs/[a-f0-9]{32}/retry", path) and method == "POST":
                 self.body()
                 self.json(202, self.engine.retry(path.split("/")[3]))

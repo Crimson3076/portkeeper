@@ -376,7 +376,7 @@ class EngineTests(unittest.TestCase):
         project = self.create_project(auto_build=True)
         with self.assertRaisesRegex(Invalid, "automatic builds"):
             self.engine.update_project(project["id"], {"auto_build": False, "auto_publish": True})
-        project = self.engine.update_project(project["id"], {"auto_publish": True})
+        project = self.engine.update_project(project["id"], {"auto_publish": True, "auto_publish_destination": "library"})
         project = self.capture(project)
         old = {target: self.artifact_for(project, target, "v1") for target in TARGETS}
         self.assertTrue(all(artifact["published"] for artifact in old.values()))
