@@ -129,6 +129,7 @@ SYSTEM = (
     "- Keep saves and settings inside the package folder ONLY when the project supports a portable mode. "
     "If source uses APPDATA or another external location, describe that actual location; never claim the "
     "package is fully portable. Do not call a community project official unless the material establishes it.\n"
+    "- Judge first_run and portability using the actual generated wrapper and settings: supported environment overrides may redirect upstream defaults into the package. A configured first_run must not also require choosing the game folder manually.\n"
     "- State anything you are unsure about in limitations and in your explanation.\n"
     "Reply with one JSON object only: {\"explanation\": \"what you found and what is uncertain\", "
     "\"definition\": {...}}."
@@ -592,9 +593,9 @@ def unsupported_hashes(definition, material):
 REVIEW_SCHEMA = {
     'type': 'object', 'additionalProperties': False, 'required': ['summary', 'findings'],
     'properties': {'summary': {'type': 'string'}, 'findings': {'type': 'array', 'maxItems': 12, 'items': {
-        'type': 'object', 'additionalProperties': False, 'required': ['severity', 'field', 'message', 'evidence'],
+        'type': 'object', 'additionalProperties': False, 'required': ['severity', 'field', 'message', 'candidate_quote', 'evidence'],
         'properties': {'severity': {'type': 'string', 'enum': ['issue', 'uncertain', 'note']},
-                       'field': {'type': 'string'}, 'message': {'type': 'string'},
+                       'field': {'type': 'string'}, 'message': {'type': 'string'}, 'candidate_quote': {'type': 'string'},
                        'evidence': {'type': 'object', 'additionalProperties': False, 'required': ['path', 'quote'],
                                     'properties': {'path': {'type': 'string'}, 'quote': {'type': 'string'}}}}}}}
 }
@@ -607,19 +608,19 @@ def review_prompt(definition, context):
               'Do not rewrite the definition, run anything, or claim build/gameplay verification. '
               'Check first-launch behavior, server inputs versus files chosen on the player PC, dependencies, '
               'actual settings/save locations, unsupported OS claims and misleading official/portable wording. '
-              'Report only specific findings, at most 12. For each factual issue quote exact supplied README, '
+              'Compare the actual candidate, including wrapper environment overrides and seeded settings, with upstream defaults. Equivalent statements are not contradictions: a relative user folder next to the executable is consistent with that save location; asks_user is consistent with a documented folder picker; version-qualified OS requirements can agree with general OS support. Do not invent claims absent from the candidate. A statement that native startup or gameplay is untested does not contradict an upstream list of supported operating systems. Treat your own uncertainty as uncertain; do not promote it to a factual issue. Avoid duplicate findings. For every issue include candidate_quote, an exact string from the candidate that is allegedly wrong, and explain the contradiction with source evidence. Report only specific findings, at most 12. For each factual issue quote exact supplied README, '
               'documentation or source text and its path. If evidence is missing, use severity uncertain and '
               'empty evidence strings. An exact quote supports inspection, not proof your interpretation is correct. '
               'Allowed severities are issue, uncertain and note. '
               'Return JSON: {"summary":"...","findings":[{"severity":"issue",'
-              '"field":"saves","message":"...","evidence":{"path":"README.md","quote":"exact text"}}]}. '
+              '"field":"saves","message":"...","candidate_quote":"exact candidate statement","evidence":{"path":"README.md","quote":"exact text"}}]}. '
               'Use an empty findings list when nothing is flagged. Do not provide a quality score or approval.')
     public = {key: value for key, value in context.items() if key != 'archive_evidence'}
     user = '<review_material>\n' + json.dumps({'candidate': definition, 'project_material': public}, indent=1).replace('<', '\\u003c') + '\n</review_material>'
     return system, user
 
 
-def read_review(text, context):
+def read_review(text, context, definition=None):
     value = extract_json(text)
     if not isinstance(value.get('summary'), str) or len(value['summary']) > 4000 or not isinstance(value.get('findings'), list) or len(value['findings']) > 12:
         raise Invalid('Model review needs summary text and at most 12 findings')
@@ -630,6 +631,17 @@ def read_review(text, context):
     for item in material.get('source_excerpts', []):
         sources[item['path']] = re.sub(r'(?m)^\d+: ?', '', item['lines'])
     findings = []
+    seen = set()
+    def strings(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from strings(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from strings(item)
+    candidate_strings = list(strings(definition)) if definition is not None else []
     for raw in value['findings']:
         if not isinstance(raw, dict) or raw.get('severity') not in ('issue', 'uncertain', 'note'):
             raise Invalid('Model review findings need severity issue, uncertain or note')
@@ -640,8 +652,17 @@ def read_review(text, context):
             raise Invalid('Model review evidence needs a path and exact quote')
         quote, path = evidence.get('quote', ''), evidence.get('path', '')
         matched = bool(quote.strip()) and path in sources and ' '.join(quote.split()) in ' '.join(sources[path].split())
-        severity = raw['severity'] if matched or raw['severity'] != 'issue' else 'uncertain'
+        candidate_quote = raw.get('candidate_quote', '')
+        if not isinstance(candidate_quote, str) or len(candidate_quote) > 2000:
+            raise Invalid('Model review candidate quote must be text up to 2000 characters')
+        candidate_matched = bool(candidate_quote.strip()) and any(' '.join(candidate_quote.split()) in ' '.join(item.split()) for item in candidate_strings)
+        severity = raw['severity'] if (matched and (definition is None or candidate_matched)) or raw['severity'] != 'issue' else 'uncertain'
+        key = (raw['field'], path, ' '.join(quote.split()), candidate_quote)
+        if key in seen:
+            continue
+        seen.add(key)
         findings.append({'severity': severity, 'field': raw['field'], 'message': raw['message'],
+                         'candidate_quote': candidate_quote, 'candidate_evidence_status': 'quote_found' if candidate_matched else 'unconfirmed',
                          'evidence': {'path': path, 'quote': quote}, 'evidence_status': 'quote_found' if matched else 'unconfirmed'})
     return {'status': 'needs_attention' if any(f['severity'] != 'note' for f in findings) else 'no_issues_flagged',
             'summary': value['summary'], 'findings': findings,

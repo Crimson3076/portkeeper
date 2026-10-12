@@ -114,3 +114,18 @@ class GuidedDraftTests(unittest.TestCase):
         self.assertEqual(checked['findings'][0]['evidence_status'], 'quote_found')
         self.assertEqual(checked['findings'][1]['severity'], 'uncertain')
         self.assertEqual(checked['findings'][1]['evidence_status'], 'unconfirmed')
+
+
+class ReviewCandidateEvidenceTests(unittest.TestCase):
+    def test_candidate_quote_required_for_issue_and_duplicate_quotes_are_collapsed(self):
+        context = {'material': {'readme': 'Settings use APPDATA.'}}
+        candidate = {'saves': 'Settings stay inside the package.'}
+        finding = {'severity': 'issue', 'field': 'saves', 'message': 'Check the settings claim.', 'candidate_quote': 'Settings stay inside the package.', 'evidence': {'path': 'README.md', 'quote': 'Settings use APPDATA.'}}
+        response = {'summary': 'Inspect settings.', 'findings': [finding, finding]}
+        result = drafting.read_review(json.dumps(response), context, candidate)
+        self.assertEqual(len(result['findings']), 1)
+        self.assertEqual(result['findings'][0]['severity'], 'issue')
+        finding['candidate_quote'] = 'An invented candidate statement.'
+        result = drafting.read_review(json.dumps(response), context, candidate)
+        self.assertEqual(result['findings'][0]['severity'], 'uncertain')
+        self.assertEqual(result['findings'][0]['candidate_evidence_status'], 'unconfirmed')

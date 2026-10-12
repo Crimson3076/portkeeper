@@ -484,7 +484,7 @@ class RecipeAssistant:
         text = self.chat(system, [{'role': 'user', 'content': user}], config=config,
                          response_schema=drafting.REVIEW_SCHEMA)
         try:
-            review = drafting.read_review(text, context)
+            review = drafting.read_review(text, context, definition)
         except Invalid as error:
             if record:
                 record({'kind': 'review', 'response': text, 'result': 'unavailable', 'error': str(error)})

@@ -111,6 +111,11 @@ Encrypted retail PKGs are not universally extractable. This workflow cannot
 recover missing decryption information and does not offer a passcode field. Use
 an extractable dump or a correctly prepared folder from your own game. A plain ISO
 is not accepted by this PS4 extraction operation.
+If PkgTool reports that the PFS image is encrypted with no decryption key,
+Portkeeper stops and preserves the tool log. Successfully reading the PKG's
+TITLE_ID and APP_VER does not prove that its game filesystem is extractable.
+The prepared-folder alternative still checks title, version and eboot hash;
+selecting it does not bypass those requirements.
 
 Your PKGs and extracted game data are not sent to the model or committed to GitHub.
 The model receives public upstream release/source material. A completed download

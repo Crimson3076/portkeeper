@@ -150,6 +150,21 @@ class PkgPreparationTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 2)
         self.assertEqual(second.provenance['tools'][0]['reused'], 'earlier extraction')
 
+    def test_missing_filesystem_key_reports_actionable_error_and_preserves_originals(self):
+        originals = [checksum(self.base), checksum(self.update)]
+        def encrypted(args, work, env, log_path, timeout):
+            log_path.write_text('PFS image is encrypted but no decryption key was provided')
+            raise Invalid('Tool exited with code -6: PFS image is encrypted but no decryption key was provided')
+        with self.assertRaisesRegex(Invalid, 'Choose an extractable dump.*prepared game folder'):
+            self.run_tool(self.context(), encrypted)
+        self.assertEqual([checksum(self.base), checksum(self.update)], originals)
+        self.assertEqual(list(self.engine.packager.prepared.glob('ps4/*/portkeeper-extraction.json')), [])
+
+    def test_other_extraction_errors_are_preserved(self):
+        with patch.object(self.engine.packager, 'run', side_effect=Invalid('Tool exceeded its time limit')):
+            with self.assertRaisesRegex(Invalid, 'Tool exceeded its time limit'):
+                self.engine.packager.run_ps4_extraction([], self.root, {}, self.root / 'tool.log', 1)
+
     def test_missing_update_is_reported_before_extraction(self):
         self.update.unlink()
         with self.assertRaisesRegex(Invalid, 'separate CUSA01623 update PKG'):
@@ -259,6 +274,19 @@ class PkgPreparationTests(unittest.TestCase):
             self.assertEqual(manifest['tools'][0]['app_version'], '01.02')
             self.assertEqual(manifest['inputs']['update_pkg']['sha256'], checksum(self.update))
         self.assertEqual(artifact['validation_level'], 'packaged')
+
+    def test_unwritable_cache_stops_before_hashing_large_inputs(self):
+        ctx = self.context()
+        original_mkdir = Path.mkdir
+        def mkdir(path, *args, **kwargs):
+            if path == self.engine.packager.prepared / 'ps4':
+                raise PermissionError('fixture cache is read-only')
+            return original_mkdir(path, *args, **kwargs)
+        with patch.object(Path, 'mkdir', mkdir), patch('portkeeper.runner.checksum') as hashing:
+            with self.assertRaisesRegex(Invalid, 'cache is not writable'):
+                self.run_tool(ctx)
+            hashing.assert_not_called()
+        self.assertEqual(self.calls, [])
 
     def test_low_disk_space_stops_before_private_copy_or_extraction(self):
         usage = type('Usage', (), {'free': 1})()
