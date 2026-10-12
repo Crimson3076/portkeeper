@@ -26,6 +26,10 @@ COPY static ./static
 COPY tools ./tools
 COPY --chmod=0755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
+# Checkouts can have private file modes. Application code must be readable by
+# the configured Unraid UID as well as the Compose user; data stays private.
+RUN chmod -R a+rX /app
+
 # Unraid starts containers as root and passes PUID/PGID (default nobody:users);
 # the entrypoint drops to that user. Compose sets `user:` and skips the drop.
 ENV PUID=99 PGID=100

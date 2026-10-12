@@ -469,7 +469,21 @@ class Engine:
             for key in allowed:
                 if key in checked:
                     project[key] = checked[key]
+            previous = self.store.get("projects", project_id).get("packaging")
+            if previous and previous != project.get("packaging"):
+                history = project.get("definition_history", [])
+                history.append({"saved_at": now(), "definition": copy.deepcopy(previous)})
+                project["definition_history"] = history[-20:]
             return self.store.put("projects", project)
+
+    def validate_configuration(self, project_id, payload):
+        """Check edits using the same rules as saving, without changing state."""
+        if not isinstance(payload, dict) or set(payload) - {"packaging", "recipe"} or not payload:
+            raise Invalid("Provide packaging or recipe configuration to validate")
+        project = self.store.get("projects", project_id)
+        config = self._definition_update(project, payload)
+        checked = self.validate_project({**project, **config})
+        return {"valid": True, "configuration": checked.get("packaging") or checked["recipe"]}
 
     def _definition_update(self, project, config):
         """Keep the definition the source of truth when an older client edits only the recipe."""
@@ -612,7 +626,7 @@ class Engine:
                   "finished_at": None, "error": None, "logs": [], "artifact_id": None, "stage": "queued", "checkpoints": []}
         return self.store.put("jobs", record)
 
-    def check(self, project_id, build_after=False, release_version=None, publish_after=False, draft_after=False):
+    def check(self, project_id, build_after=False, release_version=None, publish_after=False, draft_after=False, publication_override=None):
         project = self.store.get("projects", project_id)
         if project.get("demo"):
             raise Invalid("The synthetic demo is local and has no upstream updates")
@@ -625,10 +639,12 @@ class Engine:
         job = self.job(project, "capture")
         job = self.store.update("jobs", job["id"], build_after=build_after, release_version=release_version,
                                 publish_after=publish_after, draft_after=draft_after)
+        if publication_override is not None:
+            job = self.store.update("jobs", job["id"], publication_override=publication_override)
         self.executor.submit(self._check, project, job, build_after, release_version)
         return {"job": job}
 
-    def setup(self, project_id, publish=True):
+    def setup(self, project_id, publish=True, publication_override=None):
         """Set up a game in one step: preserve the latest release, build it and send it to RomM."""
         project = self.store.get("projects", project_id)
         runner = (project.get("packaging") or {}).get("runner")
@@ -638,7 +654,7 @@ class Engine:
             publish = False
         if project.get("profile"):
             return self.test_build(project_id)
-        return self.check(project_id, build_after=True, publish_after=publish)
+        return self.check(project_id, build_after=True, publish_after=publish, publication_override=publication_override)
 
     def test_build(self, project_id):
         project = self.store.get("projects", project_id)
@@ -748,6 +764,8 @@ class Engine:
                     self.publish_existing(skipped, log)
                 if planned:
                     jobs = self.queue_jobs(project, capture, planned, bool(job.get("publish_after")))
+                    if job.get("publication_override") is not None:
+                        jobs = [self.store.update("jobs", item["id"], publication_override=job["publication_override"]) for item in jobs]
                     self._build_group(project, capture, jobs)
         except Exception as error:
             log(str(error))
@@ -900,7 +918,10 @@ class Engine:
                     self.store.update("jobs", job["id"], status="ready", artifact_id=artifact["id"], finished_at=now())
                     self.stage(job["id"], "complete", "Package ready; launch has not been tested")
                 self.notify(project["id"], "ready", f"{project['name']} {capture['version']} is packaged for {job['target']}", artifactid=artifact["id"])
-                if job.get("publish_after") and not project.get("auto_publish"):
+                if job.get("publication_override") is not None:
+                    if job["publication_override"]:
+                        self.auto_publish({**project, "auto_publish_destination": "romm"}, artifact, job)
+                elif job.get("publish_after") and not project.get("auto_publish"):
                     self.auto_publish({**project, "auto_publish_destination": "romm"}, artifact, job)
                 elif project.get("auto_publish") or job.get("publish_after"):
                     self.auto_publish(project, artifact, job)
@@ -1240,7 +1261,7 @@ class Engine:
         keep = bool(payload.get("keep_updated", True))
         romm = bool(self.romm.public_config().get("configured"))
         project = self.create_project({"name": (payload.get("name") or definition["name"]).strip(), "repo": definition["upstream"]["repository"],
-                                       "targets": targets, "poll_minutes": 60, "auto_build": keep, "auto_publish": keep and romm,
+                                       "targets": targets, "poll_minutes": 60, "auto_build": keep, "auto_publish": keep and romm and bool(payload.get("auto_publish", True)),
                                        "auto_publish_destination": "romm", "packaging": json.loads(json.dumps(definition))})
         files = payload.get("files") or {}
         if not isinstance(files, dict):
@@ -1249,7 +1270,8 @@ class Engine:
             if path:
                 self.bind_input(project["id"], {"input": input_id, "path": path, "source": "inputs"})
         self.store.update("projects", project["id"], definition_source={"kind": "catalog", "id": definition["id"], "revision": definition["revision"], "added_at": now()})
-        result = self.setup(project["id"], publish=bool(payload.get("publish", True)) and romm)
+        publish = bool(payload.get("publish", True)) and romm
+        result = self.setup(project["id"], publish=publish, publication_override=publish)
         return {"project": self.store.get("projects", project["id"]), **result}
 
     def github_lookup(self, repo):

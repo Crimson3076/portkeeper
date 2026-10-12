@@ -8,7 +8,7 @@ import time
 import unittest
 import zipfile
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from portkeeper import packaging
 from portkeeper.engine import Engine
@@ -381,6 +381,57 @@ class PackagingEngineTests(unittest.TestCase):
         self.assertEqual([a["package_revision"] for a in linux], [2])
         logs = self.engine.store.get("jobs", result["jobs"][1]["id"])["logs"]
         self.assertTrue(any("because it is pinned" in line for line in logs), logs)
+
+    def test_configuration_validation_and_revision_restore_do_not_build(self):
+        project = self.project()
+        original = project["packaging"]
+        edited = json.loads(json.dumps(original))
+        edited["summary"] = "My own build instructions"
+        result = self.engine.validate_configuration(project["id"], {"packaging": edited})
+        self.assertTrue(result["valid"])
+        self.assertEqual(self.engine.store.get("projects", project["id"])["packaging"], original)
+        saved = self.engine.update_project(project["id"], {"packaging": edited})
+        self.assertEqual(saved["packaging"]["revision"], original["revision"] + 1)
+        self.assertEqual(saved["definition_history"][0]["definition"], original)
+        restored = self.engine.update_project(project["id"], {"packaging": original})
+        self.assertEqual(restored["packaging"].get("summary"), original.get("summary"))
+        self.assertEqual(restored["packaging"]["revision"], saved["packaging"]["revision"] + 1)
+        self.assertEqual(len(restored["definition_history"]), 2)
+        self.assertEqual(self.engine.store.all("jobs"), [])
+        invalid = json.loads(json.dumps(edited))
+        invalid["upstream"]["repository"] = "someone/else"
+        with self.assertRaisesRegex(Invalid, "another repository"):
+            self.engine.validate_configuration(project["id"], {"packaging": invalid})
+        self.assertEqual(self.engine.store.get("projects", project["id"]), restored)
+
+    def test_configuration_history_is_bounded_and_ignores_noop_edits(self):
+        project = self.project()
+        for index in range(23):
+            edited = json.loads(json.dumps(project["packaging"]))
+            edited["summary"] = f"Edit {index}"
+            project = self.engine.update_project(project["id"], {"packaging": edited})
+        self.assertEqual(len(project["definition_history"]), 20)
+        again = self.engine.update_project(project["id"], {"packaging": project["packaging"]})
+        self.assertEqual(again["definition_history"], project["definition_history"])
+
+    def test_first_build_destination_is_independent_of_future_uploads(self):
+        self.engine.catalog.definitions = lambda: {"example-port": definition()}
+        with patch.object(self.engine.romm, "public_config", return_value={"configured": True}), patch.object(self.engine, "auto_publish") as upload:
+            result = self.engine.add_from_catalog({"definition_id": "example-port", "targets": ["linux"],
+                                                  "keep_updated": True, "auto_publish": True, "publish": False})
+            project = self.wait(result["project"]["id"])
+            upload.assert_not_called()
+        self.assertTrue(project["auto_publish"], "Future uploads remain enabled")
+        self.assertEqual(len(self.engine.store.all("artifacts")), 1)
+
+    def test_catalog_setup_separates_build_and_upload_automation(self):
+        self.engine.catalog.definitions = lambda: {"example-port": definition()}
+        with patch.object(self.engine.romm, "public_config", return_value={"configured": True}), patch.object(self.engine, "setup", return_value={}) as setup:
+            result = self.engine.add_from_catalog({"definition_id": "example-port", "keep_updated": True,
+                                                  "auto_publish": False, "publish": False})
+        self.assertTrue(result["project"]["auto_build"])
+        self.assertFalse(result["project"]["auto_publish"])
+        setup.assert_called_once_with(result["project"]["id"], publish=False, publication_override=False)
 
     def test_find_files_reports_accepted_files_and_wrong_versions(self):
         found = self.engine.packager.find_files(definition())

@@ -109,6 +109,25 @@ class HttpIntegrationTests(unittest.TestCase):
         status, _, _ = self.request("GET", "/static/%2e%2e/portkeeper/engine.py")
         self.assertEqual(status, 400)
 
+    def test_configuration_validation_endpoint_does_not_save_or_build(self):
+        project = self.engine.create_project({"name": "Example", "repo": "example/game", "targets": ["linux"]})
+        saved = self.engine.store.get("projects", project["id"])
+        status, _, body = self.request("POST", f"/api/projects/{project['id']}/configuration/validate",
+                                       {"packaging": {**saved["packaging"], "summary": "New description"}})
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["valid"])
+        self.assertEqual(self.engine.store.get("projects", project["id"]), saved)
+        self.assertEqual(self.engine.store.all("jobs"), [])
+        preview = {**saved["packaging"], "summary": "Catalog update", "revision": 5}
+        with patch.object(self.engine.catalog, "definitions", return_value={preview["id"]: preview}):
+            status, _, body = self.request("GET", f"/api/catalog/definitions/{preview['id']}")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), preview)
+        self.assertEqual(self.engine.store.get("projects", project["id"]), saved)
+        status, _, _ = self.request("POST", f"/api/projects/{project['id']}/configuration/validate",
+                                    {"packaging": {"schema": 99}})
+        self.assertEqual(status, 400)
+
     def test_mutations_reject_foreign_host_origin_and_non_json_content(self):
         attempts = (({"Host": "attacker.example"}, 403), ({"Origin": "https://attacker.example"}, 400),
                     ({"Origin": "null"}, 400), ({"Content-Type": "text/plain"}, 400),

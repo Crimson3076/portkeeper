@@ -160,6 +160,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(202, self.engine.demo())
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}", path) and method == "PATCH":
                 self.json(200, self.engine.update_project(path.split("/")[3], self.body()))
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/configuration/validate", path) and method == "POST":
+                self.json(200, self.engine.validate_configuration(path.split("/")[3], self.body()))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/imports", path) and method == "GET":
                 self.json(200, self.engine.reviews.imports(path.split("/")[3]))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/imports/[0-9]+/files/[0-9]+/download", path) and method == "GET":
@@ -212,6 +214,8 @@ class Handler(BaseHTTPRequestHandler):
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/catalog-definition", path) and method == "POST":
                 self.body()
                 self.json(200, self.engine.catalog.apply(path.split("/")[3]))
+            elif method == "GET" and re.fullmatch(r"/api/catalog/definitions/[a-z0-9_.-]+", path):
+                self.json(200, self.engine.catalog_definition(path.split("/")[-1]))
             elif method == "GET" and path == "/api/catalog":
                 self.json(200, self.engine.catalog.status())
             elif method == "POST" and path == "/api/catalog/refresh":

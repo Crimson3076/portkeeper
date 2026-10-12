@@ -30,8 +30,10 @@ async function create(saved, storageBlocked=false, source=fixture) {
     else if(endpoint.startsWith('/preservation',0)||endpoint.includes('/preservation'))payload={};
     else if(endpoint==='/api/profiles')payload={profiles:[]};
     else if(endpoint==='/api/recipes')payload={recipes:[]};
-    else if(endpoint==='/api/catalog/games')payload={games:[{id:'banjo-recompiled',name:'Banjo Recompiled',targets:['linux','windows'],runner:'operations',needs:[{label:'Banjo-Kazooie (USA) 1.0 N64 ROM'}],first_run:{mode:'preloaded',text:'Your ROM is placed where Banjo looks for it.'},in_library:null}],romm_connected:true};
+    else if(endpoint==='/api/catalog/games')payload={games:source.catalog_games || [{id:'banjo-recompiled',name:'Banjo Recompiled',targets:['linux','windows'],runner:'operations',needs:[{label:'Banjo-Kazooie (USA) 1.0 N64 ROM'}],first_run:{mode:'preloaded',text:'Your ROM is placed where Banjo looks for it.'},in_library:null}],romm_connected:true};
     else if(endpoint==='/api/catalog/games/banjo-recompiled/files')payload={inputs:[{id:'rom',label:'Banjo-Kazooie (USA) 1.0 N64 ROM',kind:'file',required:true,accepted:['USA 1.0'],found:[{path:'n64/roms/Banjo-Kazooie (USA).z64',name:'Banjo-Kazooie (USA).z64',accepted:'USA 1.0'}],rejected:[]}]};
+    else if(endpoint.endsWith('/configuration/validate')){requests.push({endpoint,body:JSON.parse(options.body)});payload={valid:true};}
+    else if(options.method==='PATCH'){const body=JSON.parse(options.body);requests.push({endpoint,body});const game=source.projects.find(p=>endpoint.includes(p.id));Object.assign(game,body);payload=game;}
     else if(endpoint==='/api/setup'){requests.push({endpoint,body:JSON.parse(options.body)});payload={project:source.projects[1],job:{}};}
     return {ok:true,status:200,json:async()=>JSON.parse(JSON.stringify(payload))};
   };
@@ -65,7 +67,7 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   assert(!d.getElementById('validation-dialog').open);assert(d.querySelector('.downloads-card').textContent.includes('Doesn’t work'));
   w.location.hash='activity';await tick();assert(d.getElementById('activity-content').textContent.includes('Black screen'));
   w.location.hash='library';await tick();
-  d.getElementById('project-versions-tab').click();await tick();assert.equal(d.getElementById('project-content').getAttribute('aria-labelledby'),'project-versions-tab');
+  d.getElementById('project-activity-tab').click();await tick();assert.equal(d.getElementById('project-content').getAttribute('aria-labelledby'),'project-activity-tab');
   w.location.hash='settings';await tick();
   const selectLayout=value=>{const radio=d.querySelector(`[name="library-layout"][value="${value}"]`);radio.checked=true;radio.dispatchEvent(new w.Event('change',{bubbles:true}));};
   selectLayout('collection');assert.equal(w.localStorage.getItem('portkeeper.library-layout'),'collection');
@@ -85,15 +87,48 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   assert(d.getElementById('add-game-content').textContent.includes('verified as USA 1.0'));
   assert(d.getElementById('add-game-content').textContent.includes('Your ROM is placed where Banjo looks for it.'));
   d.getElementById('add-game-target-windows').click();
-  const submit=d.getElementById('add-game-submit');assert.equal(submit.textContent,'Set up and send to RomM');assert(!submit.disabled);submit.click();await tick();await tick();
-  assert.deepEqual(requests[0].body,{definition_id:'banjo-recompiled',targets:['linux'],files:{rom:'n64/roms/Banjo-Kazooie (USA).z64'},keep_updated:true,publish:true});
+  const submit=d.getElementById('add-game-submit');assert.equal(submit.textContent,'Build packages');assert(!submit.disabled);submit.click();await tick();await tick();
+  assert.deepEqual(requests[0].body,{definition_id:'banjo-recompiled',targets:['linux'],files:{rom:'n64/roms/Banjo-Kazooie (USA).z64'},keep_updated:false,auto_publish:false,publish:false});
   assert(!d.getElementById('add-game-dialog').open);
+  d.getElementById('add-project').click();await tick();await tick();d.querySelector('.game-pick:not(.custom)').click();await tick();[...d.querySelectorAll('#add-game-actions button')].find(n=>n.textContent.includes('Continue')).click();await tick();await tick();
+  const destination=d.getElementById('add-game-destination');destination.value='romm';destination.dispatchEvent(new w.Event('change'));
+  const updates=d.getElementById('add-game-updates');updates.value='publish';updates.dispatchEvent(new w.Event('change'));
+  assert.equal(d.getElementById('add-game-submit').textContent,'Build and send to RomM');d.getElementById('add-game-submit').click();await tick();await tick();
+  assert(requests.at(-1).body.publish && requests.at(-1).body.keep_updated && requests.at(-1).body.auto_publish);
   w.location.hash='settings';await tick();d.getElementById('settings-assistant-tab').click();
   assert(d.getElementById('assistant-cloud-fields').hidden);
   const provider=value=>{const radio=d.querySelector(`[name="assistant-provider"][value="${value}"]`);radio.checked=true;radio.dispatchEvent(new w.Event('change',{bubbles:true}));};
   provider('anthropic');assert(!d.getElementById('assistant-cloud-fields').hidden);assert(d.getElementById('assistant-base-url-field').hidden);
   provider('openai');assert(!d.getElementById('assistant-base-url-field').hidden);
   provider('ollama');assert(!d.getElementById('assistant-ollama-fields').hidden);assert(d.getElementById('assistant-cloud-fields').hidden);
+  dom.window.close();
+  const grouped=JSON.parse(JSON.stringify(fixture));
+  grouped.catalog_games=[{id:'bloodborne-linux',game:'Bloodborne',name:'Bloodborne Linux',targets:['linux'],runner:'operations',needs:[],in_library:id(2)},{id:'bloodborne-windows',game:'Bloodborne',name:'Bloodborne Windows',targets:['windows'],runner:'operations',needs:[],in_library:null}];
+  dom=await create(null,false,grouped);w=dom.window;d=w.document;d.getElementById('add-project').click();await tick();await tick();
+  assert.equal(d.querySelectorAll('.game-pick:not(.custom)').length,1,'One card for platform-specific definitions of the same game');
+  d.querySelector('.game-pick:not(.custom)').click();await tick();assert(d.getElementById('add-game-dialog').open,'An existing Linux game does not prevent adding Windows');
+  [...d.querySelectorAll('#add-game-actions button')].find(n=>n.textContent.includes('Continue')).click();await tick();await tick();
+  assert.equal(d.getElementById('add-game-variant').value,'bloodborne-windows');
+  dom.window.close();
+  const editable=JSON.parse(JSON.stringify(fixture));
+  editable.projects[1].packaging={schema:2,id:'bloodborne',revision:4,name:'Bloodborne',summary:'Original summary',runner:'capture',targets:['linux','windows'],upstream:{repository:'example/game',release_rules:{stable_only:true,tag_pattern:'v.*'}},inputs:[],operations:[],outputs:{},launch:{linux:{command:'game',instructions:'Launch it'}},saves:'saves/',custom_preserved:{nested:true}};
+  dom=await create(null,false,editable);w=dom.window;d=w.document;
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();
+  d.getElementById('project-advanced-tab').click();await tick();
+  assert(!d.getElementById('project-content').textContent.includes('Build progress & logs'));
+  [...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Edit packaging definition').click();
+  assert(d.getElementById('recipe-dialog').open);assert(!d.getElementById('editor-settings').hidden);
+  const summary=d.getElementById('editor-summary');summary.value='My custom build';summary.dispatchEvent(new w.Event('input'));
+  d.getElementById('editor-json-tab').click();
+  let draft=JSON.parse(d.getElementById('recipe-json').value);assert.equal(draft.summary,'My custom build');assert.deepEqual(draft.custom_preserved,{nested:true});
+  d.getElementById('editor-changes-tab').click();assert(d.getElementById('recipe-diff').textContent.includes('Original summary'));assert(d.getElementById('recipe-diff').textContent.includes('My custom build'));
+  const before=requests.length;d.getElementById('recipe-validate').click();await tick();
+  assert.equal(requests.length,before+1);assert(requests.at(-1).endpoint.endsWith('/configuration/validate'));assert.equal(editable.projects[1].packaging.summary,'Original summary');
+  assert(d.getElementById('recipe-validation').textContent.includes('does not run a build'));
+  d.getElementById('editor-json-tab').click();d.getElementById('recipe-json').value='{broken';d.getElementById('editor-settings-tab').click();assert(d.getElementById('recipe-form-error').textContent.includes('Fix the JSON'));assert(!d.getElementById('editor-json').hidden);
+  d.getElementById('recipe-json').value=JSON.stringify(draft);d.getElementById('recipe-form').dispatchEvent(new w.Event('submit',{cancelable:true,bubbles:true}));await tick();await tick();
+  assert(!d.getElementById('recipe-dialog').open);assert.deepEqual(Object.keys(requests.at(-1).body),['packaging']);assert.equal(editable.projects[1].packaging.summary,'My custom build');
+  d.getElementById('project-activity-tab').click();await tick();assert(d.getElementById('project-content').textContent.includes('Build progress & logs'));
   dom.window.close();
   for(const value of ['collection','list','invalid']){dom=await create(value);assert(dom.window.document.getElementById('project-grid').classList.contains('layout-'+(value==='invalid'?'workspace':value)));dom.window.close();}
   dom=await create(null,true);assert(dom.window.document.getElementById('project-grid').classList.contains('layout-workspace'));dom.window.close();

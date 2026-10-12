@@ -26,6 +26,9 @@ let settingsView = "romm";
 let route = { page: "library", projectId: null, tab: "overview" };
 let selectedJobId = null;
 let recipeProjectId = null;
+let editorOriginal = null, editorView = "settings", editorDirty = false;
+const automationDrafts = new Map();
+const inputDrafts = new Map();
 let metadataProjectId = null;
 let coverProjectId = null;
 let coverChoice = null;
@@ -115,8 +118,8 @@ function newestFirst(items) { return items.slice().sort((a, b) => (Date.parse(b.
 function statusBadge(status, override) {
   const value = String(status || "idle").toLowerCase();
   const labels = {
-    idle: "Waiting", ready: "Packaged", watching: "Watching", captured: "Source preserved", archived: "Source preserved", succeeded: "Complete", success: "Complete", completed: "Complete", published: "In local library", built: "Packaged", unchanged: "Up to date",
-    failed: "Needs attention", error: "Needs attention", needs_attention: "Needs attention", blocked: "Needs attention", needs_rom: "Needs a ROM", missing_inputs: "Needs game files", capture_only: "Source only", unsupported_version: "Recipe update needed",
+    idle: "Waiting", ready: "Packaged", watching: "Watching", captured: "Saved only (not built)", archived: "Saved only (not built)", succeeded: "Complete", success: "Complete", completed: "Complete", published: "In local library", built: "Packaged", unchanged: "Up to date",
+    failed: "Needs attention", error: "Needs attention", needs_attention: "Needs attention", blocked: "Needs attention", needs_rom: "Needs a ROM", missing_inputs: "Needs game files", capture_only: "Saved only (not built)", unsupported_version: "New version needs review",
     queued: "Queued", running: "Working", checking: "Checking upstream", capturing: "Preserving source", preserving: "Preserving source", downloading_rom: "Downloading ROM", extracting: "Extracting game assets", packaging_linux: "Packaging Linux", packaging_windows: "Packaging Windows", building: "Building package", preserving_source: "Preserving source", preserving_assets: "Preserving releases", capturing_dependencies: "Preserving dependencies", building_extractor: "Building extractor", preparing: "Preparing inputs", validating: "Validating package", complete: "Complete", publishing: "Publishing to RomM", verifying_inputs: "Checking game files", preparing_inputs: "Preparing game files", archiving: "Writing package"
   };
   let tone = "";
@@ -222,11 +225,17 @@ async function loadImports(project) {
   finally { rommImportsLoading.delete(key); lastRender = null; render(); }
 }
 function gameAvailability(project) {
+  if (projectActiveJob(project)) return "Working…";
   if (gameNeedsAttention(project)) return "Needs attention";
-  if (hasDownloads(project)) return "Downloads available";
+  if (hasDownloads(project)) {
+    const available = new Set([...projectArtifacts(project.id).map(item => item.target), ...importedPackages(project).map(item => item.platform_slug === "win" ? "windows" : "linux")]);
+    return (project.targets || []).every(target => available.has(target)) ? "Downloads available" : "Some downloads available";
+  }
+  if (project.releases?.some(release => release.status === "needs_review")) return "New version needs review";
+  if (project.packaging?.runner === "operations" && project.packaging.inputs?.some(item => item.required !== false && !project.input_bindings?.[item.id])) return "Needs your game files";
   if (rommImportsLoading.has(importKey(project))) return "Checking RomM…";
   if (rommImports.get(importKey(project))?.error) return "RomM check unavailable";
-  return project.recipe?.mode === "capture" ? "Build setup needed" : "No downloads yet";
+  return project.recipe?.mode === "capture" ? "Needs packaging steps" : "No downloads yet";
 }
 function projectJobs(id) { return newestFirst(state.jobs.filter((job) => String(job.project_id) === String(id))); }
 function jobActive(job) { return activeStatuses.has(job.status) && !job.finished_at; }
@@ -278,10 +287,10 @@ function knownGood(artifact, project) { return Boolean(artifact.known_good || pr
 
 function parseRoute() {
   const parts = location.hash.slice(1).split("/").map((part) => { try { return decodeURIComponent(part); } catch (_) { return part; } });
-  if (parts[0] === "project" && parts[1]) return { page: "project", projectId: parts[1], tab: ["overview", "versions", "activity", "advanced"].includes(parts[2]) ? parts[2] : "overview" };
+  if (parts[0] === "project" && parts[1]) return { page: "project", projectId: parts[1], tab: parts[2] === "versions" ? "activity" : ["overview", "activity", "advanced"].includes(parts[2]) ? parts[2] : "overview" };
   return { page: ["activity", "settings"].includes(parts[0]) ? parts[0] : parts[0] === "storage" ? "settings" : "library", projectId: null, tab: "overview" };
 }
-function navigateProject(id, tab = "overview", jobId = null) { selectedJobId = jobId; location.hash = `project/${encodeURIComponent(id)}/${tab}`; if (route.projectId === id && route.tab === tab) renderProject(); }
+function navigateProject(id, tab = "overview", jobId = null) { if (tab === "versions") tab = "activity"; selectedJobId = jobId; location.hash = `project/${encodeURIComponent(id)}/${tab}`; if (route.projectId === id && route.tab === tab) renderProject(); }
 function navigateSettings(tab = "romm") { settingsView = tab; location.hash = "settings"; renderSettingsTabs(); }
 function renderRoute() {
   route = parseRoute();
@@ -411,7 +420,16 @@ function renderNotifications(parent) {
   });
 }
 function renderSettingsTabs() {
-  document.querySelectorAll("[data-settings-tab]").forEach((node) => { const selected = node.dataset.settingsTab === settingsView; node.classList.toggle("selected", selected); node.setAttribute("aria-selected", String(selected)); $(`settings-${node.dataset.settingsTab}`).hidden = !selected; });
+  const advanced = ["storage", "catalog", "demo"].includes(settingsView);
+  $("settings-advanced").hidden = !advanced;
+  document.querySelectorAll("[data-settings-tab]").forEach(node => {
+    const selected = node.dataset.settingsTab === settingsView;
+    node.classList.toggle("selected", selected); node.setAttribute("aria-selected", String(selected));
+    node.tabIndex = selected ? 0 : -1; $(`settings-${node.dataset.settingsTab}`).hidden = !selected;
+  });
+  $("settings-advanced-tab").classList.toggle("selected", advanced);
+  $("settings-advanced-tab").setAttribute("aria-selected", String(advanced));
+  $("settings-advanced-tab").tabIndex = advanced ? 0 : -1;
 }
 function renderSettings() {
   document.querySelectorAll('[name="library-layout"]').forEach((node) => { node.checked = node.value === libraryLayout; });
@@ -521,23 +539,25 @@ function renderProject() {
   const focused = content.contains(document.activeElement) && document.activeElement.id ? { id: document.activeElement.id, start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;
   const openJobs = new Set([...content.querySelectorAll("details[open][data-job-id]")].map((node) => node.dataset.jobId));
   heading.replaceChildren(); content.replaceChildren();
-  document.querySelectorAll("[data-project-tab]").forEach((node) => { const selected = node.dataset.projectTab === route.tab; node.classList.toggle("selected", selected); node.setAttribute("aria-selected", String(selected)); });
+  document.querySelectorAll("[data-project-tab]").forEach((node) => { const selected = node.dataset.projectTab === route.tab; node.classList.toggle("selected", selected); node.setAttribute("aria-selected", String(selected)); node.tabIndex = selected ? 0 : -1; });
   content.setAttribute("aria-labelledby", `project-${route.tab}-tab`);
   if (!project) { heading.append(el("div", "", [el("h1", "", "Game unavailable"), el("p", "", "Return to the library to choose a game.")])); return; }
   const title = el("div", "project-title-detail", [el("h1", "", project.name), projectSource(project), el("div", "project-targets", gameTargets(project).map(targetPill))]);
   const cover = projectCover(project, "project-hero-cover");
   if (cover) title.prepend(cover);
   const working = Boolean(projectActiveJob(project)) || busy.has(`check-${project.id}`) || busy.has(`build-${project.id}`);
-  const actions = el("div", "project-header-actions", statusBadge(projectStatus(project)));
-  if (!project.demo) actions.append(button("Check upstream", "button secondary small", () => checkProject(project.id), working));
+  const actions = el("div", "project-header-actions");
+  if (!project.demo) actions.append(button("Check for a new version", "button secondary small", () => checkProject(project.id), working));
   if (project.profile) actions.append(button("Test build", "button primary small", () => testBuild(project.id), working));
-  if (project.recipe?.mode !== "capture" && !project.demo) actions.append(button("Build now…", project.profile ? "button secondary small" : "button primary small", () => openBuild(project.id), working || !project.capture_id));
+  if (project.recipe?.mode !== "capture" && !project.demo) actions.append(button("Build packages…", project.profile ? "button secondary small" : "button primary small", () => openBuild(project.id), working || !project.capture_id));
   else if (project.demo) actions.append(button("Build package", "button primary small", () => buildProject(project.id), working || !project.capture_id));
   heading.append(title, statusBadge(gameNeedsAttention(project) ? "needs_attention" : hasDownloads(project) ? "ready" : "capture_only", gameAvailability(project)));
-  if (route.tab === "overview") { renderOverview(project, content); content.querySelector(".update-details .detail-card")?.append(actions); }
-  else heading.append(actions);
-  if (route.tab === "versions") renderVersions(project, content);
-  if (route.tab === "activity") renderProjectActivity(project, content);
+  if (route.tab === "overview") renderOverview(project, content);
+  if (route.tab === "activity") {
+    content.append(el("section", "detail-card", [el("h2", "", "Updates & builds"), el("p", "field-help", "Check releases, build packages and follow progress here. Uploading and testing are separate from building."), actions]));
+    if (project.packaging) content.append(automationCard(project), releasesCard(project));
+    renderBuildDiagnostics(project, content, openJobs); renderVersions(project, content); renderProjectActivity(project, content);
+  }
   if (route.tab === "advanced") renderAdvanced(project, content, openJobs);
   if (focused && $(focused.id)) { $(focused.id).focus({ preventScroll: true }); if (focused.start !== null && focused.start !== undefined && typeof $(focused.id).setSelectionRange === "function") $(focused.id).setSelectionRange(focused.start, focused.end); }
 }
@@ -577,34 +597,13 @@ function renderOverview(project, content) {
   });
   packageCard.append(el("p", "compact-note", "Download availability does not confirm gameplay. A launch check confirms startup only."));
   left.append(nextStepCard(project), packageCard);
-  const job = projectActiveJob(project) || projectJobs(project.id)[0];
-  const progress = el("section", "detail-card", [el("h2", "", projectActiveJob(project) ? "Build in progress" : "Latest game run")]);
-  if (job) {
-    progress.append(statusBadge(jobStage(job)), progressSteps(job, project), el("p", "progress-caption", job.error || `${job.version || "Update check"} · ${dateLabel(job.created_at)}`));
-    if (job.status === "failed") progress.append(el("div", "inline-actions", button("Retry failed step", "button secondary small", () => retryJob(job.id), busy.has(`retry-${job.id}`))));
-    progress.append(el("div", "inline-actions", button("View activity →", "text-button", () => navigateProject(project.id, "activity"))));
-  } else progress.append(el("p", "detail-empty", "Check for an update or start a test build to begin."));
-  const updateDetails = el("details", "update-details", [el("summary", "", "Updates & latest build activity"), progress]);
-  updateDetails.open = Boolean(projectActiveJob(project)) || job?.status === "failed";
-  left.append(updateDetails);
-  const game = el("section", "detail-card", [el("h2", "", "Game files & schedule")]);
-  const source = project.rom_source || {};
-  game.append(el("div", "detail-facts", [meta("Game input", source.member || source.filename || source.path || (project.demo ? "Synthetic fixtures" : "Recipe-defined local files"), true), meta("ROM revision", source.revision || profiles.find((profile) => profile.id === project.profile)?.supported_roms?.find((rom) => rom.sha1 === source.sha1)?.name || (source.sha1 ? "Hash verified" : "Not selected")), meta("Update schedule", `Every ${project.poll_minutes || 60} min`), meta("After an update", project.auto_build ? "Build automatically" : "Preserve and wait"), meta("Local library copy", project.auto_publish ? "Automatic" : "Manual")]));
-  if (source.sha1) game.append(statusBadge("ready", "ROM hash selected"));
-  if (project.last_error && !projectActiveJob(project)) game.append(el("p", "project-error", project.last_error));
-  const identity = project.metadata || {};
-  const metadataCard = el("section", "detail-card", [el("h2", "", "Game metadata & artwork"), el("p", "detail-note", "Link the original game or a port-specific IGDB entry. Choose custom port artwork in RomM once, then reuse it for later builds."), el("div", "detail-facts", [meta("Game", identity.game || "Not linked"), meta("IGDB ID", identity.igdb_id || "Not linked"), meta("Artwork", {romm: "Follow linked RomM cover", custom: "Chosen cover on Windows and Linux"}[identity.cover_policy] || "Keep current covers")]), el("div", "inline-actions", [button("Find cover art", "button secondary small", () => openCoverSearch(project.id)), button("Edit metadata link", "button secondary small", () => openMetadata(project.id))])]);
-  const coverPreview = projectCover(project, "project-cover-preview");
-  if (coverPreview) metadataCard.insertBefore(coverPreview, metadataCard.children[1]);
-  if (identity.romm_rom_id && rommConfig().url) { const link = el("a", "text-button", "Choose metadata & cover in RomM →"); link.href = `${rommConfig().url}/rom/${identity.romm_rom_id}`; link.target = "_blank"; link.rel = "noopener noreferrer"; metadataCard.append(el("div", "inline-actions", link)); }
-  const setup = el("details", "update-details", [el("summary", "", "Build setup & saved releases"), game, retentionCard(project), preservationCard(project)]);
-  right.append(metadataCard, setup);
+  right.append(button("Change cover art", "button secondary", () => openCoverSearch(project.id)));
   grid.append(left, right); content.append(grid);
 }
 function progressSteps(job, project) {
   const stage = job.stage || job.status;
   if (Array.isArray(job.checkpoints) && job.checkpoints.length) {
-    const names = { checking: "Check upstream", preserving_source: "Preserve source", preserving_assets: "Preserve release assets", capturing_dependencies: "Preserve pinned dependencies", building_extractor: "Build reviewed extractor", downloading_rom: "Verify game input", extracting: "Extract game assets", packaging_linux: "Package Linux / Steam Deck", packaging_windows: "Package Windows", preparing: "Prepare inputs", verifying_inputs: "Check game files", preparing_inputs: "Copy game files", archiving: "Write package", publishing: "Publish to RomM", validating: "Validate package", complete: job.target === "capture" ? "Save preservation checkpoint" : "Archive package" };
+    const names = { checking: "Check upstream", preserving_source: "Preserve source", preserving_assets: "Preserve release assets", capturing_dependencies: "Preserve pinned dependencies", building_extractor: "Build reviewed extractor", downloading_rom: "Verify game input", extracting: "Extract game assets", packaging_linux: "Package Linux / Steam Deck", packaging_windows: "Package Windows", preparing: "Prepare inputs", verifying_inputs: "Check game files", preparing_inputs: "Copy game files", archiving: "Write package", publishing: "Send to RomM", validating: "Validate package", complete: job.target === "capture" ? "Save preservation checkpoint" : "Archive package" };
     const list = el("ol", "progress-steps");
     job.checkpoints.forEach((checkpoint, index) => {
       const failed = job.status === "failed" && index === job.checkpoints.length - 1;
@@ -688,7 +687,7 @@ async function exportPreservation(id) {
 }
 function renderVersions(project, content) {
   const artifacts = projectArtifacts(project.id);
-  if (!artifacts.length) { content.append(emptyState("▱", "No packages yet", "This page lists archives built by Portkeeper. Existing RomM imports are shown under Downloads & artwork; they do not create a build archive here.")); return; }
+  if (!artifacts.length) { content.append(emptyState("▱", "No packages yet", "This page lists archives built by Portkeeper. Existing RomM imports are shown under Play; they do not create a build archive here.")); return; }
   const list = el("div", "version-list");
   artifacts.forEach((artifact) => {
     const labels = [validationLabel(artifact)];
@@ -704,9 +703,9 @@ function renderVersions(project, content) {
       actions.append(goodButton);
     }
     if (!artifact.demo && !project.demo) actions.append(button("Record test result", "table-action", () => openValidation(artifact)));
-    if (!artifact.demo && !["in_romm", "uploading"].includes(artifact.romm?.status)) actions.append(button(artifact.romm?.status === "failed" ? "Retry RomM upload" : "Publish to RomM", "table-action", () => publishToRomM(artifact.id), busy.has(`romm-${artifact.id}`) || !rommReady()));
+    if (!artifact.demo && !["in_romm", "uploading"].includes(artifact.romm?.status)) actions.append(button(artifact.romm?.status === "failed" ? "Retry RomM upload" : "Send to RomM", "table-action", () => publishToRomM(artifact.id), busy.has(`romm-${artifact.id}`) || !rommReady()));
     if (artifact.romm?.rom_id && rommConfig().url) { const link = el("a", "table-action", "Open in RomM"); link.href = `${rommConfig().url}/rom/${artifact.romm.rom_id}`; link.target = "_blank"; link.rel = "noopener noreferrer"; actions.append(link); }
-    if (!artifact.published) actions.append(button("Copy to local library folder", "table-action", () => publishArtifact(artifact.id), busy.has(`publish-${artifact.id}`)));
+    if (!artifact.published) actions.append(el("details", "advanced-copy", [el("summary", "table-action", "Advanced transfer"), button("Copy to local library folder", "table-action", () => publishArtifact(artifact.id), busy.has(`publish-${artifact.id}`))]));
     list.append(el("article", "version-card", [el("div", "version-heading", [el("h3", "", artifact.version || "Archived version"), targetPill(artifact.target)]), el("div", "version-labels", labels), el("div", "version-meta", [el("span", "", bytes(artifact.size)), el("span", "", dateLabel(artifact.created_at))]), ...(artifact.validation?.notes ? [el("p", "version-description", artifact.validation.notes)] : !artifact.demo && !project.demo && validationLevel(artifact) === "packaged" ? [el("p", "version-description", "Confirm gameplay after trying this package to select it as a known-good version.")] : []), actions]));
   });
   content.append(el("p", "section-intro", "Publish to RomM uploads a package through RomM's API; older versions stay in RomM as separate files. Copying an older version to the local library folder rolls that folder back. Pinned and known-good packages are protected from retention cleanup."), el("div", "inline-actions", button("Retention settings →", "text-button", () => navigateProject(project.id))), list);
@@ -726,7 +725,7 @@ function activityEvent(event) {
   const body = el("div", "activity-event-body", [header, el("p", "activity-event-game", [project?.name || event.project_name || "Game", " · ", targetLabels[event.target] || "Update check"]), el("p", "field-help", event.notes || event.message || ""), el("span", "activity-event-date", `${event.device ? event.device + " · " : ""}${dateLabel(event.created_at)}`)]);
   if (event.package_name) body.append(el("p", "activity-package-name", event.package_name));
   const actions = el("div", "inline-actions", button("Open game", "text-button", () => navigateProject(event.project_id)));
-  if (event.kind === "build") actions.append(button("Build details", "text-button", () => navigateProject(event.project_id, "advanced", event.id)));
+  if (event.kind === "build") actions.append(button("Build details", "text-button", () => navigateProject(event.project_id, "activity", event.id)));
   return el("article", "activity-event", [body, actions]);
 }
 function renderProjectActivity(project, content) {
@@ -760,7 +759,7 @@ function definitionInstructions(project) {
   section.append(el("h2", "", "Packaging instructions"), el("p", "detail-note", definition.summary || "Generated from this game's packaging definition."));
   section.append(el("div", "detail-facts", [meta("Method", runnerLabels[definition.runner] || definition.runner), meta("Definition", `${definition.id} · revision ${definition.revision}`), meta("Platforms", definition.targets.map((target) => targetLabels[target] || target).join(", "))]));
   if (view.requirements && !view.requirements.supported) section.append(el("p", "project-error", view.requirements.reason));
-  if (project.catalog_update) section.append(el("div", "inline-actions", [el("span", "field-help", `Catalog revision ${project.catalog_update.revision} is available; this game uses revision ${project.catalog_update.current_revision}.`), button("Apply catalog revision", "button secondary small", () => applyCatalogDefinition(project.id), busy.has(`catalog-${project.id}`))]));
+  if (project.catalog_update) section.append(el("div", "inline-actions", [el("span", "field-help", `Catalog revision ${project.catalog_update.revision} is available; this game uses revision ${project.catalog_update.current_revision}.`), button("Review catalog changes", "button secondary small", () => applyCatalogDefinition(project.id), busy.has(`catalog-${project.id}`))]));
   if (definition.runner === "capture") section.append(el("p", "detail-note", "Releases are only preserved. No packaging steps are defined, so Portkeeper does not produce a download. Existing RomM imports were assembled separately."));
   const list = el("div", "instruction-sections");
   const group = (heading, nodes) => list.append(el("section", "instruction-section", [el("h3", "", heading), ...nodes]));
@@ -792,21 +791,25 @@ function inputsSection(project) {
       el("p", "field-help", item.accepted?.length ? `Accepted: ${item.accepted.map((entry) => entry.label).join(", ")}${item.normalize ? " (checked after byte-order normalization)" : ""}` : "Validated after extraction; see the build steps."),
       ...(item.notes ? [el("p", "field-help", item.notes)] : []),
       el("p", "field-help", binding ? `Selected: ${binding.source === "prepared" ? "app data prepared/" : ""}${binding.path}${binding.accepted ? " · verified as " + binding.accepted : ""}` : item.required === false ? "Not selected." : "Not selected yet. Portkeeper searches your game files folder when a build starts.")]);
-    const path = input(`input-path-${project.id}-${item.id}`, "text", binding?.path || "");
+    const path = input(`input-path-${project.id}-${item.id}`, "text", inputDrafts.get(`${project.id}-${item.id}`) ?? binding?.path ?? "");
     path.placeholder = item.kind === "directory" ? "Folder under the app data prepared/ folder" : "Path below your game files folder, such as n64/roms/game.z64";
     path.setAttribute("aria-label", `${item.label} path`);
     node.append(el("div", "inline-actions input-binding", [path, button("Save path", "button secondary small", () => bindInput(project.id, item.id, { path: path.value.trim(), source: item.kind === "directory" ? "prepared" : "inputs" }), busy.has(key) || !path.value), button("Find automatically", "button secondary small", () => bindInput(project.id, item.id, {}), busy.has(key)), ...(binding ? [button("Clear", "text-button", () => bindInput(project.id, item.id, { clear: true }), busy.has(key))] : [])]));
-    path.addEventListener("input", () => { node.querySelector(".input-binding button").disabled = !path.value.trim(); });
+    path.addEventListener("input", () => { inputDrafts.set(`${project.id}-${item.id}`, path.value); node.querySelector(".input-binding button").disabled = !path.value.trim(); });
     return node;
   });
 }
 async function bindInput(projectId, inputId, body) {
   const result = await runAction(`input-${projectId}`, `/api/projects/${encodeURIComponent(projectId)}/inputs`, { input: inputId, ...body }, "");
   if (!result) return;
+  inputDrafts.delete(`${projectId}-${inputId}`);
   if (result.found && result.found.length !== 1) toast(`${result.message}${result.found.length ? ": " + result.found.map((item) => item.path).join(", ") : ""}`, true);
   else toast(body.clear ? "Game file selection cleared." : "Game file saved for future builds.");
 }
-function applyCatalogDefinition(id) { return runAction(`catalog-${id}`, `/api/projects/${encodeURIComponent(id)}/catalog-definition`, {}, "Catalog packaging definition applied. New packages get a new revision."); }
+async function applyCatalogDefinition(id) {
+  try { const project = projectById(id); const definition = await api(`/api/catalog/definitions/${encodeURIComponent(project.packaging.id)}`); openRecipe(id); $("recipe-json").value = JSON.stringify(definition, null, 2); editorDirty = true; switchEditor("changes"); }
+  catch(error) { toast(error.message, true); }
+}
 function releasesCard(project) {
   const card = el("section", "detail-card", [el("h2", "", "Releases & packaging status"), el("p", "detail-note", "Preserved means the upstream release is archived only. Packaged means Portkeeper produced a download from it. In RomM means the upload was indexed by RomM.")]);
   const releases = project.releases || [];
@@ -823,12 +826,15 @@ function releasesCard(project) {
 function automationCard(project) {
   const card = el("section", "detail-card", [el("h2", "", "Automation"), el("p", "detail-note", "New releases are checked against this game's compatibility rules. Compatible ones can be packaged and published without you; anything unexpected is preserved and reported for review instead.")]);
   const autoBuild = input(`auto-build-${project.id}`, "checkbox"), autoPublish = input(`auto-publish-${project.id}`, "checkbox");
-  autoBuild.checked = Boolean(project.auto_build); autoPublish.checked = Boolean(project.auto_publish); autoPublish.disabled = !autoBuild.checked;
+  const draft = automationDrafts.get(project.id) || project;
+  autoBuild.checked = Boolean(draft.auto_build); autoPublish.checked = Boolean(draft.auto_publish); autoPublish.disabled = !autoBuild.checked;
   const destination = el("select"); destination.id = `auto-destination-${project.id}`; destination.setAttribute("aria-label", "Automatic publication destination");
   [["romm", "Upload to RomM"], ["library", "Copy to the local library folder only"]].forEach(([value, label]) => { const option = el("option", "", label); option.value = value; destination.append(option); });
-  destination.value = project.auto_publish_destination || "romm"; destination.disabled = !autoPublish.checked;
+  destination.value = draft.auto_publish_destination || "romm"; destination.disabled = !autoPublish.checked;
   autoBuild.addEventListener("change", () => { autoPublish.disabled = !autoBuild.checked; if (!autoBuild.checked) autoPublish.checked = false; destination.disabled = !autoPublish.checked; });
   autoPublish.addEventListener("change", () => { destination.disabled = !autoPublish.checked; });
+  const remember = () => automationDrafts.set(project.id, {auto_build: autoBuild.checked, auto_publish: autoPublish.checked, auto_publish_destination: destination.value});
+  [autoBuild, autoPublish, destination].forEach(node => node.addEventListener("change", remember));
   const capture = project.packaging?.runner === "capture" || project.recipe?.mode === "capture";
   if (capture) { autoBuild.disabled = true; autoPublish.disabled = true; destination.disabled = true; }
   card.append(el("label", "checkbox-line", [autoBuild, "Automatically build compatible new releases"]), el("label", "checkbox-line", [autoPublish, "Automatically publish successful packages"]), destination,
@@ -839,7 +845,7 @@ function automationCard(project) {
 }
 async function saveAutomation(id, autoBuild, autoPublish, destination) {
   busy.add(`automation-${id}`); render();
-  try { await api(`/api/projects/${encodeURIComponent(id)}`, { method: "PATCH", body: { auto_build: autoBuild, auto_publish: autoBuild && autoPublish, auto_publish_destination: destination } }); toast("Automation settings saved."); await refresh(); }
+  try { await api(`/api/projects/${encodeURIComponent(id)}`, { method: "PATCH", body: { auto_build: autoBuild, auto_publish: autoBuild && autoPublish, auto_publish_destination: destination } }); automationDrafts.delete(id); toast("Automation settings saved."); await refresh(); }
   catch (error) { toast(error.message, true); }
   finally { busy.delete(`automation-${id}`); render(); }
 }
@@ -853,7 +859,7 @@ function openBuild(id, captureId) {
   const targets = $("build-targets"); targets.replaceChildren();
   project.targets.forEach((target) => { const box = input(`build-target-${target}`, "checkbox"); box.value = target; box.checked = true; targets.append(el("label", "", [box, targetLabels[target] || target])); });
   $("build-heading").textContent = `Build ${project.name}`;
-  $("build-note").textContent = project.packaging?.runner === "operations" ? "Builds run the packaging definition with your verified game files. Large games need time and free disk space; progress and errors appear under Build diagnostics." : "Builds run this game's saved build instructions.";
+  $("build-note").textContent = project.packaging?.runner === "operations" ? "Builds run the packaging definition with your verified game files. Large games need time and free disk space; progress and errors appear under Updates." : "Builds run this game's saved build instructions.";
   $("build-error").textContent = ""; $("build-submit").disabled = !select.options.length; $("build-dialog").showModal();
 }
 async function submitBuild(event) {
@@ -861,11 +867,11 @@ async function submitBuild(event) {
   const targets = [...$("build-targets").querySelectorAll("input:checked")].map((node) => node.value);
   if (!targets.length) { $("build-error").textContent = "Choose at least one platform."; return; }
   $("build-submit").disabled = true;
-  try { const result = await api(`/api/projects/${encodeURIComponent(project.id)}/build`, { method: "POST", body: { targets, capture_id: $("build-release").value || undefined } }); $("build-dialog").close(); if (result.message) toast(result.message); if (result.jobs?.length) { toast("Build queued. Follow its progress under Build diagnostics."); navigateProject(project.id, "advanced"); } await refresh(); }
+  try { const result = await api(`/api/projects/${encodeURIComponent(project.id)}/build`, { method: "POST", body: { targets, capture_id: $("build-release").value || undefined } }); $("build-dialog").close(); if (result.message) toast(result.message); if (result.jobs?.length) { toast("Build queued. Follow its progress under Updates."); navigateProject(project.id, "activity"); } await refresh(); }
   catch (error) { $("build-error").textContent = error.message; }
   finally { $("build-submit").disabled = false; }
 }
-function publishToRomM(id) { return runAction(`romm-${id}`, `/api/artifacts/${encodeURIComponent(id)}/publish-romm`, {}, "Upload to RomM queued. Its progress appears under Build diagnostics."); }
+function publishToRomM(id) { return runAction(`romm-${id}`, `/api/artifacts/${encodeURIComponent(id)}/publish-romm`, {}, "Upload to RomM queued. Its progress appears under Updates."); }
 function refreshCatalog() { return runAction("catalog-refresh", "/api/catalog/refresh", {}, "Catalog refreshed."); }
 function renderCatalog() {
   const catalog = state.catalog || {}, node = $("catalog-content"); if (!node) return;
@@ -913,18 +919,29 @@ function packagingInstructions(project) {
   if (recipe.notes) steps.push(el("p", "review-notes", recipe.notes));
   group("4. Packaging steps & preparation notes", steps);
   const imports = importedPackages(project);
-  group("5. Existing downloads & launch instructions", [el("p", "field-help", imports.length ? "Existing RomM imports are separate from this project's saved packaging configuration. Their launch instructions and test results are beside each platform download." : "A built archive or matching RomM import will appear under Downloads & artwork."), button("View downloads & launch instructions →", "button secondary small", () => navigateProject(project.id, "overview"))]);
+  group("5. Existing downloads & launch instructions", [el("p", "field-help", imports.length ? "Existing RomM imports are separate from this project's saved packaging configuration. Their launch instructions and test results are beside each platform download." : "A built archive or matching RomM import will appear under Play."), button("View downloads & launch instructions →", "button secondary small", () => navigateProject(project.id, "overview"))]);
   section.append(list); return section;
 }
 function renderAdvanced(project, content, openJobs) {
   const stack = el("div", "advanced-stack");
-  stack.append(packagingInstructions(project));
-  if (project.packaging && !project.demo && !["recipe", "profile"].includes(project.packaging.runner)) stack.append(draftCard(project));
-  if (project.packaging) stack.append(releasesCard(project), automationCard(project));
-  const configuration = el("section", "detail-card", [el("h2", "", project.packaging ? "Packaging definition (JSON)" : "Saved configuration & automation"), el("p", "detail-note", project.packaging ? "The readable instructions above are generated from this definition. Editing it creates a new definition revision, so new packages and their tests are never confused with older ones." + (project.profile ? " The reviewed profile's build commands stay fixed." : "") : project.profile ? "This game uses fixed, reviewed build instructions for its supported release. Automation settings are editable; changing trusted build execution requires a profile update. New unsupported releases are preserved for review." : "A custom recipe controls required inputs, outputs, and the build runner.")]);
+  const configuration = el("section", "detail-card", [el("h2", "", project.packaging ? "Your build instructions" : "Saved configuration & automation"), el("p", "detail-note", project.packaging ? "The readable instructions above are generated from this definition. Editing it creates a new definition revision, so new packages and their tests are never confused with older ones." + (project.profile ? " The reviewed profile's build commands stay fixed." : "") : project.profile ? "This game uses fixed, reviewed build instructions for its supported release. Automation settings are editable; changing trusted build execution requires a profile update. New unsupported releases are preserved for review." : "A custom recipe controls required inputs, outputs, and the build runner.")]);
   if (!project.packaging) configuration.append(el("div", "detail-facts", [meta("Packaging method", project.recipe?.mode || "capture"), meta("Automatic build", project.auto_build ? "Enabled" : "Disabled"), meta("Automatic local library copy", project.auto_publish ? "Enabled" : "Disabled"), meta("Polling interval", `${project.poll_minutes || 60} minutes`)]));
+  configuration.append(externalLink("Configuration reference ↗", "https://github.com/Crimson3076/portkeeper/blob/main/docs/PACKAGING.md"));
   configuration.append(button(project.packaging ? "Edit packaging definition" : "Edit packaging instructions", "button secondary small", () => openRecipe(project.id)));
-  const json = el("details", "diagnostics-list"); json.append(el("summary", "table-action", project.packaging ? "View definition JSON" : "Executable configuration (JSON)"), el("pre", "json-preview", JSON.stringify(project.packaging || project.recipe || captureRecipe, null, 2))); configuration.append(json); stack.append(configuration);
+  const json = el("details", "diagnostics-list"); json.append(el("summary", "table-action", project.packaging ? "View definition JSON" : "Executable configuration (JSON)"), el("pre", "json-preview", JSON.stringify(project.packaging || project.recipe || captureRecipe, null, 2))); configuration.append(json);
+  if (project.packaging) {
+    const source = project.definition_source;
+    configuration.append(el("p", "field-help", source ? `Based on ${source.kind} revision ${source.revision}. Current revision ${project.packaging.revision}. Edits apply to this game only.` : "This game's own definition. Edits apply to this game only."));
+    const history = el("details", "diagnostics-list", el("summary", "table-action", "Saved revisions (last 20)"));
+    (project.definition_history || []).slice().reverse().forEach(record => history.append(el("div", "inline-actions", [el("span", "field-help", `Revision ${record.definition.revision} · ${dateLabel(record.saved_at)}`), button("Review & restore", "button secondary small", () => { openRecipe(project.id); $("recipe-json").value = JSON.stringify(record.definition, null, 2); editorDirty = true; switchEditor("changes"); })])));
+    if (!(project.definition_history || []).length) history.append(el("p", "field-help", "Your previous definition is saved here when you edit it. Restoring creates a new revision; existing packages are unchanged."));
+    configuration.append(history);
+  }
+  stack.append(configuration);
+  if (project.packaging && !project.demo && !["recipe", "profile"].includes(project.packaging.runner)) stack.append(draftCard(project));
+  stack.append(packagingInstructions(project));
+  stack.append(retentionCard(project), preservationCard(project));
+  stack.append(button("Edit game metadata link", "button secondary", () => openMetadata(project.id)));
   if (project.packaging?.runner === "recipe") {
     const assistant = el("section", "detail-card", [el("h2", "", "Draft packaging instructions with Ollama"), el("p", "detail-note", project.profile ? "A local model can draft notes for this verified profile. Its reviewed build instructions remain fixed; proposals are reviewed before saving." : "Describe a required change or a build error. A local model can draft a proposal; you review the JSON before saving it.")]);
     const prompt = el("textarea", "assistant-prompt"); prompt.id = "assistant-project-prompt"; prompt.rows = 3; prompt.placeholder = "Explain the change you want to make…"; prompt.value = assistantPromptDrafts.get(project.id) || ""; prompt.addEventListener("input", () => assistantPromptDrafts.set(project.id, prompt.value));
@@ -934,12 +951,16 @@ function renderAdvanced(project, content, openJobs) {
     assistant.append(el("div", "inline-actions", [button(busy.has(`proposal-${project.id}`) ? "Drafting proposal…" : "Draft proposal", "button secondary small", () => draftProposal(project.id), !configured || busy.has(`proposal-${project.id}`)), button("Assistant settings →", "text-button", () => navigateSettings("assistant"))]));
     if (!configured) assistant.append(el("p", "field-help", "Configure your local Ollama endpoint and model in Settings first.")); stack.append(assistant);
   }
-  const diagnostic = el("section", "detail-card", [el("h2", "", "Build diagnostics"), el("p", "detail-note", "Detailed logs and errors for troubleshooting a game step.")]);
-  const jobs = projectJobs(project.id); const logs = el("div", "diagnostics-list");
-  jobs.forEach((job) => { const details = el("details", "job-panel"); details.dataset.jobId = job.id; details.open = openJobs.has(String(job.id)) || String(job.id) === String(selectedJobId); details.append(el("summary", "", [targetPill(job.target || "capture"), el("span", "", job.version || "Update check"), statusBadge(jobStage(job)), el("span", "job-date", dateLabel(job.created_at))]), el("pre", "", (Array.isArray(job.logs) ? job.logs.join("\n") : String(job.logs || "Waiting for log output…")) + (job.error ? `\n\nError: ${job.error}` : ""))); logs.append(details); });
-  diagnostic.append(jobs.length ? logs : el("p", "detail-empty", "No diagnostics yet.")); stack.append(diagnostic);
   if (project.rom_source?.sha1) stack.append(el("section", "detail-card", [el("h2", "", "Game input identity"), el("div", "detail-facts", [meta("ROM SHA-1", project.rom_source.sha1, true), meta("Cache key", project.rom_source.cache_key || "Not cached", true)])]));
   content.append(stack);
+}
+
+function renderBuildDiagnostics(project, content, openJobs) {
+  const diagnostic = el("section", "detail-card", [el("h2", "", "Build progress & logs"), el("p", "detail-note", "Detailed logs and errors for troubleshooting a game step.")]);
+  const jobs = projectJobs(project.id); const logs = el("div", "diagnostics-list");
+  jobs.forEach((job) => { const details = el("details", "job-panel"); details.dataset.jobId = job.id; details.open = openJobs.has(String(job.id)) || String(job.id) === String(selectedJobId); details.append(el("summary", "", [targetPill(job.target || "capture"), el("span", "", job.version || "Update check"), statusBadge(jobStage(job)), el("span", "job-date", dateLabel(job.created_at))]), el("pre", "", (Array.isArray(job.logs) ? job.logs.join("\n") : String(job.logs || "Waiting for log output…")) + (job.error ? `\n\nError: ${job.error}` : ""))); if (job.status === "failed") details.append(button("Retry failed step", "button secondary small", () => retryJob(job.id), busy.has(`retry-${job.id}`))); logs.append(details); });
+  diagnostic.append(jobs.length ? logs : el("p", "detail-empty", "No diagnostics yet.")); content.append(diagnostic);
+
 }
 
 function openMetadata(id) {
@@ -1200,26 +1221,76 @@ async function submitProject(event) {
   } catch (error) { $("project-form-error").textContent = error.message; }
   finally { submit.disabled = false; submit.textContent = "Add project"; }
 }
+function editorValue() {
+  const value = JSON.parse($("recipe-json").value);
+  if (!value || Array.isArray(value) || typeof value !== "object") throw new Error("Configuration must be a JSON object.");
+  return value;
+}
 function openRecipe(id) {
   const project = projectById(id); if (!project) return; recipeProjectId = id;
-  if (project.packaging) {
-    $("recipe-heading").textContent = `${project.name} packaging definition`; $("recipe-dialog").querySelector(".dialog-intro").textContent = "This JSON is the source of truth for the readable instructions, builds and compatibility checks. Saving a change creates a new revision. Operations and tools are limited to what this Portkeeper version supports.";
-    $("recipe-json").value = JSON.stringify(project.packaging, null, 2); $("recipe-json").readOnly = false; $("recipe-template").disabled = true; $("apply-template").disabled = true;
-    $("recipe-auto-build").checked = Boolean(project.auto_build); $("recipe-auto-publish").checked = Boolean(project.auto_publish); syncAutoPublish(); $("recipe-template").value = ""; $("recipe-form-error").textContent = ""; $("recipe-dialog").showModal(); return;
-  }
-  $("recipe-heading").textContent = `${project.name} packaging instructions`; $("recipe-dialog").querySelector(".dialog-intro").textContent = project.profile ? "This profile’s reviewed build instructions are fixed. You can edit the automation settings below." : "Saved recipes run repeatably. Device-specific overrides define each package’s outputs."; $("recipe-json").value = JSON.stringify(project.recipe || captureRecipe, null, 2); $("recipe-json").readOnly = Boolean(project.profile); $("recipe-template").disabled = Boolean(project.profile); $("apply-template").disabled = Boolean(project.profile); $("recipe-auto-build").checked = Boolean(project.auto_build); $("recipe-auto-publish").checked = Boolean(project.auto_publish); syncAutoPublish(); $("recipe-template").value = ""; $("recipe-form-error").textContent = ""; $("recipe-dialog").showModal();
+  editorOriginal = JSON.parse(JSON.stringify(project.packaging || project.recipe || captureRecipe)); editorDirty = false;
+  $("recipe-heading").textContent = `${project.name} build instructions`;
+  $("recipe-json").value = JSON.stringify(editorOriginal, null, 2);
+  $("recipe-json").readOnly = Boolean(project.profile && !project.packaging);
+  $("recipe-template").disabled = Boolean(project.packaging || project.profile); $("apply-template").disabled = $("recipe-template").disabled;
+  $("recipe-template").value = ""; $("recipe-form-error").textContent = ""; $("recipe-validation").textContent = "";
+  const source = project.definition_source;
+  $("recipe-origin").textContent = `Applies to ${project.name} only. ${project.packaging ? `Revision ${project.packaging.revision}. ` : ""}${source ? `Based on ${source.kind} revision ${source.revision}. ` : ""}Saving changes future builds, not existing downloads.`;
+  switchEditor(project.packaging ? "settings" : "json"); $("recipe-dialog").showModal();
 }
-function syncAutoPublish() { const enabled = $("recipe-auto-build").checked; $("recipe-auto-publish").disabled = !enabled; if (!enabled) $("recipe-auto-publish").checked = false; }
+function renderEditorFields() {
+  const value = editorValue(), parent = $("recipe-fields"); parent.replaceChildren();
+  if (!projectById(recipeProjectId)?.packaging) { parent.append(el("p", "field-help", "This legacy recipe is edited in JSON. All saved fields remain available.")); return; }
+  const edit = (label, path, multiline = false) => {
+    let current = value; path.forEach(key => { current = current?.[key]; });
+    const node = multiline ? el("textarea") : input(`editor-${path.join("-")}`, "text");
+    node.id = `editor-${path.join("-")}`; node.value = current || ""; if (multiline) node.rows = 3;
+    node.addEventListener("input", () => {
+      const draft = editorValue(); let owner = draft;
+      path.slice(0,-1).forEach(key => { owner[key] ||= {}; owner = owner[key]; });
+      if (!node.value && path.at(-1) === "package_prefix") delete owner[path.at(-1)]; else owner[path.at(-1)] = node.value; $("recipe-json").value = JSON.stringify(draft, null, 2); editorDirty = true; $("recipe-validation").textContent = "";
+    });
+    field(parent, label, node);
+  };
+  edit("Name", ["name"]); edit("Description", ["summary"], true); edit("Package filename prefix", ["package_prefix"]);
+  edit("Release tag pattern", ["upstream", "release_rules", "tag_pattern"]);
+  edit("Save files & settings location", ["saves"], true);
+  for (const target of value.targets || []) { parent.append(el("h3", "", targetLabels[target] || target)); edit("Launch command", ["launch", target, "command"]); edit("Launch instructions", ["launch", target, "instructions"], true); }
+  parent.append(el("h3", "", "Build steps"));
+  if (!(value.operations || []).length) parent.append(el("p", "field-help", value.runner === "profile" ? "A reviewed profile implements these steps. Its execution is fixed." : "No operations are defined. Add supported operations in JSON."));
+  (value.operations || []).forEach((step, index) => parent.append(button(`${index+1}. ${step.op}${step.tool ? " · " + step.tool : ""} — edit in JSON`, "button secondary step-edit", () => { switchEditor("json"); const node = $("recipe-json"); node.focus(); const text = JSON.stringify(step, null, 2).split("\n").map((line,i) => i ? "    " + line : line).join("\n"); const start = node.value.indexOf(text); if (start >= 0) node.setSelectionRange(start, start+text.length); })));
+}
+function configurationChanges(before, after, path = "") {
+  if (JSON.stringify(before) === JSON.stringify(after)) return [];
+  if (before && after && typeof before === "object" && typeof after === "object" && !Array.isArray(before) && !Array.isArray(after)) return [...new Set([...Object.keys(before), ...Object.keys(after)])].flatMap(key => configurationChanges(before[key], after[key], path ? `${path}.${key}` : key));
+  return [`${path || "configuration"}\n− ${JSON.stringify(before) ?? "(absent)"}\n+ ${JSON.stringify(after) ?? "(removed)"}`];
+}
+function switchEditor(view) {
+  try {
+    const draft = editorValue();
+    if (view === "settings") renderEditorFields();
+    if (view === "changes") $("recipe-diff").textContent = configurationChanges(editorOriginal, draft).join("\n\n") || "No changes.";
+    editorView = view;
+    ["settings", "json", "changes"].forEach(name => { $( `editor-${name}`).hidden = name !== view; const tab = $(`editor-${name}-tab`); tab.classList.toggle("selected", name === view); tab.setAttribute("aria-selected", String(name === view)); tab.tabIndex = name === view ? 0 : -1; });
+    $("recipe-form-error").textContent = "";
+  } catch (error) { $("recipe-form-error").textContent = `Fix the JSON before switching views: ${error.message}`; }
+}
+async function validateEditor() {
+  $("recipe-form-error").textContent = ""; $("recipe-validation").textContent = "";
+  try {
+    const configuration = editorValue(), key = projectById(recipeProjectId)?.packaging ? "packaging" : "recipe";
+    await api(`/api/projects/${encodeURIComponent(recipeProjectId)}/configuration/validate`, {method:"POST", body:{[key]: configuration}});
+    $("recipe-validation").textContent = "Configuration is valid. This checks structure and supported settings; it does not run a build.";
+  } catch (error) { $("recipe-form-error").textContent = error.message; }
+}
 async function submitRecipe(event) {
   event.preventDefault(); const submit = $("recipe-submit"); if (submit.disabled) return; $("recipe-form-error").textContent = "";
   try {
-    let recipe; try { recipe = JSON.parse($("recipe-json").value); } catch (error) { throw new Error(`The recipe must be valid JSON. ${error.message}`); }
-    if (!recipe || Array.isArray(recipe) || typeof recipe !== "object") throw new Error("The recipe must be a JSON object.");
-    submit.disabled = true; submit.textContent = "Saving…";
+    const recipe = editorValue(); submit.disabled = true; submit.textContent = "Saving…";
     const definitionBacked = Boolean(projectById(recipeProjectId)?.packaging);
-    await api(`/api/projects/${encodeURIComponent(recipeProjectId)}`, { method: "PATCH", body: { ...(definitionBacked ? { packaging: recipe } : { recipe }), auto_build: $("recipe-auto-build").checked, auto_publish: $("recipe-auto-publish").checked } }); $("recipe-dialog").close(); toast("Packaging instructions and automation saved."); await refresh();
+    await api(`/api/projects/${encodeURIComponent(recipeProjectId)}`, { method: "PATCH", body: definitionBacked ? {packaging:recipe} : {recipe} }); editorDirty = false; $("recipe-dialog").close(); toast("Configuration saved. Existing downloads are unchanged."); await refresh();
   } catch (error) { $("recipe-form-error").textContent = error.message; }
-  finally { submit.disabled = false; submit.textContent = "Save recipe"; }
+  finally { submit.disabled = false; submit.textContent = "Save configuration"; }
 }
 function openValidation(artifact) { openReview(projectById(artifact.project_id), artifact, null); }
 function openReview(project, artifact, rom) {
@@ -1391,10 +1462,12 @@ const draftImports = new Map();
 function assistantSettings() { return state.assistant || {}; }
 function pendingProposal(project) { return (state.proposals || []).find((proposal) => String(proposal.project_id) === String(project.id)); }
 async function openAddGame() {
-  addGame = { step: "pick", games: [], loading: true, pick: null, files: null, choices: {}, targets: [], keep: true, busy: false, rommConnected: rommReady(),
+  addGame = { step: "pick", games: [], loading: true, pick: null, files: null, choices: {}, targets: [], keep: false, publish: false, autoPublish: false, busy: false, rommConnected: rommReady(),
     custom: { repo: "", lookup: null, name: "", targets: [], method: assistantSettings().configured ? "assistant" : "handoff" } };
   $("add-game-error").textContent = ""; renderAddGame(); $("add-game-dialog").showModal();
-  try { const result = await api("/api/catalog/games"); addGame.games = result.games || []; addGame.rommConnected = Boolean(result.romm_connected); }
+  try { const result = await api("/api/catalog/games"); const groups = new Map();
+    (result.games || []).forEach(game => { const key = game.game || game.name; if (!groups.has(key)) groups.set(key, []); groups.get(key).push(game); });
+    addGame.games = [...groups.values()].map(variants => ({...variants[0], name: variants[0].game || variants[0].name, variants})); addGame.rommConnected = Boolean(result.romm_connected); }
   catch (error) { $("add-game-error").textContent = error.message; }
   finally { if (addGame) { addGame.loading = false; renderAddGame(); } }
 }
@@ -1416,11 +1489,11 @@ function renderGamePicker(content, actions) {
   addGame.games.forEach((game) => {
     const card = el("button", `game-pick${addGame.pick?.id === game.id ? " selected" : ""}`); card.type = "button";
     const needs = game.needs.length ? "Needs your " + game.needs.map((need) => need.label.replace(/^Your /, "")).join(" and ") : game.runner === "profile" ? "Needs your ROM, chosen from RomM" : "No game files needed";
-    card.append(el("strong", "", game.name), el("span", "field-help", needs), el("span", "game-pick-tags", [...game.targets.map((target) => el("span", "status-badge", targetLabels[target] || target)), ...(game.in_library ? [statusBadge("ready", "In your library")] : [])]));
+    card.append(el("strong", "", game.name), el("span", "field-help", needs), el("span", "game-pick-tags", [...[...new Set((game.variants || [game]).flatMap(item => item.targets))].map((target) => el("span", "status-badge", targetLabels[target] || target)), ...(game.in_library ? [statusBadge("ready", "In your library")] : [])]));
     if (game.first_run) card.append(el("span", "field-help", game.first_run.mode === "asks_user" ? "Asks for something on first launch" : "No setup on first launch"));
     card.addEventListener("click", () => {
-      if (game.in_library) { $("add-game-dialog").close(); navigateProject(game.in_library); toast(`${game.name} is already in your library.`); return; }
-      addGame.pick = game; renderAddGame();
+      if (game.in_library && !(game.variants || []).some(item => !item.in_library)) { $("add-game-dialog").close(); navigateProject(game.in_library); toast(`${game.name} is already in your library.`); return; }
+      addGame.pick = game.variants ? {...(game.variants.find(item => !item.in_library) || game), variants: game.variants} : game; renderAddGame();
     });
     grid.append(card);
   });
@@ -1436,7 +1509,7 @@ function continueAddGame() {
   $("add-game-error").textContent = "";
   if (pick.id === "custom") { addGame.step = "custom"; renderAddGame(); return; }
   if (pick.runner === "profile") { $("add-game-dialog").close(); openWizard(); return; }
-  addGame.step = "files"; addGame.targets = [...pick.targets]; addGame.choices = {}; renderAddGame(); void findGameFiles();
+  addGame.step = "files"; addGame.variants = pick.variants || [pick]; addGame.targets = [...pick.targets]; addGame.choices = {}; renderAddGame(); void findGameFiles();
 }
 async function findGameFiles() {
   const pick = addGame.pick; addGame.files = null; addGame.searching = true; $("add-game-error").textContent = ""; renderAddGame();
@@ -1445,7 +1518,7 @@ async function findGameFiles() {
     if (addGame?.pick !== pick) return;
     addGame.files = result.inputs || [];
     addGame.files.forEach((item) => { if (item.found.length === 1 && item.kind === "file") addGame.choices[item.id] = item.found[0].path; });
-  } catch (error) { $("add-game-error").textContent = error.message; addGame.files = []; }
+  } catch (error) { $("add-game-error").textContent = error.message; addGame.files = null; }
   finally { if (addGame) { addGame.searching = false; renderAddGame(); } }
 }
 function fileChoicePanel(item) {
@@ -1454,7 +1527,7 @@ function fileChoicePanel(item) {
   const accepted = item.accepted.length ? `This game accepts: ${item.accepted.join(", ")}.` : "";
   if (item.found.length === 1) {
     const found = item.found[0];
-    panel.append(el("div", "setup-file", [el("span", "mark ok", "✓"), el("div", "", [el("strong", "", found.name || found.path), el("p", "", `Found in your RomM library · ${found.accepted === "checked during the build" ? "checked during the build" : "verified as " + found.accepted}`)])]));
+    panel.append(el("div", "setup-file", [el("span", "mark ok", "✓"), el("div", "", [el("strong", "", found.name || found.path), el("p", "", `Found in your configured game files folder · ${found.accepted === "checked during the build" ? "checked during the build" : "verified as " + found.accepted}`)])]));
   } else if (item.found.length > 1) {
     panel.append(el("div", "setup-file", [el("span", "mark choose", "?"), el("div", "", [el("strong", "", "Several files could be this one"), el("p", "", "Choose the one to use. Portkeeper checks it again before building.")])]));
     const options = el("div", "setup-options");
@@ -1478,12 +1551,19 @@ function fileChoicePanel(item) {
   if (item.notes) panel.append(el("p", "field-help", item.notes));
   return panel;
 }
-function addGameReady() { return (addGame.files || []).every((item) => item.kind !== "file" || !item.required || Boolean(addGame.choices[item.id])) && addGame.targets.length > 0; }
+function addGameReady() { return Boolean(addGame.files) && !addGame.searching && (addGame.files || []).every((item) => item.kind !== "file" || !item.required || Boolean(addGame.choices[item.id])) && addGame.targets.length > 0; }
 function syncAddGameSubmit() { const submit = $("add-game-submit"); if (submit) submit.disabled = !addGameReady() || addGame.busy; }
 function renderGameFiles(content, actions) {
   const game = addGame.pick; $("add-game-heading").textContent = game.name;
   actions.append(button("← Back", "button subtle left-action", () => { addGame.step = "pick"; renderAddGame(); }, addGame.busy));
-  if (addGame.searching || !addGame.files) { content.append(el("p", "detail-empty", "Looking for your game files in your RomM library folder…")); return; }
+  if (addGame.variants?.length > 1) {
+    const variant = el("select"); variant.id = "add-game-variant";
+    addGame.variants.forEach(item => { const option = el("option", "", item.targets.map(target => targetLabels[target] || target).join(" / ")); option.value = item.id; option.disabled = Boolean(item.in_library); variant.append(option); });
+    variant.value = game.id;
+    variant.addEventListener("change", () => { addGame.pick = addGame.variants.find(item => item.id === variant.value); addGame.targets = [...addGame.pick.targets]; addGame.choices = {}; void findGameFiles(); });
+    field(content, "Platform build instructions", variant, "These platforms use separate build instructions. Add each platform you want using this same game card.");
+  }
+  if (addGame.searching || !addGame.files) { content.append(el("p", "detail-empty", addGame.searching ? "Looking for your game files in the configured inputs folder…" : "Game files could not be searched.")); if (!addGame.searching) content.append(button("Search again", "button secondary", findGameFiles)); return; }
   addGame.files.filter((item) => item.kind === "file").forEach((item) => content.append(fileChoicePanel(item)));
   const platforms = el("div", "setup-panel", el("h3", "", "Platforms"));
   const options = el("div", "setup-options");
@@ -1493,12 +1573,23 @@ function renderGameFiles(content, actions) {
     options.append(el("label", "", [box, targetLabels[target] || target]));
   });
   platforms.append(options);
-  const keep = input("add-game-keep", "checkbox"); keep.checked = addGame.keep; keep.addEventListener("change", () => { addGame.keep = keep.checked; });
-  const updates = el("div", "setup-panel", [el("label", "checkbox-line", [keep, el("strong", "", "Keep up to date")]), el("p", "field-help", addGame.rommConnected ? "When a new release passes this game's checks, build it and send it to RomM. Anything unexpected goes to your inbox instead." : "When a new release passes this game's checks, build it. Anything unexpected goes to your inbox instead.")]);
-  content.append(platforms, updates);
+  const publishing = el("div", "setup-panel", el("h3", "", "Where should these packages go?"));
+  const destination = el("select"); destination.id = "add-game-destination";
+  [["local", "Keep in Portkeeper — download when ready"], ...(addGame.rommConnected ? [["romm", "Build and send to RomM"]] : [])].forEach(([value,label]) => { const option = el("option", "", label); option.value = value; destination.append(option); });
+  destination.value = addGame.publish ? "romm" : "local";
+  field(publishing, "Package destination", destination);
+  destination.addEventListener("change", () => { addGame.publish = destination.value === "romm"; renderAddGame(); });
+  const updates = el("div", "setup-panel", el("h3", "", "Future releases"));
+  const mode = el("select"); mode.id = "add-game-updates";
+  [["notify", "Check for updates; let me choose when to build"], ["build", "Automatically build compatible updates"], ...(addGame.rommConnected ? [["publish", "Automatically build and send updates to RomM"]] : [])].forEach(([value,label]) => { const option = el("option", "", label); option.value = value; mode.append(option); });
+  mode.value = addGame.autoPublish ? "publish" : addGame.keep ? "build" : "notify";
+  mode.addEventListener("change", () => { addGame.keep = mode.value !== "notify"; addGame.autoPublish = mode.value === "publish"; renderAddGame(); });
+  field(updates, "Update behavior", mode, "Unexpected releases are preserved for review. Existing packages stay available.");
+  content.append(platforms, publishing, updates);
   if (game.first_run) content.append(el("div", "setup-panel", [el("h3", "", "First launch"), el("p", `first-run-note${game.first_run.mode === "asks_user" ? " warn" : ""}`, game.first_run.text || "")]));
-  if (!addGame.rommConnected) content.append(el("p", "field-help", "RomM isn't connected, so packages stay in Portkeeper. Connect RomM in Settings to send them there."));
-  const submit = button(addGame.busy ? "Setting up…" : addGame.rommConnected ? "Set up and send to RomM" : "Set up", "button primary", submitAddGame, !addGameReady() || addGame.busy); submit.id = "add-game-submit";
+  content.append(el("p", "info-note", `Build ${addGame.targets.map(target => targetLabels[target] || target).join(" and ") || "— choose a platform"}. ${addGame.publish ? "Upload to RomM after building." : "Keep packages here for download."} ${addGame.keep ? addGame.autoPublish ? "Future compatible releases build and upload automatically." : "Future compatible releases build automatically without uploading." : "Future releases wait for your build decision."}`));
+  if (!addGame.rommConnected) content.append(el("p", "field-help", "RomM is optional. Connect it in Settings when you want to upload packages."));
+  const submit = button(addGame.busy ? "Starting build…" : addGame.publish ? "Build and send to RomM" : "Build packages", "button primary", submitAddGame, !addGameReady() || addGame.busy); submit.id = "add-game-submit";
   actions.append(submit);
 }
 async function submitAddGame() {
@@ -1506,9 +1597,9 @@ async function submitAddGame() {
   addGame.busy = true; $("add-game-error").textContent = ""; renderAddGame();
   try {
     const files = Object.fromEntries(Object.entries(addGame.choices).filter(([, value]) => value));
-    const result = await api("/api/setup", { method: "POST", body: { definition_id: addGame.pick.id, targets: addGame.targets, files, keep_updated: addGame.keep, publish: true } });
+    const result = await api("/api/setup", { method: "POST", body: { definition_id: addGame.pick.id, targets: addGame.targets, files, keep_updated: addGame.keep, auto_publish: addGame.autoPublish, publish: addGame.publish } });
     $("add-game-dialog").close(); await refresh(); navigateProject(result.project.id);
-    toast(`Setting up ${result.project.name}. Progress shows on its page.`);
+    toast(`Building ${result.project.name}. Progress shows under Updates.`);
   } catch (error) { $("add-game-error").textContent = error.message; }
   finally { if (addGame) { addGame.busy = false; renderAddGame(); } }
 }
@@ -1590,7 +1681,7 @@ function latestPackages(project) {
   const artifacts = all.filter((artifact) => artifact.version === version);
   return gameTargets(project).map((target) => artifacts.find((artifact) => artifact.target === target)).filter(Boolean);
 }
-function setupProject(id) { return runAction(`setup-${id}`, `/api/projects/${encodeURIComponent(id)}/setup`, { publish: true }, "Setup started. Progress shows on this page."); }
+function setupProject(id) { return runAction(`setup-${id}`, `/api/projects/${encodeURIComponent(id)}/setup`, { publish: false }, "Build started. Progress shows under Updates."); }
 function nextStepCard(project) {
   const card = el("section", "detail-card next-step-card");
   const active = projectActiveJob(project), proposal = pendingProposal(project), packages = latestPackages(project);
@@ -1601,13 +1692,15 @@ function nextStepCard(project) {
   if (packages.length) parts.push(packages.map((artifact) => targetLabels[artifact.target] || artifact.target).join(" & "), inRomm.length === packages.length ? "in RomM" : inRomm.length ? "partly in RomM" : "not in RomM", untested.length ? "not tested yet" : "tested");
   let heading, note = "", action = null;
   const working = busy.has(`setup-${project.id}`);
-  if (active) { heading = "Working on it"; note = `${String(jobStage(active)).replaceAll("_", " ")}…`; }
+  if (active) { heading = "Working on it"; note = `${String(jobStage(active)).replaceAll("_", " ")}…`; action = button("View build progress", "button primary small", () => navigateProject(project.id, "activity", active.id)); }
+  else if (projectJobs(project.id)[0]?.status === "failed") { heading = "A build needs your attention"; note = projectJobs(project.id)[0].error || "Review the failed step and retry when the cause is resolved."; action = button("View failure & logs", "button primary small", () => navigateProject(project.id, "activity", projectJobs(project.id)[0].id)); }
+  else if (project.packaging?.inputs?.some(item => item.required !== false && !project.input_bindings?.[item.id]) && runner === "operations") { heading = "Choose your game files"; note = "Select the required files before building packages."; action = button("Choose game files", "button primary small", () => navigateProject(project.id, "advanced")); }
   else if (proposal) { heading = "Review the drafted packaging steps"; note = "Nothing is built until you approve them."; action = button("Review draft", "button primary small", () => navigateProject(project.id, "advanced")); }
   else if (runner === "capture" && !project.demo) { heading = "Add packaging steps"; note = "Portkeeper keeps this game's releases, but doesn't know how to package it yet."; action = button("Draft packaging steps", "button primary small", () => navigateProject(project.id, "advanced")); }
-  else if (!packages.length && !project.demo) { heading = "Set up"; note = rommReady() ? "Check for the latest release, build every platform and send the packages to RomM." : "Check for the latest release and build every platform. Connect RomM in Settings to send packages there too."; action = button(working ? "Starting…" : rommReady() ? "Set up and send to RomM" : "Set up", "button primary small", () => setupProject(project.id), working); }
+  else if (!packages.length && !project.demo) { heading = "Build packages"; note = "Check the latest release and build your selected platforms. Packages stay here; uploading is a separate action unless automatic publishing is enabled."; action = button(working ? "Starting…" : "Build packages", "button primary small", () => setupProject(project.id), working); }
   else if (rommReady() && !project.demo && inRomm.length < packages.length) { heading = "Send to RomM"; note = "These packages are built but aren't in RomM yet."; action = button("Send to RomM", "button primary small", () => packages.filter((artifact) => !inRomm.includes(artifact)).forEach((artifact) => publishToRomM(artifact.id))); }
   else if (untested.length) { heading = "Try it and record how it ran"; note = "A result helps you and others know this exact download works."; action = button("Record test result", "button primary small", () => openReview(project, untested[0], null)); }
-  else { heading = "Up to date"; note = project.auto_build ? "New compatible releases are built automatically." : "Check upstream to look for a new release."; }
+  else { heading = "Downloads available"; note = project.auto_build ? "New compatible releases are built automatically." : "Check upstream to look for a new release."; }
   card.append(el("h2", "", heading), el("p", "next-step-line", parts.join(" · ")));
   if (note) card.append(el("p", "field-help", note));
   if (action) card.append(el("div", "inline-actions", action));
@@ -1655,10 +1748,10 @@ function renderProposalReview(card, project, proposal) {
   if (proposal.warnings?.length) card.append(el("h3", "", "Check before approving"), el("ul", "review-problems", proposal.warnings.map((warning) => el("li", "", warning))));
   card.append(el("details", "diagnostics-list", [el("summary", "table-action", "View definition JSON"), el("pre", "proposal-json", JSON.stringify(definition, null, 2))]));
   card.append(el("div", "inline-actions", [button(busy.has(`approve-${proposal.id}`) ? "Approving…" : "Approve", "button primary small", () => approveDraft(proposal, project), busy.has(`approve-${proposal.id}`)), button("Discard", "button secondary small", () => runAction(`discard-${proposal.id}`, `/api/proposals/${encodeURIComponent(proposal.id)}/discard`, {}, "Draft discarded."))]));
-  card.append(el("p", "quiet-note", "After approving, use Set up to run a test build. A failed build changes nothing else."));
+  card.append(el("p", "quiet-note", "After approving, use Build packages to run a test build. A failed build changes nothing else."));
 }
 async function approveDraft(proposal, project) {
-  const result = await runAction(`approve-${proposal.id}`, `/api/proposals/${encodeURIComponent(proposal.id)}/apply`, {}, "Packaging steps approved. Use Set up to build it.");
+  const result = await runAction(`approve-${proposal.id}`, `/api/proposals/${encodeURIComponent(proposal.id)}/apply`, {}, "Packaging steps approved. Use Build packages to build it.");
   if (result) navigateProject(project.id, "overview");
 }
 function queueDraft(id) { return runAction(`draft-${id}`, `/api/projects/${encodeURIComponent(id)}/draft`, { instruction: (assistantPromptDrafts.get(id) || "").trim() }, "Drafting started. The draft appears here when it's ready."); }
@@ -1745,8 +1838,20 @@ document.querySelectorAll('[name="library-layout"]').forEach((node) => node.addE
   lastRender = null; renderRoute(); render();
 }));
 $("project-form").addEventListener("submit", submitProject);
+$("settings-advanced-tab").addEventListener("click", () => { settingsView = "storage"; renderSettingsTabs(); });
 $("recipe-form").addEventListener("submit", submitRecipe);
-$("recipe-auto-build").addEventListener("change", syncAutoPublish);
+["settings", "json", "changes"].forEach(view => $(`editor-${view}-tab`).addEventListener("click", () => switchEditor(view)));
+$("recipe-json").addEventListener("input", () => { editorDirty = true; $("recipe-validation").textContent = ""; });
+$("recipe-format").addEventListener("click", () => { try { $("recipe-json").value = JSON.stringify(editorValue(), null, 2); } catch(error) { $("recipe-form-error").textContent = error.message; } });
+$("recipe-validate").addEventListener("click", validateEditor);
+$("recipe-import").addEventListener("click", () => $("recipe-file").click());
+$("recipe-file").addEventListener("change", async () => {
+  const file = $("recipe-file").files[0]; if (!file) return;
+  try { if (file.size > 1024*1024) throw new Error("Choose a JSON file smaller than 1 MiB."); const draft = JSON.parse(await file.text()); if (!draft || Array.isArray(draft) || typeof draft !== "object") throw new Error("Configuration must be a JSON object."); $("recipe-json").value = JSON.stringify(draft, null, 2); editorDirty = true; switchEditor("changes"); } catch(error) { $("recipe-form-error").textContent = error.message; }
+  $("recipe-file").value = "";
+});
+$("recipe-export").addEventListener("click", () => { try { const url = URL.createObjectURL(new Blob([JSON.stringify(editorValue(), null, 2)+"\n"], {type:"application/json"})); const link = el("a"); link.href = url; link.download = `${projectById(recipeProjectId)?.packaging?.id || "portkeeper"}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); } catch(error) { $("recipe-form-error").textContent = error.message; } });
+window.addEventListener("beforeunload", event => { if (editorDirty && $("recipe-dialog").open) { event.preventDefault(); event.returnValue = ""; } });
 $("validation-result").addEventListener("change", syncReviewFields);
 $("activity-game-filter").addEventListener("change", () => { activityGameFilter = $("activity-game-filter").value; renderActivity(); });
 $("activity-type-filter").addEventListener("change", () => { activityTypeFilter = $("activity-type-filter").value; renderActivity(); });
@@ -1773,9 +1878,11 @@ document.querySelectorAll("[data-project-tab]").forEach((node) => node.addEventL
 $("apply-template").addEventListener("click", () => {
   const template = recipes.find((item) => item.id === $("recipe-template").value);
   if (!template) { $("recipe-form-error").textContent = "Choose a recipe template first."; return; }
-  $("recipe-json").value = JSON.stringify(template.recipe, null, 2); $("recipe-form-error").textContent = "";
+  editorDirty = true; $("recipe-json").value = JSON.stringify(template.recipe, null, 2); $("recipe-form-error").textContent = "";
 });
-document.querySelectorAll("[data-close]").forEach((node) => node.addEventListener("click", () => $(node.dataset.close).close()));
+function discardEditor() { return !editorDirty || window.confirm("Discard your unsaved configuration changes?"); }
+$("recipe-dialog").addEventListener("cancel", event => { if (!discardEditor()) event.preventDefault(); });
+document.querySelectorAll("[data-close]").forEach((node) => node.addEventListener("click", () => { if (node.dataset.close !== "recipe-dialog" || discardEditor()) $(node.dataset.close).close(); }));
 document.querySelectorAll("dialog").forEach((dialog) => dialog.addEventListener("click", (event) => {
   if (event.target !== dialog) return;
   const bounds = dialog.getBoundingClientRect();

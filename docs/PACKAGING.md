@@ -1,10 +1,10 @@
 # Packaging definitions
 
 A packaging definition is the editable JSON source of truth for how a project becomes a
-playable, portable download. The **Packaging instructions** tab is generated from it, so the
+playable, portable download. The readable packaging instructions under **Advanced** are generated from it, so the
 readable steps and the steps Portkeeper runs cannot drift apart. Bundled definitions live in
 [`catalog/definitions/`](../catalog/definitions); each project keeps its own copy, which you can
-edit in **Packaging instructions → Edit packaging definition**.
+edit in **Advanced → Edit packaging definition**.
 
 Definitions select and parameterize a fixed set of operations and tools that Portkeeper
 implements. They cannot add shell commands. Launcher fields accept only plain path-like text,
@@ -107,9 +107,8 @@ launcher points at nothing.
 
 **＋ Add a game** lists the catalog's games with what each needs. Choosing one searches the RomM library
 folder (`/inputs`) for each needed file, verifies it, and explains a wrong version or a missing file in plain
-words. **Set up and send to RomM** creates the game, preserves the latest release, builds the chosen
-platforms and uploads them to RomM in one step. **Keep up to date** turns on automatic builds and, when
-RomM is connected, automatic publication.
+words. **Build and send to RomM** creates the game, preserves the latest release, builds the chosen
+platforms and uploads them to RomM in one step. The destination and future-update controls separately choose whether to upload now, automatically build later, or automatically build and upload later. New games default to keeping downloads in Portkeeper and waiting for your build decision.
 
 **Custom game** looks up any GitHub repository, saves its latest release, and then either drafts packaging
 steps with a model, prepares a prompt for your own chat or agent, opens the definition editor, or only keeps
@@ -136,11 +135,11 @@ definition then needs a successful build like any other.
 
 ## Manual actions
 
-- **Set up** (on a game's page) checks upstream, builds and sends to RomM in one step.
-- **Check upstream** preserves the latest stable release and applies the rules above.
-- **Build now…** chooses a preserved release and platforms.
-- **Build diagnostics** shows each job's stages, logs and errors.
-- **Publish to RomM** (Build archives tab) uploads a package with RomM's chunked upload API
+- **Build packages** (on a game's Play page) checks upstream and builds. Uploading is a separate action unless the game already has automatic publication enabled.
+- **Check for a new version** under **Updates** preserves the latest stable release and applies the rules above.
+- **Build packages…** under **Updates** chooses a preserved release and platforms.
+- **Build progress & logs** under **Updates** shows each job's stages, logs and errors.
+- **Send to RomM** (Updates tab) uploads a package with RomM's chunked upload API
   into the Linux or Windows platform. The token needs `roms.write`. RomM creates the library
   entry after its filesystem watcher rescans (`ENABLE_RESCAN_ON_FILESYSTEM_CHANGE`, five minutes
   by default); Portkeeper checks every minute and records the RomM entry. An existing file name
@@ -148,7 +147,7 @@ definition then needs a successful build like any other.
 - **Copy to local library folder** is separate. It reaches RomM only when that folder is RomM's
   own platform folder.
 
-Per project, **Automation** sets automatic builds and automatic publication to RomM (default)
+Per project, **Updates → Automation** sets automatic builds and automatic publication to RomM (default)
 or to the local library folder.
 
 ## Catalog
@@ -156,10 +155,10 @@ or to the local library folder.
 The GitHub catalog (`catalog/projects.json` and `catalog/definitions/`) is fetched daily from
 `raw.githubusercontent.com` and cached under `<data-dir>/catalog/`. Invalid or unavailable
 data keeps the last valid cache; on first use the catalog bundled in the image is used.
-**Settings → Catalog** shows the source, cache age, last error and a **Refresh catalog** button.
+**Settings → Advanced → Catalog** shows the source, cache age, last error and a **Refresh catalog** button.
 
 Definitions that use only the operations, helpers and tools listed here update from the catalog
-without a container update. A project offers **Apply catalog revision** when a newer revision
+without a container update. A project offers **Review catalog changes** when a newer revision
 exists; nothing is applied automatically. A definition that needs a newer `runner_version`, a
 new operation, helper or tool is listed as needing a Portkeeper update and is not used.
 
@@ -169,3 +168,7 @@ Packaging success, download test results and catalog verification are independen
 [project verification](PROJECT_VERIFICATION.md). A rebuilt package starts **Not tested**, even
 when an earlier package of the same release was tested. Wine/Proton results on a Windows
 download are labeled as such and do not change its native result.
+
+## Editing and restoring definitions
+
+The editor has Settings, JSON and Changes views of the same definition. Guided edits preserve all other fields. Validate checks structure and project compatibility without saving or building. JSON can be imported, formatted and exported. Saving a changed definition retains the previous content in Saved revisions (up to 20). Review & restore loads that content as a draft; saving creates a new revision. Catalog changes also open as a draft comparison, so local edits are never replaced just by opening the preview. Automation controls remain separate under Updates.

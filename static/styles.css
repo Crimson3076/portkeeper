@@ -64,3 +64,15 @@
 .draft-card textarea{width:100%}
 .draft-card .proposal-json{max-height:320px;overflow:auto}
 .prompt-preview{width:100%;min-height:120px;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+/* Configuration remains readable and reachable without an expert-mode switch. */
+.recipe-dialog{width:min(960px,calc(100vw - 32px));max-width:960px}
+#recipe-fields{display:grid;gap:10px;margin:12px 0 24px}
+#recipe-fields label{font-size:14px}#recipe-fields h3{margin-top:18px}
+#recipe-fields .step-edit{text-align:left;white-space:normal;justify-content:flex-start}
+#recipe-json{font:14px/1.65 ui-monospace,monospace;min-height:320px;tab-size:2}
+#recipe-diff{white-space:pre-wrap;overflow-wrap:anywhere;max-height:450px;overflow:auto;font-size:14px}
+.field-help,.detail-note,.compact-note,.review-notes,.instruction-section p,.version-description{font-size:14px;line-height:1.65}
+.settings-form label,.checkbox-line,.table-action,.text-button{font-size:14px}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:3px solid var(--cyan);outline-offset:3px}
+@media(max-width:760px){.recipe-dialog{padding:20px}.tabs{flex-wrap:wrap;gap:12px}.tabs>button{font-size:14px}.field-help,.detail-note,.compact-note{font-size:14px}}

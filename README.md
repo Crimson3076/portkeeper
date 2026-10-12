@@ -52,6 +52,8 @@ The image is published to `ghcr.io/crimson3076/portkeeper:latest` on every push 
 
 Unraid starts containers as root. The entrypoint takes ownership of the app-data folder for `PUID`/`PGID` (default `99:100`, nobody:users), then drops to that user. A non-empty library folder is never re-owned; it must already be writable by that user.
 
+For updates to an existing Unraid container, see [Unraid update instructions](docs/UNRAID_UPDATES.md).
+
 ## Set up a worker
 
 1. In **Settings → RomM**, enter your server URL and a [Client API Token](https://docs.romm.app/latest/developers/client-api-tokens/) with `roms.read`. `me.read` is optional for the connection probe. Save and test the connection.
