@@ -166,6 +166,13 @@ class Engine:
 
     def state(self):
         projects = self.store.all("projects")
+        for project in projects:
+            if project.get('capture_id'):
+                try:
+                    capture = self.store.get('captures', project['capture_id'])
+                    project['preserved_release'] = {key: capture.get(key) for key in ('version', 'commit', 'release_url', 'source', 'assets', 'created_at')}
+                except KeyError:
+                    pass
         all_jobs = self.store.all("jobs")
         jobs = all_jobs[:150]
         included = {job['id'] for job in jobs}

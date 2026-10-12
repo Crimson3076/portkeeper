@@ -198,6 +198,10 @@ function downloadDetails(artifact, rom) {
   const changes = text(details.changes) || (revision ? text(details.validation) || review?.notes : "");
   const issues = text(details.known_issues) || (review?.result === "failed" ? review.notes : "");
   [["What changed", changes], ["Requirements", requirements], ["Known issues", issues]].forEach(([label, value]) => section.append(el("p", "download-detail-line", [el("strong", "", `${label}: `), value || "Unknown — not recorded for this download."])));
+  const fileNames = [...Object.keys(details.files || {}), ...(details.recipe?.expected_files || [])];
+  const launcher = fileNames.find(name => typeof name === "string" && /(?:^|\/)(?:launch[^/]*\.(?:sh|cmd|bat))$/i.test(name));
+  const launch = text(details.launch_instructions) || (launcher ? `Extract the complete ZIP to a writable folder, then run ${launcher}. See the included README for saves, settings and dependencies.` : "") || (rom?.summary || "").split(/(?<=[.!?])\s+/).filter(sentence => /\b(extract|run|saves|settings)\b/i.test(sentence)).join(" ");
+  section.append(el("h4", "", "Launch instructions"), el("p", "download-detail-line", launch || "Not recorded for this download. Consult the README included in the archive or the upstream documentation before launching."));
   const result = testStatus(artifact, rom);
   section.append(el("p", "compact-note", {starts:"Startup checked; gameplay has not been confirmed.",played:"Gameplay confirmed for this exact download. See the device and testing notes.",failed:"A test reported a problem. See the testing notes before downloading.",untested:"No startup or gameplay check has been recorded for this exact download."}[result]));
   return section;
@@ -726,12 +730,48 @@ function renderProjectActivity(project, content) {
   const events = unifiedActivity().filter((event) => ids.has(event.project_id));
   content.append(events.length ? el("div", "activity-timeline", events.map(activityEvent)) : emptyState("◷", "No activity recorded yet", "No import discovery, test result, build or update check has been recorded for this game. Existing RomM imports appear after the library connection is checked; Record test result adds a testing event."));
 }
+function packagingInstructions(project) {
+  const recipe = project.recipe || captureRecipe, profile = profiles.find(item => item.id === project.profile);
+  const capture = project.preserved_release || {}, section = el("section", "detail-card packaging-instructions");
+  section.append(el("h2", "", "Packaging instructions"), el("p", "detail-note", recipe.mode === "capture" ? "Packaging instructions not configured yet. This project preserves upstream source and releases; existing RomM downloads were assembled separately and do not prove automatic packaging is configured." : "These instructions explain the saved configuration Portkeeper uses to produce platform downloads."));
+  const list = el("div", "instruction-sections");
+  const group = (heading, nodes) => list.append(el("section", "instruction-section", [el("h3", "", heading), ...nodes]));
+  const link = (label, url) => { const node = el("a", "text-button", label); if (typeof url === "string" && /^https:\/\//.test(url)) { node.href = url; node.target = "_blank"; node.rel = "noopener noreferrer"; } return node; };
+  const upstream = [repoLink(project.repo)];
+  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(project.repo || "")) upstream.push(link("Upstream README & build documentation ↗", `https://github.com/${project.repo}#readme`));
+  if (capture.release_url || profile?.release_url) upstream.push(link("Recorded release ↗", capture.release_url || profile.release_url));
+  upstream.push(el("p", "field-help", `Release: ${profile?.tested_release || capture.version || project.latest_version || "Unknown"} · Source commit: ${profile?.source_commit || capture.commit || "Unknown"}`));
+  group("1. Upstream source & release", upstream);
+  const downloads = [];
+  Object.entries(profile?.runtimes || {}).forEach(([target, asset]) => downloads.push(el("p", "", [targetLabels[target] || target, ": ", link(asset.name, asset.url), el("span", "field-help", ` · SHA-256: ${asset.sha256 || "Unknown"}`)])));
+  (capture.assets || []).forEach(asset => downloads.push(el("p", "", [link(asset.name || asset.file || "Captured asset", asset.url), el("span", "field-help", ` · SHA-256: ${asset.sha256 || "Unknown"}`)])));
+  if (!downloads.length) downloads.push(el("p", "field-help", "No runtime asset downloads are recorded in the packaging configuration. The upstream release link shows available downloads; they are not selected automatically."));
+  if (recipe.payload?.asset_patterns) downloads.push(el("pre", "json-preview", JSON.stringify(recipe.payload.asset_patterns, null, 2)));
+  group("2. Runtime downloads", downloads);
+  const inputs = [];
+  if (profile) inputs.push(el("p", "field-help", `Supported input: ${profile.rom_search || "See profile documentation"}. Output assets: ${profile.asset_format || "Unknown"}. Select and verify the game file through the build profile.`));
+  (recipe.inputs || []).forEach(item => inputs.push(el("p", "field-help", `${item.name || item.path || "Game input"} → ${item.dest || item.destination || "See saved configuration"}`)));
+  if (project.rom_source) inputs.push(el("p", "field-help", `Selected game file: ${project.rom_source.member || project.rom_source.filename || project.rom_source.path || "RomM input"}`));
+  if (!inputs.length) inputs.push(el("p", "field-help", "Required game files are not configured. Any historical preparation notes are shown below; they are not executable packaging steps."));
+  group("3. Required game files", inputs);
+  const steps = [];
+  if (profile) steps.push(el("p", "field-help", profile.description), el("p", "field-help", `Build host requirements: ${(profile.runner?.requirements || []).join(", ") || "Unknown"}`));
+  else if (recipe.mode === "capture") steps.push(el("p", "field-help", "Preserve the source and release checkpoint. No extraction, compilation or assembly instructions are saved."));
+  else { steps.push(el("p", "field-help", `Packaging method: ${recipe.mode || "Unknown"}. Expected outputs: ${(recipe.expected_files || []).join(", ") || "Not recorded"}.`)); if (Array.isArray(recipe.steps) && recipe.steps.length) steps.push(el("pre", "json-preview", JSON.stringify(recipe.steps, null, 2))); if (recipe.command) steps.push(el("pre", "json-preview", Array.isArray(recipe.command) ? JSON.stringify(recipe.command, null, 2) : String(recipe.command))); }
+  if (recipe.target_overrides) steps.push(el("p", "field-help", "Platform-specific steps are included in the saved configuration below."));
+  if (recipe.notes) steps.push(el("p", "review-notes", recipe.notes));
+  group("4. Packaging steps & preparation notes", steps);
+  const imports = importedPackages(project);
+  group("5. Existing downloads & launch instructions", [el("p", "field-help", imports.length ? "Existing RomM imports are separate from this project's saved packaging configuration. Their launch instructions and test results are beside each platform download." : "A built archive or matching RomM import will appear under Downloads & artwork."), button("View downloads & launch instructions →", "button secondary small", () => navigateProject(project.id, "overview"))]);
+  section.append(list); return section;
+}
 function renderAdvanced(project, content, openJobs) {
   const stack = el("div", "advanced-stack");
-  const configuration = el("section", "detail-card", [el("h2", "", "Recipe & automation"), el("p", "detail-note", project.profile ? "This game uses fixed, reviewed build instructions for its supported release. Automation settings are editable; changing trusted build execution requires a profile update. New unsupported releases are preserved for review." : "A custom recipe controls required inputs, outputs, and the build runner.")]);
-  configuration.append(el("div", "detail-facts", [meta("Recipe mode", project.recipe?.mode || "capture"), meta("Automatic build", project.auto_build ? "Enabled" : "Disabled"), meta("Automatic local library copy", project.auto_publish ? "Enabled" : "Disabled"), meta("Polling interval", `${project.poll_minutes || 60} minutes`)]), button("Edit recipe & automation", "button secondary small", () => openRecipe(project.id)));
-  const json = el("details", "diagnostics-list"); json.append(el("summary", "table-action", "View saved recipe JSON"), el("pre", "json-preview", JSON.stringify(project.recipe || captureRecipe, null, 2))); configuration.append(json); stack.append(configuration);
-  const assistant = el("section", "detail-card", [el("h2", "", "Ask for a recipe proposal"), el("p", "detail-note", project.profile ? "A local model can draft notes for this verified profile. Its reviewed build instructions remain fixed; proposals are reviewed before saving." : "Describe a required change or a build error. A local model can draft a proposal; you review the JSON before saving it.")]);
+  stack.append(packagingInstructions(project));
+  const configuration = el("section", "detail-card", [el("h2", "", "Saved configuration & automation"), el("p", "detail-note", project.profile ? "This game uses fixed, reviewed build instructions for its supported release. Automation settings are editable; changing trusted build execution requires a profile update. New unsupported releases are preserved for review." : "A custom recipe controls required inputs, outputs, and the build runner.")]);
+  configuration.append(el("div", "detail-facts", [meta("Packaging method", project.recipe?.mode || "capture"), meta("Automatic build", project.auto_build ? "Enabled" : "Disabled"), meta("Automatic local library copy", project.auto_publish ? "Enabled" : "Disabled"), meta("Polling interval", `${project.poll_minutes || 60} minutes`)]), button("Edit packaging instructions", "button secondary small", () => openRecipe(project.id)));
+  const json = el("details", "diagnostics-list"); json.append(el("summary", "table-action", "Executable configuration (JSON)"), el("pre", "json-preview", JSON.stringify(project.recipe || captureRecipe, null, 2))); configuration.append(json); stack.append(configuration);
+  const assistant = el("section", "detail-card", [el("h2", "", "Draft packaging instructions with Ollama"), el("p", "detail-note", project.profile ? "A local model can draft notes for this verified profile. Its reviewed build instructions remain fixed; proposals are reviewed before saving." : "Describe a required change or a build error. A local model can draft a proposal; you review the JSON before saving it.")]);
   const prompt = el("textarea", "assistant-prompt"); prompt.id = "assistant-project-prompt"; prompt.rows = 3; prompt.placeholder = "Explain the change you want to make…"; prompt.value = assistantPromptDrafts.get(project.id) || ""; prompt.addEventListener("input", () => assistantPromptDrafts.set(project.id, prompt.value));
   field(assistant, "Requested change", prompt);
   const assistantConfig = state.assistant || state.assistant_settings || state.settings?.assistant || {};
@@ -1006,7 +1046,7 @@ async function submitProject(event) {
 }
 function openRecipe(id) {
   const project = projectById(id); if (!project) return; recipeProjectId = id;
-  $("recipe-heading").textContent = `${project.name} recipe`; $("recipe-dialog").querySelector(".dialog-intro").textContent = project.profile ? "This profile’s reviewed build instructions are fixed. You can edit the automation settings below." : "Saved recipes run repeatably. Device-specific overrides define each package’s outputs."; $("recipe-json").value = JSON.stringify(project.recipe || captureRecipe, null, 2); $("recipe-json").readOnly = Boolean(project.profile); $("recipe-template").disabled = Boolean(project.profile); $("apply-template").disabled = Boolean(project.profile); $("recipe-auto-build").checked = Boolean(project.auto_build); $("recipe-auto-publish").checked = Boolean(project.auto_publish); syncAutoPublish(); $("recipe-template").value = ""; $("recipe-form-error").textContent = ""; $("recipe-dialog").showModal();
+  $("recipe-heading").textContent = `${project.name} packaging instructions`; $("recipe-dialog").querySelector(".dialog-intro").textContent = project.profile ? "This profile’s reviewed build instructions are fixed. You can edit the automation settings below." : "Saved recipes run repeatably. Device-specific overrides define each package’s outputs."; $("recipe-json").value = JSON.stringify(project.recipe || captureRecipe, null, 2); $("recipe-json").readOnly = Boolean(project.profile); $("recipe-template").disabled = Boolean(project.profile); $("apply-template").disabled = Boolean(project.profile); $("recipe-auto-build").checked = Boolean(project.auto_build); $("recipe-auto-publish").checked = Boolean(project.auto_publish); syncAutoPublish(); $("recipe-template").value = ""; $("recipe-form-error").textContent = ""; $("recipe-dialog").showModal();
 }
 function syncAutoPublish() { const enabled = $("recipe-auto-build").checked; $("recipe-auto-publish").disabled = !enabled; if (!enabled) $("recipe-auto-publish").checked = false; }
 async function submitRecipe(event) {
@@ -1015,7 +1055,7 @@ async function submitRecipe(event) {
     let recipe; try { recipe = JSON.parse($("recipe-json").value); } catch (error) { throw new Error(`The recipe must be valid JSON. ${error.message}`); }
     if (!recipe || Array.isArray(recipe) || typeof recipe !== "object") throw new Error("The recipe must be a JSON object.");
     submit.disabled = true; submit.textContent = "Saving…";
-    await api(`/api/projects/${encodeURIComponent(recipeProjectId)}`, { method: "PATCH", body: { recipe, auto_build: $("recipe-auto-build").checked, auto_publish: $("recipe-auto-publish").checked } }); $("recipe-dialog").close(); toast("Recipe and automation saved."); await refresh();
+    await api(`/api/projects/${encodeURIComponent(recipeProjectId)}`, { method: "PATCH", body: { recipe, auto_build: $("recipe-auto-build").checked, auto_publish: $("recipe-auto-publish").checked } }); $("recipe-dialog").close(); toast("Packaging instructions and automation saved."); await refresh();
   } catch (error) { $("recipe-form-error").textContent = error.message; }
   finally { submit.disabled = false; submit.textContent = "Save recipe"; }
 }
