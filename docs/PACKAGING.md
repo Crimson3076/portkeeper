@@ -67,7 +67,7 @@ bounded time and bounded logs, inside the Portkeeper container.
 | --- | --- | --- |
 | `ship_o2r_headless` | Runs an official Ship/2Ship AppImage once with your ROM under a virtual display and stops it after the `.o2r` archive is complete and has at least `min_entries` entries. | Xvfb and Mesa |
 | `opengoal_extract` | Runs the release's OpenGOAL `extractor` with `-e -v -d -c` (extract, validate, decompile, compile) on your ISO and keeps the listed output folders. | — |
-| `ps4_pkg_extract` | Copies PS4 PKGs to a private work folder (PkgTool maps files read-write) and extracts them in order with pinned LibOrbisPkg PkgTool. Requires the title ID, version and an accepted `eboot.bin` hash. Reuses a validated earlier extraction or a validated `prepared/` folder. | OpenSSL 1.1 libraries for PkgTool |
+| `ps4_pkg_extract` | Copies PS4 PKGs to a private work folder (PkgTool maps files read-write) and extracts them in order with pinned LibOrbisPkg PkgTool (`pkg_makegp4`, so `sce_sys` header entries such as `param.sfo` are included; later PKGs overwrite earlier files). Requires the title ID, version and an accepted `eboot.bin` hash. Reuses a validated earlier extraction or a validated `prepared/` folder. | OpenSSL 1.1 libraries for PkgTool |
 
 ## New releases
 

@@ -66,6 +66,15 @@ def accepted(item, digest):
     return None
 
 
+def overlay(source, target):
+    """Move source's files into target, replacing same-named files (later PKGs patch earlier ones)."""
+    for directory, _dirs, files in os.walk(source):
+        relative = Path(directory).relative_to(source)
+        (target / relative).mkdir(parents=True, exist_ok=True)
+        for name in files:
+            os.replace(Path(directory) / name, target / relative / name)
+
+
 def read_sfo(path):
     """Return string entries from a PS4 param.sfo."""
     data = Path(path).read_bytes()[:1024 * 1024]
@@ -506,18 +515,24 @@ class OperationRunner:
                     raise Invalid("A PKG changed while it was being copied")
                 ctx.stage("extracting", f"Extracting PKG {index + 1} of {len(packages)} with PkgTool")
                 log_path = work / f"pkgtool-{index}.log"
+                # pkg_extract leaves out the header entries (sce_sys/param.sfo and friends);
+                # pkg_makegp4 writes the file system and those entries into one folder.
+                part = work / f"part-{index}"
                 try:
-                    self.run([str(binary), "pkg_extract", str(copy), str(work / "out")], work, env, log_path, timeout)
+                    self.run([str(binary), "pkg_makegp4", str(copy), str(part)], work, env, log_path, timeout)
                 finally:
                     self.keep_log(ctx, "pkgtool", log_path)
                 copy.unlink()
-            result, problem = self.validate_ps4(op, work / "out" / "uroot")
+                (part / "Project.gp4").unlink(missing_ok=True)
+                overlay(part, work / "game")
+                shutil.rmtree(part)
+            result, problem = self.validate_ps4(op, work / "game")
             if not result:
                 raise Invalid(f"The extracted game failed validation: {problem}. Nothing was packaged.")
             if cache.exists():
                 shutil.rmtree(cache)
             cache.mkdir(parents=True)
-            os.replace(work / "out" / "uroot", cache / "game")
+            os.replace(work / "game", cache / "game")
             manifest.write_text(json.dumps({**result, "packages": [p["fingerprint"] for p in packages], "tool_sha256": tool_item["sha256"], "created_at": now()}, indent=2))
         finally:
             shutil.rmtree(work, ignore_errors=True)

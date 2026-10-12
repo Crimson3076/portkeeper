@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 from portkeeper import packaging
 from portkeeper.engine import Engine
-from portkeeper.runner import normalize_n64, read_sfo
+from portkeeper.runner import normalize_n64, overlay, read_sfo
 from portkeeper.safety import Invalid
 
 
@@ -176,6 +176,20 @@ class RunnerHelperTests(unittest.TestCase):
             path.write_bytes(b"\x00PSF" + struct.pack("<IIII", 0x101, key_start, data_start, len(entries)) + index + keys + data)
             self.assertEqual(read_sfo(path), {"APP_VER": "01.09", "TITLE_ID": "CUSA00900", "ATTRIBUTE": 7})
 
+
+    def test_later_pkg_files_overlay_earlier_ones(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base, update, game = Path(temp) / "base", Path(temp) / "update", Path(temp) / "game"
+            for root, files in ((base, {"eboot.bin": b"1.00", "sce_sys/param.sfo": b"base", "dvdroot_ps4/a.dat": b"a"}),
+                                (update, {"eboot.bin": b"1.09", "sce_sys/param.sfo": b"patch", "dvdroot_ps4/b.dat": b"b"})):
+                for name, data in files.items():
+                    (root / name).parent.mkdir(parents=True, exist_ok=True)
+                    (root / name).write_bytes(data)
+            overlay(base, game)
+            overlay(update, game)
+            self.assertEqual((game / "eboot.bin").read_bytes(), b"1.09")
+            self.assertEqual((game / "sce_sys/param.sfo").read_bytes(), b"patch")
+            self.assertEqual(sorted(p.name for p in (game / "dvdroot_ps4").iterdir()), ["a.dat", "b.dat"])
 
 class PackagingEngineTests(unittest.TestCase):
     def setUp(self):
