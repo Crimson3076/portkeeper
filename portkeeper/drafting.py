@@ -50,8 +50,9 @@ Top-level fields:
   required}]. A file with verify "hash" needs accepted hashes. Use hashes only when they appear in the
   material you were given; otherwise use verify "downstream" and say so in limitations.
   Inputs are needed on the Portkeeper server DURING PACKAGING, not files chosen later by the player.
-  If the Windows launcher asks the player for an existing game folder, use inputs: [],
-  first_run.mode: "asks_user", and explain folder selection in first_run.summary and launch.instructions.
+  When game files remain external, use inputs: [], first_run.mode: "asks_user", and explain
+  folder selection in first_run.summary and launch.instructions. When preparation is enabled
+  and a supported tool can prepare that folder, declare the tool's actual file inputs instead.
   A directory input is valid ONLY as prepared_input of a ps4_pkg_extract operation.
 - source_checks: [{description, path: "file in the source", contains: "exact text"}] that must still hold
   for a new release to be packaged automatically. Use them for facts the packaging depends on,
@@ -74,6 +75,21 @@ Top-level fields:
   - tool: fixed tools only. ship_o2r_headless {download, appimage, rom, output, to, min_entries},
     opengoal_extract {download, game, iso, collect, to}, ps4_pkg_extract {tool_download, packages,
     title_id, app_version, accepted_eboot_sha256, to}. Use a tool only when the project clearly needs it.
+    ps4_pkg_extract details: packages is an ordered array of input IDs: BASE FIRST, UPDATE SECOND.
+    Each PKG input is kind file, verify downstream, platform_hint ps4, name_hint "(?i)\\.pkg$",
+    max_bytes up to 68719476736. Metadata distinguishes base/update; do not rely on filenames.
+    The base input is required. An update may be required:false ONLY if an already updated base
+    can satisfy the exact required version; a lower base without that update fails before extraction.
+    A prepared_input may reference an optional kind directory input. The tool validates title ID,
+    APP_VER and eboot.bin SHA-256; accepted_eboot_sha256 MUST come from this project's material.
+    Copy the pinned pkgtool download supplied in game_file_preparation; it is a Linux BUILD tool
+    with platform any, even for Windows output. Never invent a tool version or checksum.
+    It writes a validated folder to $shared/game; include_tree from $shared/game as game adds it
+    to the finished package. Include game/eboot.bin and game/sce_sys/param.sfo in expected_files.
+    Set compression stored and a realistic output max_bytes (often 68719476736) because the ZIP
+    now contains the owned game data, not only the small runtime. No generic folder copying or shell.
+    Configure the launcher to use game/ ONLY when its supported settings/env are documented in source.
+    Use first_run configured when wired correctly; asks_user if the player must still select game/.
 Path rules (including Windows packages):
 - For definition path fields, use forward slashes, never Windows backslashes or absolute C:/ paths.
 - Operations' to/from fields use "$package" or "$shared" roots (e.g. "$package/game").
@@ -120,7 +136,7 @@ SYSTEM = (
 
 SIMPLE_EXAMPLE = """\
 # Worked example: a download that asks the player for a game folder
-This is fictional format guidance, not evidence of files in the project you are drafting.
+This is fictional format guidance for keeping game files external, not evidence of files in the project you are drafting.
 ZIP listing: demo-windows/Game.exe, demo-windows/bin/runtime.dll.
 The upstream launcher asks for the owned game folder. Packaging does not need that folder.
 """ + json.dumps({
@@ -294,8 +310,47 @@ def starter_definition(context):
             unresolved.append(f'{target}: archive layout was not fully inspected; verify enclosing folders and executable paths.')
         definition['downloads'][target] = item
         definition['operations'].append({'op': 'unpack_download', 'download': target, 'to': '$package', 'targets': [target]})
+    preparation = context.get('game_file_preparation', {})
+    facts = preparation.get('ps4', {})
+    if preparation.get('enabled', True) and preparation.get('pinned_tool') and all(facts.get(key) for key in ('title_id', 'app_version', 'eboot_sha256')):
+        definition['downloads']['pkgtool'] = copy.deepcopy(preparation['pinned_tool'])
+        title, version = facts['title_id'], facts['app_version']
+        definition['inputs'] = [
+            {'id': 'game_pkg', 'label': f'{title} base game PKG', 'kind': 'file', 'platform_hint': 'ps4',
+             'name_hint': r'(?i)\.pkg$', 'verify': 'downstream', 'max_bytes': 64 * packaging.GIB},
+            {'id': 'update_pkg', 'label': f'{title} {version} update PKG', 'kind': 'file', 'platform_hint': 'ps4',
+             'name_hint': r'(?i)\.pkg$', 'verify': 'downstream', 'required': False, 'max_bytes': 16 * packaging.GIB,
+             'notes': f'Required for a base below {version}; omit only when the base already includes that version.'}]
+        definition['operations'].insert(0, {'op': 'tool', 'tool': 'ps4_pkg_extract', 'tool_download': 'pkgtool',
+            'packages': ['game_pkg', 'update_pkg'], 'title_id': title, 'app_version': version,
+            'accepted_eboot_sha256': [facts['eboot_sha256']], 'to': '$shared/game', 'timeout_minutes': 240})
+        definition['operations'].append({'op': 'include_tree', 'from': '$shared/game', 'as': 'game'})
+        for output in definition['outputs'].values():
+            output.update(compression='stored', max_bytes=64 * packaging.GIB)
+            output['expected_files'] += ['game/eboot.bin', 'game/sce_sys/param.sfo']
+        unresolved.append('Confirm the PS4 title/version/hash clues against the supplied README; wire the launcher to included game/ using source-supported settings or environment variables.')
     return {'definition': definition, 'unresolved': unresolved,
             'note': 'This is an incomplete starter, not runnable packaging. Exact filenames match this release; generalize version patterns only when supported by evidence.'}
+
+
+def preparation_guidance(context, definitions):
+    text = context['material'].get('readme', '')
+    titles = set(re.findall(r'\bCUSA\d{5}\b', text))
+    versions = set(re.findall(r'\b\d{2}\.\d{2}\b', text))
+    hashes = {value.lower() for value in re.findall(r'eboot\.bin.{0,200}?sha[- ]?256.{0,30}?([a-fA-F0-9]{64})', text, re.I | re.S)}
+    facts = {}
+    for key, values in [('title_id', titles), ('app_version', versions), ('eboot_sha256', hashes)]:
+        if len(values) == 1:
+            facts[key] = next(iter(values))
+    tool = None
+    for reference in definitions.values():
+        operation = next((op for op in reference.get('operations', []) if op.get('tool') == 'ps4_pkg_extract'), None)
+        if operation:
+            tool = reference.get('downloads', {}).get(operation['tool_download'])
+            if tool:
+                break
+    return {'enabled': True, 'ps4': facts, 'pinned_tool': copy.deepcopy(tool),
+            'note': 'Prefer preparing owned game files when this fixed runner and source evidence support it. PS4 clues above are extracted from the README, not private PKGs. Confirm their meaning; ambiguous or missing values must not be invented. A PKG header match alone does not prove extraction will work. If no supported preparation path exists, state that and keep honest first-launch instructions.'}
 
 
 def build_context(project, capture, release_assets, listings, definitions, budget):
@@ -323,7 +378,9 @@ def build_context(project, capture, release_assets, listings, definitions, budge
     material = source_bundle(source, rest, project['targets'])
     from . import platforms
     detection = platforms.detect(release_assets, [{"path": "README.md", "text": material["readme"]}, *material["documentation"]])
-    return {**fixed, "platform_detection": detection, "material": material, "archive_evidence": inspected}
+    context = {**fixed, "platform_detection": detection, "material": material, "archive_evidence": inspected}
+    context['game_file_preparation'] = preparation_guidance(context, definitions)
+    return context
 
 
 def prompt_text(context, definitions, instruction=""):
@@ -341,6 +398,7 @@ def prompt_parts(context, definitions, instruction=""):
               f"Draft a definition with id \"{context['project']['definition_id']}\" for {context['project']['repository']} "
               f"release {context['release']['version']}, for these platforms: {', '.join(context['project']['targets'])}."]
     parts += ["Include every selected platform. Do not invent OS support or missing release files. Platform detection is evidence to inspect, not verification of a playable build. Records marked mentioned are only references or comparisons; they are not OS support."]
+    parts += ['Game file choice: ' + ('Prepare and include the owned game files when supported. For a supported PS4 dump, use the supplied pinned extractor, separate base/update file inputs, and include the resulting game/ folder.' if context.get('game_file_preparation', {}).get('enabled', True) else 'Keep game files external. Produce a runtime package with accurate instructions for selecting an already prepared game folder; do not add PKG extraction.')]
     parts += ['# Starter definition prepared by Portkeeper',
               'Complete this editable skeleton using project evidence. Known release facts are filled in; unresolved choices must be explained. Do not copy fictional example filenames.',
               json.dumps(starter_definition(context), indent=1)]
@@ -353,7 +411,7 @@ def prompt_parts(context, definitions, instruction=""):
               "1. Match real release assets and only the requested platforms. Archive listings may be partial; archive_layouts describes the enclosing folders.",
               "2. Follow archive folder layout: strip_prefix removes that folder; required_members must not repeat it. The launcher executable must exist at its final package path.",
               "3. Use literal expected_files, never wildcards. required_members: JSON array, at most 50 items, usually 2-10 essential files; do not copy the archive listing. All archive files are unpacked regardless. expected_files: at most 100 items. Include generated launchers and files only when operations create them.",
-              "4. If the player chooses a game folder on their PC, inputs must be empty unless a fixed tool really consumes them during packaging. State asks_user honestly.",
+              "4. Honor game_file_preparation.enabled. For PS4 preparation, base PKG precedes the matching update PKG, title/version/executable hash are sourced, and the extracted folder is included. Wire the documented launcher settings to it; state configured or asks_user honestly. For external files, use empty server inputs and accurate first-launch instructions.",
               "5. Describe actual settings/save locations, dependencies and uncertainty. Leave history and verified_releases empty.",
               "Reply with one JSON object: {\"explanation\": \"...\", \"definition\": {...}}"]
     return SYSTEM, "\n".join(parts)
@@ -412,6 +470,34 @@ def check(definition, project):
         return checked
     except packaging.NeedsUpdate as error:
         raise Invalid(str(error)) from None
+
+
+def check_preparation_choice(definition, context):
+    """Keep a connected model's draft consistent with the selected preparation mode."""
+    preparation = context.get('game_file_preparation', {})
+    tools = [op for op in definition['operations'] if op.get('tool') == 'ps4_pkg_extract']
+    if preparation.get('enabled') is False:
+        if tools:
+            raise Invalid('Game file preparation is turned off. Remove PS4 PKG extraction and describe selecting an already prepared game folder when playing.')
+        return
+    facts = preparation.get('ps4', {})
+    pinned = preparation.get('pinned_tool')
+    if not pinned or not all(facts.get(key) for key in ('title_id', 'app_version', 'eboot_sha256')):
+        return  # Incomplete evidence cannot establish an automatic preparation contract.
+    if not tools:
+        raise Invalid('Game file preparation is selected and the README supplies PS4 title/version/executable checks. Keep the starter ps4_pkg_extract operation, separate base/update inputs, and include the extracted folder; a runtime-only draft does not fulfill this choice.')
+    for tool in tools:
+        if tool['title_id'] != facts['title_id'] or tool['app_version'] != facts['app_version'] or facts['eboot_sha256'] not in tool['accepted_eboot_sha256']:
+            raise Invalid('PS4 preparation must use the title ID, app version and eboot.bin SHA-256 supplied from this project’s README.')
+        download = definition['downloads'][tool['tool_download']]
+        if any(download.get(key) != pinned.get(key) for key in ('repository', 'tag', 'asset', 'sha256')):
+            raise Invalid('Copy the supplied pinned PS4 extraction tool download without changing its repository, tag, asset or SHA-256.')
+        if len(tool['packages']) < 2:
+            raise Invalid('Declare separate base and optional update PKG inputs, in that order. An older base needs the matching update; an already updated base can omit it.')
+        for target in definition['targets']:
+            included = [op for op in definition['operations'] if op['op'] in ('include_tree', 'copy') and op.get('from') == tool['to'] and (not op.get('targets') or target in op['targets'])]
+            if not included:
+                raise Invalid(f'PS4 extraction alone does not include game files in the {target} ZIP. Add include_tree from {tool["to"]}, and configure the documented launcher to use that folder.')
 
 
 def check_archive_evidence(definition, context):
@@ -495,6 +581,11 @@ def unsupported_hashes(definition, material):
             for key in ("sha1", "sha256"):
                 if entry.get(key) and entry[key].lower() not in text:
                     found.append(entry[key])
+    for op in definition.get('operations', []):
+        if op.get('tool') == 'ps4_pkg_extract':
+            for value in op.get('accepted_eboot_sha256', []):
+                if value.lower() not in text:
+                    found.append(value)
     return found
 
 

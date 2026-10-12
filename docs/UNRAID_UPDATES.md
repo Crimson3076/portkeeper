@@ -27,6 +27,10 @@ container do not. Do not delete the app-data folder as part of updating.
 
 ## Editing your own build instructions
 
+For PS4 base games and separate update PKGs, see
+[Preparing PS4 game files](PS4_GAME_FILES.md), including ROMs folder mappings,
+file selection, automatic extraction and the GOW3 Windows packaging candidate.
+
 Open a game → **Advanced** → **Edit packaging definition**. Use **Settings** for
 common fields, **JSON** for the complete definition, and **Changes** to review the
 draft. **Copy JSON** copies the current text, including unsaved edits, on HTTP as well

@@ -122,7 +122,8 @@ class Catalog:
             definitions.append({"id": key, "name": definition["name"], "repository": definition["upstream"]["repository"],
                                 "revision": definition["revision"], "runner": definition["runner"],
                                 "origin": "github" if cached.get("supported") and cached.get("definition", {}).get("revision") == definition["revision"] else "bundled",
-                                "supported": True, "reason": None})
+                                "supported": True, "reason": None,
+                                'prepares_ps4_pkgs': any(op.get('tool') == 'ps4_pkg_extract' for op in definition.get('operations', []))})
         for key, cached in ((record or {}).get("definitions") or {}).items():
             if not cached.get("supported"):
                 definitions.append({"id": key, "name": (cached.get("definition") or {}).get("name", key), "revision": (cached.get("definition") or {}).get("revision"),

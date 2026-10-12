@@ -228,8 +228,10 @@ def _check_tool(op, definition, inputs, downloads, where):
     if op.get("tool_download") not in downloads or not downloads[op["tool_download"]].get("sha256"):
         raise Invalid(f"{where} must use a pinned PkgTool download")
     packages = _list(op.get("packages"), f"{where} packages", 8)
-    if not packages or any(p not in inputs or inputs[p]["kind"] != "file" for p in packages):
+    if not packages or any(not isinstance(p, str) or p not in inputs or inputs[p]["kind"] != "file" for p in packages) or len(set(packages)) != len(packages):
         raise Invalid(f"{where} packages must be declared file inputs, base game first")
+    if inputs[packages[0]].get('required', True) is False:
+        raise Invalid(f'{where} the base game PKG must be required; later update PKGs may be optional for an already updated dump')
     prepared = op.get("prepared_input")
     if prepared is not None and (prepared not in inputs or inputs[prepared]["kind"] != "directory"):
         raise Invalid(f"{where} prepared_input must be a declared directory input")
@@ -679,7 +681,7 @@ def describe_operation(op, definition):
         return lead + f"Run the official {op['appimage']} once under a virtual display with your ROM to generate {op['output']}; stop it after the archive is complete and contains at least {op.get('min_entries', 1)} entries."
     if tool == "opengoal_extract":
         return lead + f"Run the release's OpenGOAL extractor on your {inputs[op['iso']]['label']} to extract, validate, decompile and compile {op['game']}, then keep " + ", ".join(op["collect"]) + "."
-    return lead + "Copy the PS4 packages to a private work folder and extract them in order with the pinned PkgTool (" + ", ".join(inputs[p]["label"] for p in op["packages"]) + f"). Require title {op['title_id']}, version {op['app_version']} and an accepted eboot.bin SHA-256. Reuse a validated earlier extraction when available."
+    return lead + "Check and copy the PS4 packages to a private work folder, then extract the base game first and overlay its updates in order with the pinned PkgTool (" + " → ".join(inputs[p]["label"] for p in op["packages"]) + f"). Originals stay unchanged. Require title {op['title_id']}, version {op['app_version']} and an accepted eboot.bin SHA-256. Reuse a validated earlier extraction when available."
 
 
 def view(definition):

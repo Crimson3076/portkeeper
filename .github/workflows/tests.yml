@@ -13,6 +13,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  ps4_extraction:
+    name: Real PS4 extraction (synthetic files)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the runner image
+        run: docker build --tag portkeeper:checks .
+      - name: Download the pinned extraction tool
+        run: |
+          curl --fail --location --retry 2 --max-time 120 \
+            --output "$RUNNER_TEMP/pkgtool.zip" \
+            https://github.com/maxton/LibOrbisPkg/releases/download/v0.2/PkgTool.Core-linux-x64-0.2.231.zip
+          printf '%s  %s\n' ac897d06a0c90256f4297712cb503eb29173fbc6d7f8a936ff476c4b72e5f36e "$RUNNER_TEMP/pkgtool.zip" | sha256sum --check
+      - name: Check real extraction, base/update merging and cache reuse
+        run: |
+          docker run --rm --network none --read-only --user 10001:10001 \
+            --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 512 \
+            --tmpfs /tmp:exec,size=512m \
+            --entrypoint python --workdir /source \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/source,readonly" \
+            --mount "type=bind,source=$RUNNER_TEMP/pkgtool.zip,target=/fixture/tool.zip,readonly" \
+            -e PYTHONPATH=/source -e PORTKEEPER_TEST_PKGTOOL_ZIP=/fixture/tool.zip \
+            portkeeper:checks -W error -m unittest discover -s tests -p test_real_ps4_extraction.py -v
+
   python:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest

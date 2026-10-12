@@ -34,6 +34,12 @@ async function create(saved, storageBlocked=false, source=fixture) {
     else if(endpoint==='/api/catalog/games')payload={games:source.catalog_games || [{id:'banjo-recompiled',name:'Banjo Recompiled',targets:['linux','windows'],runner:'operations',needs:[{label:'Banjo-Kazooie (USA) 1.0 N64 ROM'}],first_run:{mode:'preloaded',text:'Your ROM is placed where Banjo looks for it.'},in_library:null}],romm_connected:true};
     else if(endpoint==='/api/catalog/games/banjo-recompiled/files')payload={inputs:[{id:'rom',label:'Banjo-Kazooie (USA) 1.0 N64 ROM',kind:'file',required:true,accepted:['USA 1.0'],found:[{path:'n64/roms/Banjo-Kazooie (USA).z64',name:'Banjo-Kazooie (USA).z64',accepted:'USA 1.0'}],rejected:[]}]};
     else if(endpoint.endsWith('/configuration/validate')){requests.push({endpoint,body:JSON.parse(options.body)});payload={valid:true};}
+    else if(endpoint.match(/^\/api\/projects\/[^/]+\/inputs$/)){
+      if(options.method==='POST'){const body=JSON.parse(options.body);requests.push({endpoint,body});const game=source.projects.find(p=>endpoint.includes(p.id));game.input_bindings||={};game.input_bindings[body.input]={source:body.source||'inputs',path:body.path,ps4:{title_id:'CUSA01623',app_version:body.input==='game_pkg'?'01.00':'01.02',role:body.input==='game_pkg'?'base':'update'}};payload=game;}
+      else payload=source.input_choices||{inputs:[]};
+    }
+    else if(endpoint.startsWith('/api/catalog/definitions/'))payload=source.catalog_definition||{};
+    else if(endpoint.endsWith('/draft-prompt')){requests.push({endpoint,body:JSON.parse(options.body)});payload={prompt:'Fixture prompt'};}
     else if(options.method==='PATCH'){const body=JSON.parse(options.body);requests.push({endpoint,body});const game=source.projects.find(p=>endpoint.includes(p.id));Object.assign(game,body);payload=game;}
     else if(endpoint==='/api/setup'){requests.push({endpoint,body:JSON.parse(options.body)});payload={project:source.projects[1],job:{}};}
     return {ok:true,status:200,json:async()=>JSON.parse(JSON.stringify(payload))};
@@ -203,6 +209,33 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   assert(gameFiles.textContent.includes('When you play: Choose your owned game folder'),'An empty build-input list still shows runtime game requirements');
   assert(gameFiles.textContent.includes('No game files need to be uploaded to Portkeeper for packaging.'));
   assert(!gameFiles.textContent.includes('No game files are needed.'));dom.window.close();
+  const ps4=JSON.parse(JSON.stringify(runtimeFiles));
+  const pkgDefinition=JSON.parse(fs.readFileSync(path.join(base,'catalog/definitions/gow3-pc-windows.json'),'utf8'));
+  const pkgProject=ps4.projects[1];pkgProject.repo='FelipePrado0/gow3_pc';pkgProject.targets=['windows'];pkgProject.capture_id=id(70);
+  ps4.catalog_definition=pkgDefinition;ps4.catalog={definitions:[{id:'gow3_pc',repository:pkgProject.repo,prepares_ps4_pkgs:true}]};
+  dom=await create(null,false,ps4);w=dom.window;d=w.document;
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();d.getElementById('project-advanced-tab').click();await tick();
+  const beforePkgReview=requests.length;
+  [...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Review PKG packaging steps').click();await tick();await tick();
+  assert(d.getElementById('recipe-dialog').open);assert(!d.getElementById('editor-changes').hidden);
+  assert.deepEqual(JSON.parse(d.getElementById('recipe-json').value).operations[0].packages,['game_pkg','update_pkg']);
+  assert.equal(requests.length,beforePkgReview,'Reviewing the preset does not save or build');
+  assert.equal(pkgProject.packaging.inputs.length,0,'Existing build steps remain in place until saved');dom.window.close();
+  pkgProject.packaging=pkgDefinition;pkgProject.input_bindings={};
+  ps4.input_choices={input_root:'/inputs',inputs:[{id:'game_pkg',ps4:{role:'base'},found:[{path:'ps4/roms/random-base.pkg',source:'inputs',ps4:{title_id:'CUSA01623',app_version:'01.00',role:'base'}}],rejected:[{name:'wrong-region.pkg',reason:'expected CUSA01623'}]},{id:'update_pkg',found:[{path:'ps4/roms/random-update.pkg',source:'inputs',ps4:{title_id:'CUSA01623',app_version:'01.02',role:'update'}}],rejected:[]}]};
+  dom=await create(null,false,ps4);w=dom.window;d=w.document;
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();d.getElementById('project-advanced-tab').click();await tick();
+  [...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Choose a file').click();await tick();await tick();
+  const pkgChoice=d.getElementById('input-choice-'+id(2)+'-game_pkg');assert(pkgChoice,'Matching PKG choices appear after searching');assert(pkgChoice.options[1].textContent.includes('CUSA01623 · 01.00 · base'));
+  assert(d.getElementById('project-content').textContent.includes('wrong-region.pkg: expected CUSA01623'));
+  pkgChoice.selectedIndex=1;pkgChoice.dispatchEvent(new w.Event('change'));
+  [...pkgChoice.parentElement.querySelectorAll('button')].find(n=>n.textContent==='Use this file').click();await tick();await tick();
+  assert.equal(pkgProject.input_bindings.game_pkg.path,'ps4/roms/random-base.pkg');
+  assert(d.getElementById('project-content').textContent.includes('(needed for the selected base)'),'Older bases make the optional update requirement explicit');
+  const preference=d.getElementById('draft-game-files-'+id(2));assert(preference.checked);preference.click();await tick();
+  assert(d.querySelector(`a[href="/api/projects/${id(2)}/draft-workspace?prepare_game_files=false"]`));
+  [...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Copy prompt for my own chat').click();await tick();await tick();
+  assert.equal(requests.at(-1).body.prepare_game_files,false,'Copied prompts honor the runtime-only choice');dom.window.close();
   dom=await create(null,false,{...fixture,projects:[],artifacts:[]});assert(dom.window.document.getElementById('project-grid').textContent.includes('first game'));dom.window.close();
   console.log('UI layouts passed: add a game, next step, drafting settings, default workspace, saved preferences, collection/list switching, grouped platforms, RomM imports, correct counts, game selection, deep links, filters, empty state and blocked storage.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

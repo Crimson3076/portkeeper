@@ -210,7 +210,7 @@
             "outputs/bloodborne-startup-fix-report.md (not committed)",
             "https://github.com/deadinside28/bloodborne_pc/issues/135"
           ],
-          "device": "Fedora 44 · RTX 5090 · NVIDIA 595.58.03",
+          "device": "Fedora 44 \u00b7 RTX 5090 \u00b7 NVIDIA 595.58.03",
           "checks": {
             "packaging": "passed for the recorded archive",
             "portability": "fresh-folder startup passed; other devices unknown",
@@ -297,6 +297,29 @@
         }
       ],
       "notes": "The existing Dusklight project keeps its saved recipe; the bundled definition is used by new Dusklight projects."
+    },
+    {
+      "id": "gow3-pc-windows",
+      "name": "God of War III Remastered",
+      "repository": "FelipePrado0/gow3_pc",
+      "procedure_kind": "automatic_definition",
+      "build_profile_available": false,
+      "definition": "catalog/definitions/gow3-pc-windows.json",
+      "verification_scopes": [
+        {
+          "release": "windows-v2.1.5",
+          "package_revision": 2,
+          "platform": "windows",
+          "status": "candidate",
+          "checks": {
+            "packaging": "Upstream source/archive structure inspected. Synthetic base/update extraction passed with the pinned tool; fixture packaging passed. Actual owned game files remain untested.",
+            "startup": "not tested",
+            "gameplay": "not tested"
+          },
+          "approval": null
+        }
+      ],
+      "notes": "Experimental PKG preparation and Windows packaging candidate. Requires your owned CUSA01623 base game and matching 01.02 update. Existing local definitions are changed only after you review and save the catalog steps."
     }
   ]
 }

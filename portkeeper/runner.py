@@ -11,7 +11,6 @@ import re
 import shutil
 import signal
 import stat
-import struct
 import subprocess
 import tarfile
 import threading
@@ -22,6 +21,7 @@ from pathlib import Path
 from . import packaging
 from .safety import MAX_MEMBERS, Invalid, checksum, confined, relative, safe_extract, slug
 from .storage import identifier, now
+from . import ps4
 
 HELPERS = Path(__file__).resolve().parent / "helpers"
 CHUNK = 8 * 1024 * 1024
@@ -78,21 +78,8 @@ def overlay(source, target):
 
 def read_sfo(path):
     """Return string entries from a PS4 param.sfo."""
-    data = Path(path).read_bytes()[:1024 * 1024]
-    if data[:4] != b"\x00PSF" or len(data) < 20:
-        raise Invalid("param.sfo is not a PS4 SFO file")
-    key_start, data_start, count = struct.unpack_from("<III", data, 8)
-    result = {}
-    for index in range(min(count, 512)):
-        key_offset, fmt, length, _maximum, data_offset = struct.unpack_from("<HHIII", data, 20 + index * 16)
-        end = data.find(b"\x00", key_start + key_offset)
-        key = data[key_start + key_offset:end].decode("ascii", "replace")
-        value = data[data_start + data_offset:data_start + data_offset + length]
-        if fmt in (0x0004, 0x0204):
-            result[key] = value.rstrip(b"\x00").decode("utf-8", "replace")
-        elif fmt == 0x0404 and length == 4:
-            result[key] = struct.unpack("<I", value)[0]
-    return result
+    with Path(path).open('rb') as stream:
+        return ps4.sfo_values(stream.read(ps4.MAX_SFO))
 
 
 class Context:
@@ -129,6 +116,20 @@ class OperationRunner:
         self.cache = engine.data / "cache" / "dependencies"
         self.prepared = engine.data / "prepared"
         self.lock = threading.RLock()
+        self.pkg_metadata_cache = {}
+
+    def pkg_metadata(self, path):
+        state = path.stat()
+        key = (str(path), state.st_size, state.st_mtime_ns, state.st_ctime_ns)
+        with self.lock:
+            if key in self.pkg_metadata_cache:
+                return self.pkg_metadata_cache[key]
+        result = ps4.pkg_metadata(path)
+        with self.lock:
+            if len(self.pkg_metadata_cache) >= 512:
+                self.pkg_metadata_cache.clear()
+            self.pkg_metadata_cache[key] = result
+        return result
 
     def availability(self):
         ssl = Path(COMPAT_SSL)
@@ -142,11 +143,14 @@ class OperationRunner:
     def locate(self, _project, definition, input_id):
         """Find a unique accepted file below the input root (or prepared folder) for an input."""
         item = next(i for i in definition["inputs"] if i["id"] == input_id)
+        expected = ps4.input_expectation(definition, input_id)
         if item["kind"] == "directory":
             roots, depth = [(self.prepared, "prepared")], 4
         else:
             hint = item.get("platform_hint")
             base = self.engine.input_root / hint if hint else self.engine.input_root
+            if expected and not base.is_dir():
+                base = self.engine.input_root
             roots, depth = [(base, "inputs")], 4
         pattern = re.compile(item["name_hint"]) if item.get("name_hint") else None
         found = []
@@ -162,11 +166,23 @@ class OperationRunner:
                 names = dirs if item["kind"] == "directory" else files
                 for name in names:
                     path = Path(directory) / name
-                    if path.is_symlink() or (pattern and not pattern.search(name)):
+                    if path.is_symlink() or (not expected and pattern and not pattern.search(name)):
                         continue
+                    if item['kind'] == 'directory':
+                        preparation = next((op for op in definition['operations'] if op.get('tool') == 'ps4_pkg_extract' and op.get('prepared_input') == input_id), None)
+                        if preparation and not self.validate_ps4(preparation, path)[0]:
+                            continue
                     if item["kind"] == "file":
                         if not path.is_file() or path.stat().st_size > item.get("max_bytes", packaging.GIB):
                             continue
+                        if expected:
+                            if path.suffix.lower() != '.pkg':
+                                continue
+                            try:
+                                if ps4.mismatch(self.pkg_metadata(path), expected):
+                                    continue
+                            except (Invalid, OSError):
+                                continue
                         if item.get("verify", "hash") == "hash":
                             try:
                                 digest = digests(path, item.get("normalize"))
@@ -181,15 +197,20 @@ class OperationRunner:
         """For each declared input: accepted files found, and near misses with the reason they were not used."""
         result = []
         for item in definition["inputs"]:
+            expected = ps4.input_expectation(definition, item['id'])
             entry = {"id": item["id"], "label": item["label"], "kind": item["kind"], "required": item.get("required", True),
                      "notes": item.get("notes"), "platform_hint": item.get("platform_hint"),
                      "accepted": [a["label"] for a in item.get("accepted", [])], "found": [], "rejected": []}
+            if expected:
+                entry['ps4'] = expected
             if item["kind"] == "directory":
                 entry["found"] = self.locate(None, definition, item["id"])
                 result.append(entry)
                 continue
             hint = item.get("platform_hint")
             base = self.engine.input_root / hint if hint else self.engine.input_root
+            if expected and not base.is_dir():
+                base = self.engine.input_root
             pattern = re.compile(item["name_hint"]) if item.get("name_hint") else None
             if base.is_dir() and not base.is_symlink():
                 for directory, dirs, files in os.walk(base):
@@ -198,7 +219,7 @@ class OperationRunner:
                     dirs[:] = sorted(d for d in dirs if not (Path(directory) / d).is_symlink())
                     for name in sorted(files):
                         path = Path(directory) / name
-                        if path.is_symlink() or (pattern and not pattern.search(name)):
+                        if path.is_symlink() or (expected and path.suffix.lower() != '.pkg') or (not expected and pattern and not pattern.search(name)):
                             continue
                         record = {"source": "inputs", "path": path.relative_to(self.engine.input_root).as_posix(), "name": name}
                         try:
@@ -208,6 +229,16 @@ class OperationRunner:
                         if size > item.get("max_bytes", packaging.GIB):
                             entry["rejected"].append({**record, "reason": "larger than this game accepts"})
                             continue
+                        if expected:
+                            try:
+                                metadata = self.pkg_metadata(path)
+                                problem = ps4.mismatch(metadata, expected)
+                            except (Invalid, OSError) as error:
+                                metadata, problem = None, str(error)
+                            if problem:
+                                entry['rejected'].append({**record, 'reason': problem})
+                                continue
+                            record['ps4'] = metadata
                         if item.get("verify", "hash") != "hash":
                             entry["found"].append({**record, "accepted": "checked during the build", "size": size})
                             continue
@@ -225,6 +256,13 @@ class OperationRunner:
                             break
             entry["rejected"] = entry["rejected"][:10]
             result.append(entry)
+        for entry in result:
+            if not entry.get('ps4') or entry['ps4']['role'] != 'update' or entry['required']:
+                continue
+            base = next((item for item in result if item.get('ps4', {}).get('role') == 'base' and item['ps4']['title_id'] == entry['ps4']['title_id']), None)
+            if base and base['found'] and any(item['ps4'].get('app_version') != entry['ps4']['app_version'] for item in base['found']):
+                entry['required'] = True
+                entry['notes'] = f"Needed to bring the base game to {entry['ps4']['app_version']}. " + (entry.get('notes') or '')
         return result
 
     def bind_inputs(self, project, definition, log=None, search=True):
@@ -233,6 +271,8 @@ class OperationRunner:
         for item in definition["inputs"]:
             if item["id"] in bindings or not search:
                 continue
+            if item['kind'] == 'directory' and any(op.get('prepared_input') == item['id'] and any(key in bindings for key in op.get('packages', [])) for op in definition['operations']):
+                continue  # Explicit PKGs take precedence over a discovered older prepared folder.
             found = self.locate(project, definition, item["id"])
             if len(found) == 1:
                 bindings[item["id"]] = found[0]
@@ -268,6 +308,8 @@ class OperationRunner:
             if size > item.get("max_bytes", packaging.GIB):
                 raise Invalid(f"{item['label']} is larger than its declared limit")
             record = {"path": path, "kind": "file", "size": size}
+            state = path.stat()
+            record['fingerprint'] = {'path': binding['path'], 'size': state.st_size, 'mtime_ns': state.st_mtime_ns}
             if item.get("verify", "hash") == "hash":
                 ctx.stage("verifying_inputs", "Checking " + item["label"])
                 digest = digests(path, item.get("normalize"))
@@ -302,6 +344,8 @@ class OperationRunner:
             try:
                 stat_result = confined(root, binding["path"]).stat()
                 inputs[item["id"]] = [binding["path"], stat_result.st_size, stat_result.st_mtime_ns]
+                if ps4.input_expectation(definition, item['id']):
+                    inputs[item['id']].append(stat_result.st_ctime_ns)
             except (Invalid, OSError):
                 inputs[item["id"]] = [binding["path"], None, None]
         payload = {"definition": hashlib.sha256(json.dumps(definition, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
@@ -546,11 +590,19 @@ class OperationRunner:
         shutil.rmtree(run, ignore_errors=True)
 
     def validate_ps4(self, op, folder):
-        eboot = folder / "eboot.bin"
-        sfo = folder / "sce_sys" / "param.sfo"
+        if not folder.is_dir() or folder.is_symlink():
+            return None, 'the prepared folder is missing or is a link'
+        try:
+            eboot = confined(folder, 'eboot.bin')
+            sfo = confined(folder, 'sce_sys/param.sfo')
+        except Invalid as error:
+            return None, str(error)
         if not eboot.is_file() or not sfo.is_file():
             return None, "eboot.bin or sce_sys/param.sfo is missing"
-        values = read_sfo(sfo)
+        try:
+            values = read_sfo(sfo)
+        except Invalid as error:
+            return None, str(error)
         if values.get("TITLE_ID") != op["title_id"]:
             return None, f"title is {values.get('TITLE_ID')!r}, expected {op['title_id']}"
         if values.get("APP_VER") != op["app_version"]:
@@ -570,6 +622,39 @@ class OperationRunner:
                     count += 1
         return {"title_id": op["title_id"], "app_version": op["app_version"], "eboot_sha256": digest, "files": count, "bytes": total}, None
 
+    def extract_ps4_package(self, ctx, binary, package, part, metadata, work, env, log_path, timeout):
+        if metadata['content_type'] != 0x1E:
+            self.run([str(binary), 'pkg_makegp4', str(package), str(part)], work, env, log_path, timeout)
+            return
+        # PkgTool v0.2's GP4 creator rejects DP project types even for full patch
+        # filesystems. Its fixed extraction commands handle those filesystems.
+        ctx.log('Extracting the update filesystem and its named sce_sys entries separately')
+        if not any(entry['path'] == 'param.sfo' for entry in metadata['system_entries']):
+            raise Invalid('The update PKG has no param.sfo entry; its version cannot be checked')
+        deadline = time.monotonic() + timeout
+        raw = part.with_name(part.name + '-filesystem')
+        self.run([str(binary), 'pkg_extract', str(package), str(raw)], work, env, log_path, timeout)
+        self.keep_log(ctx, 'pkgtool-filesystem', log_path)
+        self.check_tree(raw, packaging.MAX_PACKAGE_BYTES)
+        if (raw / 'uroot').is_dir():
+            os.replace(raw / 'uroot', part)
+            shutil.rmtree(raw)
+        elif (raw / 'eboot.bin').is_file():
+            os.replace(raw, part)
+        else:
+            raise Invalid('The update did not contain a usable game filesystem; use a full, extractable update PKG')
+        for entry in metadata['system_entries']:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise Invalid('PS4 update extraction exceeded its time limit')
+            output = confined(part, 'sce_sys/' + entry['path'])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            entry_log = work / f'{log_path.stem}-entry-{entry["index"]}.log'
+            try:
+                self.run([str(binary), 'pkg_extractentry', str(package), str(entry['index']), str(output)], work, env, entry_log, remaining)
+            finally:
+                self.keep_log(ctx, 'pkgtool-system-entry', entry_log)
+
     def _ps4(self, ctx, op, destination, timeout):
         rel = packaging.split_root(op["to"], "to")[1]
         if op.get("prepared_input"):
@@ -583,10 +668,46 @@ class OperationRunner:
                     ctx.log(f"Using the previously extracted game: {result['files']} files, eboot.bin accepted")
                     return
                 ctx.log(f"The prepared game folder was not used: {problem}")
-        packages = [self.resolve_input(ctx, key) for key in op["packages"]]
+        selected = [(key, self.resolve_input(ctx, key)) for key in op['packages']]
+        selected = [(key, package) for key, package in selected if package is not None]
+        if not selected or selected[0][0] != op['packages'][0]:
+            raise Invalid('Choose the base game PKG first, or a validated prepared game folder')
+        metadata = []
+        for input_id, package in selected:
+            # Refresh metadata for a build; the picker cache is only a browsing aid.
+            identified = ps4.pkg_metadata(package['path'])
+            problem = ps4.mismatch(identified, ps4.input_expectation(ctx.definition, input_id))
+            if problem:
+                raise Invalid(f"{input_id}: {problem}. Choose the matching base game and update PKGs under Advanced → Your game files.")
+            metadata.append(identified)
+        base_version = metadata[0].get('app_version')
+        if len(selected) == 1 and base_version and base_version != op['app_version']:
+            raise Invalid(f"The base PKG is version {base_version}; this port needs {op['app_version']}. Choose the separate {op['title_id']} update PKG. Extract the base first and apply the update second.")
+        known_versions = [item.get('app_version') for item in metadata]
+        for earlier, later in zip(known_versions, known_versions[1:]):
+            if earlier and later and re.fullmatch(r'\d{2}\.\d{2}', earlier) and re.fullmatch(r'\d{2}\.\d{2}', later) and later < earlier:
+                raise Invalid(f'The selected update would downgrade the game from {earlier} to {later}; choose updates in increasing version order')
+        fingerprints = []
+        for input_id, package in selected:
+            ctx.stage('verifying_inputs', f"Checking {input_id} PKG checksum ({package['size'] / packaging.GIB:.1f} GB)")
+            digest, read, last = hashlib.sha256(), 0, time.monotonic()
+            with package['path'].open('rb') as stream:
+                while chunk := stream.read(CHUNK):
+                    digest.update(chunk)
+                    read += len(chunk)
+                    if time.monotonic() - last >= 5:
+                        ctx.stage('verifying_inputs', f"Checking {input_id}: {read / packaging.GIB:.1f} of {package['size'] / packaging.GIB:.1f} GB")
+                        last = time.monotonic()
+            state = package['path'].stat()
+            if read != package['size'] or state.st_mtime_ns != package['fingerprint']['mtime_ns']:
+                raise Invalid('A PKG changed while its checksum was being checked; finish copying the file and try again')
+            fingerprint = {**package['fingerprint'], 'sha256': digest.hexdigest()}
+            fingerprints.append(fingerprint)
+            ctx.provenance['inputs'][input_id]['sha256'] = digest.hexdigest()
+        packages = [package for _key, package in selected]
         tool_item = ctx.definition["downloads"][op["tool_download"]]
-        key = hashlib.sha256(json.dumps({"packages": [p["fingerprint"] for p in packages], "tool": tool_item["sha256"],
-                                         "title": op["title_id"], "version": op["app_version"]}, sort_keys=True).encode()).hexdigest()[:24]
+        key = hashlib.sha256(json.dumps({"packages": [p['sha256'] for p in fingerprints], "tool": tool_item["sha256"],
+                                         "title": op["title_id"], "version": op["app_version"], 'accepted_eboot': op['accepted_eboot_sha256']}, sort_keys=True).encode()).hexdigest()[:24]
         cache = confined(self.prepared, f"ps4/{op['title_id']}-{key}")
         manifest = cache / "portkeeper-extraction.json"
         if manifest.is_file():
@@ -600,6 +721,10 @@ class OperationRunner:
         if not (Path(COMPAT_SSL) / "libssl.so.1.1").is_file():
             raise Invalid("PkgTool needs OpenSSL 1.1 libraries; use the Portkeeper container image")
         tool_zip = self.dependency(tool_item, ctx.log)
+        required_space = sum(p['size'] for p in packages) * 2 + 256 * 1024 * 1024
+        self.prepared.mkdir(parents=True, exist_ok=True)
+        if shutil.disk_usage(self.prepared).free < required_space:
+            raise Invalid(f"Not enough space in app data for extraction and packaging. Allow roughly {required_space / packaging.GIB:.1f} GB free for these PKGs; actual extracted size can vary.")
         work = cache.with_name(cache.name + ".work")
         shutil.rmtree(work, ignore_errors=True)
         (work / "pkgs").mkdir(parents=True)
@@ -610,34 +735,49 @@ class OperationRunner:
         env = {"HOME": str(work / "home"), "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT": "1",
                "DOTNET_BUNDLE_EXTRACT_BASE_DIR": str(work / "home"), "LD_LIBRARY_PATH": COMPAT_SSL}
         try:
-            for index, (input_id, package) in enumerate(zip(op["packages"], packages)):
+            previous_version = None
+            for index, (input_id, package) in enumerate(selected):
                 # PkgTool maps files read-write, so it gets a private copy, never the original.
                 ctx.stage("preparing_inputs", f"Copying PKG {index + 1} of {len(packages)} to a private work folder")
                 copy = work / "pkgs" / f"{index}.pkg"
                 shutil.copyfile(package["path"], copy)
                 if copy.stat().st_size != package["size"]:
                     raise Invalid("A PKG changed while it was being copied")
+                if checksum(copy) != fingerprints[index]['sha256']:
+                    raise Invalid('A PKG changed while being copied; the private copy does not match the checked source')
                 ctx.stage("extracting", f"Extracting PKG {index + 1} of {len(packages)} with PkgTool")
                 log_path = work / f"pkgtool-{index}.log"
                 # pkg_extract leaves out the header entries (sce_sys/param.sfo and friends);
                 # pkg_makegp4 writes the file system and those entries into one folder.
                 part = work / f"part-{index}"
                 try:
-                    self.run([str(binary), "pkg_makegp4", str(copy), str(part)], work, env, log_path, timeout)
+                    self.extract_ps4_package(ctx, binary, copy, part, metadata[index], work, env, log_path, timeout)
                 finally:
                     self.keep_log(ctx, "pkgtool", log_path)
                 copy.unlink()
                 (part / "Project.gp4").unlink(missing_ok=True)
+                sfo = confined(part, 'sce_sys/param.sfo', must_exist=True)
+                values = read_sfo(sfo)
+                if values.get('TITLE_ID') != op['title_id']:
+                    raise Invalid(f"{input_id} extracted title {values.get('TITLE_ID')!r}, expected {op['title_id']}. No prepared folder was saved.")
+                version = values.get('APP_VER')
+                if not isinstance(version, str) or not re.fullmatch(r'\d{2}\.\d{2}', version):
+                    raise Invalid(f'{input_id} has no readable PS4 app version after extraction')
+                if previous_version and version < previous_version:
+                    raise Invalid(f"{input_id} would downgrade the game from {previous_version} to {version}; select the correct update PKG")
+                previous_version = version
+                self.check_tree(part, packaging.MAX_PACKAGE_BYTES)
+                ctx.log(f"Validated {metadata[index]['role']} PKG: {op['title_id']} {version}; applying {'base files' if index == 0 else 'update over the base game'}")
                 overlay(part, work / "game")
                 shutil.rmtree(part)
             result, problem = self.validate_ps4(op, work / "game")
             if not result:
-                raise Invalid(f"The extracted game failed validation: {problem}. Nothing was packaged.")
+                raise Invalid(f"The extracted game failed validation: {problem}. Check the matching base/update PKGs and whether they are extractable dumps. Nothing was packaged.")
             if cache.exists():
                 shutil.rmtree(cache)
             cache.mkdir(parents=True)
             os.replace(work / "game", cache / "game")
-            manifest.write_text(json.dumps({**result, "packages": [p["fingerprint"] for p in packages], "tool_sha256": tool_item["sha256"], "created_at": now()}, indent=2))
+            manifest.write_text(json.dumps({**result, "packages": fingerprints, 'pkg_metadata': metadata, "tool_sha256": tool_item["sha256"], "created_at": now()}, indent=2))
         finally:
             shutil.rmtree(work, ignore_errors=True)
         ctx.aliases[rel] = cache / "game"
@@ -827,10 +967,11 @@ class OperationRunner:
         for name in output["expected_files"]:
             include = next(((source, prefix) for source, prefix in ctx.includes if name.startswith(prefix + "/")), None)
             if include:
-                if not confined(include[0], name[len(include[1]) + 1:]).is_file():
-                    raise Invalid(f"Expected package file is missing: {name}")
+                expected = confined(include[0], name[len(include[1]) + 1:])
             else:
-                confined(package, name, must_exist=True)
+                expected = confined(package, name)
+            if not expected.exists() or (name.endswith('/') and not expected.is_dir()):
+                raise Invalid(f"Expected package file or directory is missing: {name}")
         ctx.log("Expected files and output safety checks passed. Game launch has not been tested.")
         engine = self.engine
         previous = [a for a in engine.store.all("artifacts") if a["project_id"] == ctx.project["id"] and a["target"] == target and a["version"] == ctx.capture["version"]]

@@ -55,7 +55,11 @@ launchers and key directories usually make a clearer check than an entire file m
 
 Inputs are files needed on the Portkeeper server during packaging. If a Windows
 launcher asks the player to choose an existing game folder on their PC, keep
-`inputs: []` and describe it with `first_run.mode: "asks_user"`. Directory inputs
+`inputs: []` for a runtime-only package and describe it with `first_run.mode: "asks_user"`.
+When supported preparation is selected, declare the owned file inputs and a fixed
+extraction tool, include the resulting data and configure the documented launcher.
+See [PS4 base/update preparation and Unraid file placement](PS4_GAME_FILES.md).
+Directory inputs
 must be consumed by the fixed PS4 extraction tool as `prepared_input`.
 The **Your game files** section shows these first-launch requirements separately
 from files uploaded for packaging. An empty `inputs` list does not mean the player
@@ -87,7 +91,7 @@ bounded time and bounded logs, inside the Portkeeper container.
 | --- | --- | --- |
 | `ship_o2r_headless` | Runs an official Ship/2Ship AppImage once with your ROM under a virtual display and stops it after the `.o2r` archive is complete and has at least `min_entries` entries. | Xvfb and Mesa |
 | `opengoal_extract` | Runs the release's OpenGOAL `extractor` with `-e -v -d -c` (extract, validate, decompile, compile) on your ISO and keeps the listed output folders. | — |
-| `ps4_pkg_extract` | Copies PS4 PKGs to a private work folder (PkgTool maps files read-write) and extracts them in order with pinned LibOrbisPkg PkgTool (`pkg_makegp4`, so `sce_sys` header entries such as `param.sfo` are included; later PKGs overwrite earlier files). Requires the title ID, version and an accepted `eboot.bin` hash. Reuses a validated earlier extraction or a validated `prepared/` folder. | OpenSSL 1.1 libraries for PkgTool |
+| `ps4_pkg_extract` | Copies PS4 PKGs privately and extracts them in base/update order with pinned LibOrbisPkg. Uses `pkg_makegp4` for supported package types, or `pkg_extract` plus fixed named-header extraction for complete DP updates. Checks extracted title, version and accepted `eboot.bin` hash before overlaying and caching. Reuses a validated earlier extraction or `prepared/` folder. | OpenSSL 1.1 libraries for PkgTool |
 
 ## New releases
 

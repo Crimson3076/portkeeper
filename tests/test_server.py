@@ -66,6 +66,35 @@ class HttpIntegrationTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def test_ps4_input_picker_reads_metadata_without_binding_and_rejects_swapped_pkg(self):
+        from portkeeper import packaging
+        from test_ps4 import make_pkg
+        self.engine.input_root = Path(self.temp.name) / 'roms'
+        base = make_pkg(self.engine.input_root / 'ps4/roms/random-one.pkg')
+        make_pkg(self.engine.input_root / 'ps4/roms/random-two.pkg', role='update', version='01.02')
+        project = self.engine.create_project({'name': 'Fixture', 'repo': 'FelipePrado0/gow3_pc', 'targets': ['windows'], 'packaging': packaging.bundled()['gow3_pc']})
+        route = f'/api/projects/{project["id"]}/inputs'
+        status, _, body = self.request('GET', route)
+        self.assertEqual(status, 200)
+        choices = json.loads(body)
+        self.assertEqual(choices['input_root'], str(self.engine.input_root))
+        self.assertEqual(choices['inputs'][0]['found'][0]['ps4']['role'], 'base')
+        self.assertEqual(self.engine.store.get('projects', project['id'])['input_bindings'], {})
+        self.assertEqual(self.request('POST', route, {'input': 'game_pkg', 'path': 'ps4/roms/random-two.pkg'})[0], 400)
+        status, _, body = self.request('POST', route, {'input': 'game_pkg', 'path': base.relative_to(self.engine.input_root).as_posix()})
+        self.assertEqual(status, 200, body.decode())
+        self.assertEqual(json.loads(body)['input_bindings']['game_pkg']['ps4']['app_version'], '01.00')
+
+    def test_draft_prompt_passes_game_file_preference_and_rejects_non_boolean(self):
+        project = self.engine.create_project({'name': 'Fixture', 'repo': 'example/game', 'targets': ['windows']})
+        route = f'/api/projects/{project["id"]}/draft-prompt'
+        with patch.object(self.engine, 'draft_prompt', return_value={'prompt': 'fixture'}) as prepare:
+            self.assertEqual(self.request('POST', route, {'prepare_game_files': False})[0], 200)
+            self.assertFalse(prepare.call_args.kwargs['prepare_game_files'])
+        with patch.object(self.engine, '_draft_material') as material:
+            self.assertEqual(self.request('POST', route, {'prepare_game_files': 'false'})[0], 400)
+            material.assert_not_called()
+
     def test_import_download_streams_full_file_ranges_and_checks_game(self):
         project_id = 'a' * 32
         self.engine.store.put('projects', {'id': project_id, 'name': 'Example', 'metadata': {'filename_prefix': 'Example', 'igdb_id': 1}})

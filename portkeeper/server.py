@@ -196,12 +196,18 @@ class Handler(BaseHTTPRequestHandler):
                 payload = self.body()
                 self.json(202, self.engine.setup(path.split("/")[3], publish=payload.get("publish", True) is True))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/draft", path) and method == "POST":
-                self.json(202, self.engine.queue_draft(path.split("/")[3], self.body().get("instruction", "")))
+                payload = self.body()
+                self.json(202, self.engine.queue_draft(path.split("/")[3], payload.get("instruction", ""), prepare_game_files=payload.get('prepare_game_files', True)))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/draft-prompt", path) and method == "POST":
-                result = self.engine.draft_prompt(path.split("/")[3], self.body().get("instruction", ""))
+                payload = self.body()
+                result = self.engine.draft_prompt(path.split("/")[3], payload.get("instruction", ""), prepare_game_files=payload.get('prepare_game_files', True))
                 self.json(200, {"prompt": result["prompt"]})
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/draft-workspace", path) and method == "GET":
-                data = self.engine.draft_workspace(path.split("/")[3])
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                mode = query.get('prepare_game_files', ['true'])[0]
+                if mode not in ('true', 'false'):
+                    raise Invalid('Choose true or false for game file preparation')
+                data = self.engine.draft_workspace(path.split("/")[3], prepare_game_files=mode == 'true')
                 self.respond_headers(200, "application/zip", len(data), 'attachment; filename="portkeeper-draft-workspace.zip"')
                 self.wfile.write(data)
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/draft-import", path) and method == "POST":
@@ -211,6 +217,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(202, self.engine.test_build(path.split("/")[3]))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/inputs", path) and method == "POST":
                 self.json(200, self.engine.bind_input(path.split("/")[3], self.body()))
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/inputs", path) and method == "GET":
+                self.json(200, self.engine.project_game_files(path.split('/')[3]))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/catalog-definition", path) and method == "POST":
                 self.body()
                 self.json(200, self.engine.catalog.apply(path.split("/")[3]))

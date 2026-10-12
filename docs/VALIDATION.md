@@ -1,6 +1,30 @@
 # Validation record
 
-Updated October 11, 2026. This document separates implementation checks from real game/host checks; a successful package is not a gameplay certification.
+Updated October 12, 2026. This document separates implementation checks from real game/host checks; a successful package is not a gameplay certification.
+
+## PS4 preparation checks (2026-10-12)
+
+The current standard-library suite ran **221 tests**, with **220 passing** and the
+optional real-tool test skipped on the host. The real-tool test passed separately
+in the built container as UID/GID 10001, with a read-only root filesystem, dropped
+capabilities and networking disabled. It creates tiny synthetic base and update
+PKGs with the checksummed PkgTool, then uses the app's extraction runner to merge
+them, retain `sce_sys/param.sfo`, verify the final title/version/executable hash,
+preserve both original PKGs and reuse the validated extraction cache.
+
+Fixture tests also cover wrong titles/roles/versions, missing updates, an already
+updated base, changed PKG contents with preserved size/mtime, invalid metadata,
+insufficient free space, and ZIP contents/portable launcher configuration. Prompt
+tests exercise another game's title/version/hash, ambiguous evidence and the
+preparation preference. UI interactions and a Chromium check passed for reviewing,
+validating and saving the preset, choosing both PKGs by metadata, selection through
+polling, and the runtime-only drafting option. The Docker image built successfully.
+
+The GOW3 candidate was inspected against the real `windows-v2.1.5` source and
+release archive. Actual owned GOW3 PKGs, native Windows startup and gameplay were
+not tested. The synthetic test verifies the tool/runner contract without game data;
+it does not establish that every retail-encrypted PKG is extractable or that every
+model will produce a correct draft. These scopes remain separate in the catalog.
 
 ## Reproduce the source checks
 

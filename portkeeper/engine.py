@@ -326,7 +326,7 @@ class Engine:
         if job.get("kind") == "publish":
             return self.publisher.queue(job["artifact_id"])
         if job.get("kind") == "draft":
-            return self.queue_draft(job["project_id"], job.get("instruction", ""), targets=job.get("requested_targets"))
+            return self.queue_draft(job["project_id"], job.get("instruction", ""), targets=job.get("requested_targets"), prepare_game_files=job.get('prepare_game_files', True))
         project = self.store.get("projects", job["project_id"])
         if job["target"] == "capture":
             return self.check(project["id"], build_after=job.get("build_after", False), release_version=job.get("release_version"))
@@ -418,9 +418,13 @@ class Engine:
             raise Invalid("Game file selections must be an object")
         declared = {item["id"] for item in (definition or {}).get("inputs", [])}
         for key, value in bindings.items():
-            if key not in declared or not isinstance(value, dict) or value.get("source") not in ("inputs", "prepared") or set(value) - {"source", "path", "sha1", "sha256", "accepted", "verified_at"}:
+            if key not in declared or not isinstance(value, dict) or value.get("source") not in ("inputs", "prepared") or set(value) - {"source", "path", "sha1", "sha256", "accepted", "verified_at", "ps4"}:
                 raise Invalid("Game file selections must name a declared input, its source and a relative path")
             relative(value.get("path"))
+            if 'ps4' in value:
+                metadata = value['ps4']
+                if not isinstance(metadata, dict) or set(metadata) - {'title_id', 'app_version', 'role'} or any(v is not None and (not isinstance(v, str) or len(v) > 100) for v in metadata.values()):
+                    raise Invalid('Invalid PS4 metadata in the game file selection')
         destination = config.get("auto_publish_destination", "romm")
         if destination not in ("romm", "library"):
             raise Invalid("Automatic publication goes to RomM or to the local library folder")
@@ -523,6 +527,7 @@ class Engine:
 
     def bind_input(self, project_id, payload):
         """Choose or automatically find the user's file for one declared input."""
+        from . import ps4
         project = self.store.get("projects", project_id)
         definition = project.get("packaging") or {}
         input_id = payload.get("input")
@@ -530,8 +535,13 @@ class Engine:
         if not item:
             raise Invalid("Choose a declared game file")
         bindings = dict(project.get("input_bindings") or {})
+        expectation = ps4.input_expectation(definition, input_id)
         if payload.get("clear"):
             bindings.pop(input_id, None)
+            if expectation:
+                for op in definition.get('operations', []):
+                    if input_id in op.get('packages', []) and op.get('prepared_input'):
+                        bindings.pop(op['prepared_input'], None)
             return self.update_project(project_id, {"input_bindings": bindings})
         if payload.get("path"):
             source = payload.get("source", "inputs")
@@ -540,6 +550,21 @@ class Engine:
             if (item["kind"] == "file" and not path.is_file()) or (item["kind"] == "directory" and not path.is_dir()):
                 raise Invalid("That file or folder does not exist below the configured input root")
             binding = {"source": source, "path": str(relative(payload["path"]))}
+            if expectation:
+                identified = self.packager.pkg_metadata(path)
+                problem = ps4.mismatch(identified, expectation)
+                if problem:
+                    raise Invalid(problem + '. Choose the correct base game or matching update PKG.')
+                binding['ps4'] = {key: identified[key] for key in ('title_id', 'app_version', 'role')}
+                for op in definition.get('operations', []):
+                    if input_id in op.get('packages', []) and op.get('prepared_input'):
+                        bindings.pop(op['prepared_input'], None)
+            prepared_tool = next((op for op in definition.get('operations', []) if op.get('prepared_input') == input_id), None)
+            if prepared_tool:
+                verified, problem = self.packager.validate_ps4(prepared_tool, path)
+                if problem:
+                    raise Invalid('Prepared game folder cannot be used: ' + problem)
+                binding.update(accepted=verified['title_id'] + ' ' + verified['app_version'], verified_at=now())
             if item["kind"] == "file" and item.get("verify", "hash") == "hash":
                 from .runner import accepted, digests
                 digest = digests(path, item.get("normalize"))
@@ -552,8 +577,14 @@ class Engine:
         found = self.packager.locate(project, definition, input_id)
         if len(found) != 1:
             return {"project": project, "found": found, "message": "No accepted file was found" if not found else "Several files match; choose one"}
-        bindings[input_id] = found[0]
-        return {"project": self.update_project(project_id, {"input_bindings": bindings}), "found": found}
+        return {"project": self.bind_input(project_id, {'input': input_id, **found[0]}), "found": found}
+
+    def project_game_files(self, project_id):
+        project = self.store.get('projects', project_id)
+        definition = project.get('packaging')
+        if not definition:
+            raise Invalid('Add packaging steps before choosing game files')
+        return {'inputs': self.packager.find_files(definition), 'input_root': str(self.input_root)}
 
     def link_metadata(self, project_id, payload):
         rom_id = payload.get("romm_rom_id")
@@ -1355,29 +1386,34 @@ class Engine:
         context['release']['source_sha256'] = capture['source']['sha256']
         return capture, context
 
-    def draft_prompt(self, project_id, instruction=""):
+    def draft_prompt(self, project_id, instruction="", prepare_game_files=True):
         """The prompt for the person's own chat, and a workspace folder for their own agent."""
         from . import drafting
         project = self.store.get("projects", project_id)
+        if not isinstance(prepare_game_files, bool):
+            raise Invalid('Choose whether game files should be prepared during packaging')
         _, context = self._draft_material(project, 150_000)
+        context['game_file_preparation']['enabled'] = prepare_game_files
         return {"prompt": drafting.prompt_text(context, self.catalog.definitions(), instruction),
                 "context": {key: value for key, value in context.items() if key != "archive_evidence"}}
 
-    def draft_workspace(self, project_id, instruction=""):
+    def draft_workspace(self, project_id, instruction="", prepare_game_files=True):
         from . import drafting
-        result = self.draft_prompt(project_id, instruction)
+        result = self.draft_prompt(project_id, instruction, prepare_game_files=prepare_game_files)
         return drafting.workspace_zip(result["prompt"], result["context"], self.catalog.definitions())
 
-    def queue_draft(self, project_id, instruction="", targets=None):
+    def queue_draft(self, project_id, instruction="", targets=None, prepare_game_files=True):
         project = self.store.get("projects", project_id)
         if not self.assistant.connected():
             raise Invalid("No model is connected. Use the prepared prompt with your own chat, or connect a model in Settings.")
         if not isinstance(instruction, str) or len(instruction) > 4000:
             raise Invalid("Keep the extra instructions under 4000 characters")
+        if not isinstance(prepare_game_files, bool):
+            raise Invalid('Choose whether game files should be prepared during packaging')
         if targets is not None and (not isinstance(targets, list) or not targets or any(t not in TARGETS for t in targets) or len(set(targets)) != len(targets) or not set(project["targets"]).issubset(targets)):
             raise Invalid("Draft platforms must include current platforms and supported target IDs")
         job = self.job(project, "capture", project.get("latest_version"))
-        job = self.store.update("jobs", job["id"], kind="draft", stage="drafting", status="running", requested_targets=targets, instruction=instruction)
+        job = self.store.update("jobs", job["id"], kind="draft", stage="drafting", status="running", requested_targets=targets, instruction=instruction, prepare_game_files=prepare_game_files)
         self.executor.submit(self._draft, project_id, job["id"], instruction)
         return {"job": job}
 
@@ -1396,6 +1432,7 @@ class Engine:
             budget = max(20_000, (config["context_tokens"] - 8000) * 3) if config["provider"] == "ollama" else 300_000
             self.stage(job_id, "drafting", "Reading the release, README and source")
             capture, context = self._draft_material(project, budget)
+            context.setdefault('game_file_preparation', {})['enabled'] = self.store.get('jobs', job_id).get('prepare_game_files', True)
             system, user = drafting.prompt_parts(context, self.catalog.definitions(), instruction)
             starter = drafting.starter_definition(context)
             record = {'schema': 1, 'job_id': job_id, 'project_id': project_id, 'created_at': now(),
@@ -1412,11 +1449,12 @@ class Engine:
             self.stage(job_id, "drafting", "Waiting for the model's draft")
             def read(text):
                 checked = drafting.read_reply(text, project)
+                drafting.check_preparation_choice(checked[0], context)
                 drafting.check_archive_evidence(checked[0], context)
-                invented = drafting.unsupported_hashes(checked[0], user)
+                invented = drafting.unsupported_hashes(checked[0], json.dumps(context.get('material', {})))
                 if invented:
                     raise Invalid("These accepted hashes do not appear in the project material: " + ", ".join(invented)
-                                  + ". Use only hashes quoted in the material, or verify \"downstream\".")
+                                  + ". Use only hashes quoted in the project material. File inputs can use verify \"downstream\" when a supported tool validates them; PS4 extraction still requires a sourced executable hash.")
                 return checked
             definition, explanation = self.assistant.draft_definition(system, user, read, log, record=remember, config=model_config)
             record['automatic_checks'] = {'schema': 'passed', 'release_assets': 'checked',

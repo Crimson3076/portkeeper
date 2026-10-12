@@ -37,6 +37,7 @@ venv/
 .vscode/
 
 # Never add ROMs, extracted game data, compiled runtimes, or package archives.
+*.[pP][kK][gG]
 *.[zZ]64
 *.[vV]64
 *.[nN]64

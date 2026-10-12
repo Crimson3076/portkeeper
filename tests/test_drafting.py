@@ -1,4 +1,5 @@
 import io
+import copy
 import json
 import tempfile
 import threading
@@ -54,6 +55,55 @@ class DraftingTests(unittest.TestCase):
         self.capture["source"]["sha256"] = "0" * 64
         with self.assertRaisesRegex(Invalid, "changed"):
             drafting.build_context(PROJECT, self.capture, [], {}, {}, 60_000)
+
+    def test_ps4_preparation_starter_uses_documented_facts_for_any_project(self):
+        source = self.root / 'ps4-source.zip'
+        digest = 'a1' * 32
+        with zipfile.ZipFile(source, 'w') as archive:
+            archive.writestr('port/README.md', f'Owned game: CUSA12345 with update 01.07. eboot.bin SHA256: {digest}')
+            archive.writestr('port/launcher/windows.py', 'game_dir = choose_game_folder()')
+        capture = {**self.capture, 'source': {'file': source.name, 'sha256': checksum(source)}}
+        project = {'name': 'Another port', 'repo': 'example/another-port', 'targets': ['windows']}
+        context = drafting.build_context(project, capture, [{'name': 'runtime-windows.zip', 'size': 10}],
+            {'runtime-windows.zip': ['runtime/Game.exe']}, packaging.bundled(), 60_000)
+        prepared = drafting.starter_definition(context)['definition']
+        operation = prepared['operations'][0]
+        self.assertEqual(operation['tool'], 'ps4_pkg_extract')
+        self.assertEqual(operation['title_id'], 'CUSA12345')
+        self.assertEqual(operation['app_version'], '01.07')
+        self.assertEqual(operation['accepted_eboot_sha256'], [digest])
+        self.assertEqual(operation['packages'], ['game_pkg', 'update_pkg'])
+        self.assertFalse(prepared['inputs'][1]['required'])
+        drafting.check_preparation_choice(prepared, context)
+        self.assertIn({'op': 'include_tree', 'from': '$shared/game', 'as': 'game'}, prepared['operations'])
+        system, user = drafting.prompt_parts(context, packaging.bundled())
+        self.assertIn('base PKG precedes the matching update PKG', user)
+        self.assertIn('wire the launcher', user.lower())
+        self.assertEqual(drafting.unsupported_hashes(prepared, json.dumps(context['material'])), [])
+        invented = copy.deepcopy(prepared);invented['operations'][0]['accepted_eboot_sha256'] = ['f' * 64]
+        self.assertEqual(drafting.unsupported_hashes(invented, json.dumps(context['material'])), ['f' * 64])
+        with self.assertRaisesRegex(Invalid, 'README'):
+            drafting.check_preparation_choice(invented, context)
+        omitted = copy.deepcopy(prepared);omitted['operations'] = [op for op in omitted['operations'] if op['op'] != 'include_tree']
+        with self.assertRaisesRegex(Invalid, 'extraction alone'):
+            drafting.check_preparation_choice(omitted, context)
+        runtime_only = copy.deepcopy(prepared);runtime_only['operations'] = [op for op in runtime_only['operations'] if op.get('tool') != 'ps4_pkg_extract']
+        with self.assertRaisesRegex(Invalid, 'runtime-only'):
+            drafting.check_preparation_choice(runtime_only, context)
+        context['game_file_preparation']['enabled'] = False
+        runtime = drafting.starter_definition(context)['definition']
+        self.assertEqual(runtime['inputs'], [])
+        self.assertNotIn('pkgtool', runtime['downloads'])
+        self.assertNotIn('ps4_pkg_extract', json.dumps(runtime))
+        drafting.check_preparation_choice(runtime, context)
+        with self.assertRaisesRegex(Invalid, 'turned off'):
+            drafting.check_preparation_choice(prepared, context)
+        self.assertIn('Keep game files external', drafting.prompt_parts(context, packaging.bundled())[1])
+
+    def test_ambiguous_ps4_titles_do_not_generate_guessed_preparation(self):
+        context = {'material': {'readme': f'CUSA12345 or CUSA54321, version 01.07. eboot.bin SHA256: {"a" * 64}'}}
+        guidance = drafting.preparation_guidance(context, packaging.bundled())
+        self.assertNotIn('title_id', guidance['ps4'])
 
     def test_selected_platform_launch_and_settings_evidence_survives_trimming(self):
         source = self.root / 'prioritized.zip'

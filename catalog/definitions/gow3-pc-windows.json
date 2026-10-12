@@ -1,0 +1,227 @@
+{
+  "schema": 2,
+  "id": "gow3_pc",
+  "revision": 2,
+  "name": "God of War III Remastered",
+  "game": "God of War III Remastered",
+  "package_prefix": "gow3-pc",
+  "summary": "Community Windows port packaged with your own extracted CUSA01623 game and 01.02 update. Base and update PKGs are read from your configured game files folder.",
+  "first_run": {
+    "mode": "configured",
+    "summary": "Run Launch.cmd. The Windows launcher opens with the included game/ folder selected; press PLAY. Launcher settings and saves stay inside this package. Startup and gameplay are untested."
+  },
+  "runner": "operations",
+  "runner_version": 1,
+  "upstream": {
+    "repository": "FelipePrado0/gow3_pc",
+    "documentation": [
+      "https://github.com/FelipePrado0/gow3_pc#readme"
+    ],
+    "release_rules": {
+      "stable_only": true,
+      "tag_pattern": "^windows-v[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "notes": "Windows releases containing gow3-windows.zip. Requires your own CUSA01623 with update 01.02."
+    }
+  },
+  "targets": [
+    "windows"
+  ],
+  "downloads": {
+    "windows": {
+      "asset_pattern": "^gow3-windows\\.zip$",
+      "platform": "windows",
+      "format": "zip",
+      "strip_prefix": "gow3-windows",
+      "required_members": [
+        "God of War III.exe",
+        "Play God of War III.exe",
+        "run.py"
+      ]
+    },
+    "pkgtool": {
+      "repository": "maxton/LibOrbisPkg",
+      "tag": "v0.2",
+      "asset": "PkgTool.Core-linux-x64-0.2.231.zip",
+      "sha256": "ac897d06a0c90256f4297712cb503eb29173fbc6d7f8a936ff476c4b72e5f36e",
+      "platform": "any",
+      "format": "zip",
+      "required_members": [
+        "PkgTool.Core"
+      ],
+      "description": "Pinned Linux build tool used inside Portkeeper to extract your PS4 PKGs."
+    }
+  },
+  "inputs": [
+    {
+      "id": "game_pkg",
+      "label": "God of War III Remastered base game PKG (CUSA01623)",
+      "kind": "file",
+      "platform_hint": "ps4",
+      "name_hint": "(?i)\\.pkg$",
+      "verify": "downstream",
+      "max_bytes": 68719476736,
+      "notes": "Base game first. Package headers identify the title and base/update role; extracted title, version and executable are checked before use."
+    },
+    {
+      "id": "update_pkg",
+      "label": "God of War III Remastered 01.02 update PKG (CUSA01623)",
+      "kind": "file",
+      "platform_hint": "ps4",
+      "name_hint": "(?i)\\.pkg$",
+      "verify": "downstream",
+      "required": false,
+      "max_bytes": 17179869184,
+      "notes": "Required when the base game is below 01.02. Select the separate matching update PKG; it is overlaid after the base. Omit only for a validated base dump already containing 01.02."
+    },
+    {
+      "id": "prepared_game",
+      "label": "Previously extracted CUSA01623 01.02 folder",
+      "kind": "directory",
+      "required": false,
+      "verify": "downstream",
+      "name_hint": "^game$|^CUSA01623$",
+      "max_bytes": 68719476736,
+      "notes": "Optional alternative under app data prepared/. It must pass the same title, version and eboot.bin checks; selecting new PKGs clears this alternative."
+    }
+  ],
+  "source_checks": [
+    {
+      "description": "Upstream still documents the required executable SHA-256",
+      "path": "README.md",
+      "contains": "d85c8135d330c3b601bf5dc3f1dd86bd6119fb8a9fce372bed2c9785f9a79299"
+    },
+    {
+      "description": "The Windows launcher still accepts a game directory from its environment",
+      "path": "launcher/gow3_launcher_win.py",
+      "contains": "os.environ.get('GOW3_GAME_DIR'"
+    },
+    {
+      "description": "The Windows launcher still stores settings under APPDATA",
+      "path": "launcher/gow3_launcher_win.py",
+      "contains": "CONFIG_DIR = Path(os.environ.get('APPDATA'"
+    },
+    {
+      "description": "Game preparation still uses the owned libc module",
+      "path": "scripts/prepare.py",
+      "contains": "sce_module/libc.prx"
+    }
+  ],
+  "operations": [
+    {
+      "op": "tool",
+      "tool": "ps4_pkg_extract",
+      "tool_download": "pkgtool",
+      "packages": [
+        "game_pkg",
+        "update_pkg"
+      ],
+      "prepared_input": "prepared_game",
+      "title_id": "CUSA01623",
+      "app_version": "01.02",
+      "accepted_eboot_sha256": [
+        "d85c8135d330c3b601bf5dc3f1dd86bd6119fb8a9fce372bed2c9785f9a79299"
+      ],
+      "to": "$shared/game",
+      "timeout_minutes": 240
+    },
+    {
+      "op": "unpack_download",
+      "download": "windows",
+      "to": "$package",
+      "targets": [
+        "windows"
+      ]
+    },
+    {
+      "op": "include_tree",
+      "from": "$shared/game",
+      "as": "game"
+    },
+    {
+      "op": "write_text",
+      "path": "$package/data/config/gow3-launcher/settings.json",
+      "text": "{\n  \"game_dir\": \"game\",\n  \"user_dir\": \"user\"\n}\n"
+    },
+    {
+      "op": "launcher",
+      "path": "Launch.cmd",
+      "template": "windows_cmd",
+      "exec": "God of War III.exe",
+      "env": {
+        "APPDATA": "%CD%\\data\\config",
+        "GOW3_GAME_DIR": "%CD%\\game",
+        "GOW3_USER_DIR": "%CD%\\user"
+      },
+      "mkdir": [
+        "user",
+        "data/config"
+      ]
+    },
+    {
+      "op": "launcher",
+      "path": "Play.cmd",
+      "template": "windows_cmd",
+      "exec": "Play God of War III.exe",
+      "env": {
+        "APPDATA": "%CD%\\data\\config",
+        "GOW3_GAME_DIR": "%CD%\\game",
+        "GOW3_USER_DIR": "%CD%\\user"
+      },
+      "mkdir": [
+        "user",
+        "data/config"
+      ]
+    },
+    {
+      "op": "write_text",
+      "path": "$package/PORTABLE-README.txt",
+      "text": "{name} {version} Windows package.\nExtract the entire ZIP to a writable folder and run Launch.cmd. The launcher uses the included game/ folder; press PLAY. Play.cmd starts with saved settings.\nContains your own CUSA01623 game, updated to 01.02 from your selected PKGs. Portkeeper checked title, version and eboot.bin SHA-256. Game files were not obtained from upstream.\nKeep the entire package together. Settings: data/config/gow3-launcher/settings.json. Saves, shader cache and logs: user/.\nUpstream: https://github.com/{repository}\nExtraction and packaging checks do not establish startup or gameplay compatibility. Record those results for this exact package.\n"
+    }
+  ],
+  "outputs": {
+    "windows": {
+      "expected_files": [
+        "God of War III.exe",
+        "Play God of War III.exe",
+        "run.py",
+        "bin/",
+        "_internal/",
+        "launcher/",
+        "scripts/",
+        "patches/",
+        "Launch.cmd",
+        "Play.cmd",
+        "data/config/gow3-launcher/settings.json",
+        "game/eboot.bin",
+        "game/sce_sys/param.sfo",
+        "game/sce_module/libc.prx",
+        "PORTABLE-README.txt"
+      ],
+      "compression": "stored",
+      "max_bytes": 68719476736
+    }
+  },
+  "launch": {
+    "windows": {
+      "command": "Launch.cmd",
+      "instructions": "Extract all files together. Run Launch.cmd to open the launcher with your prepared game selected, then press PLAY. Use Play.cmd for subsequent starts. No manual PKG extraction is needed on the Windows PC."
+    }
+  },
+  "saves": "Using Launch.cmd or Play.cmd keeps launcher settings in data/config/gow3-launcher/settings.json and saves, shader cache and logs in user/. Directly launching the EXE bypasses these wrapper environment settings and can use the normal Windows AppData location.",
+  "dependencies": {
+    "windows": [
+      "Windows 10 (1903 or newer) or Windows 11, 64-bit",
+      "Vulkan 1.3-compatible GPU and current graphics driver"
+    ]
+  },
+  "limitations": [
+    "Only extractable PS4 package dumps are supported; this tool cannot recover missing decryption information from encrypted retail PKGs.",
+    "Your game must be CUSA01623 with version 01.02 and the executable hash documented by upstream.",
+    "The complete ZIP includes your game data and can be tens of GB. App data needs space for extraction, cached game files and the built ZIP.",
+    "Windows startup, first-launch configuration and gameplay have not been verified on a native Windows machine."
+  ],
+  "verified_releases": [],
+  "history": [
+    "Packaging candidate prepared from the windows-v2.1.5 source and archive. Runtime settings are based on the upstream Windows launcher. Native Windows startup and gameplay remain untested."
+  ]
+}

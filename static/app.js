@@ -29,6 +29,7 @@ let recipeProjectId = null;
 let editorOriginal = null, editorView = "settings", editorDirty = false;
 const automationDrafts = new Map();
 const inputDrafts = new Map();
+const gameFileChoices = new Map(), gameFileChoiceLoading = new Set(), draftGameFileChoices = new Map(), inputChoiceDrafts = new Map();
 const projectDisclosures = new Map();
 const platformDetections = new Map();
 const platformSelections = new Map();
@@ -279,6 +280,16 @@ async function loadImports(project) {
   } catch (_) { rommImports.set(key, {checkedAt: Date.now(), items: rommImports.get(key)?.items || [], error: true}); }
   finally { rommImportsLoading.delete(key); lastRender = null; render(); }
 }
+function missingGameFiles(project) {
+  const definition = project.packaging || {}, bindings = project.input_bindings || {};
+  return (definition.inputs || []).filter(item => {
+    if (bindings[item.id]) return false;
+    const tool = (definition.operations || []).find(op => op.tool === "ps4_pkg_extract" && op.packages?.includes(item.id));
+    if (tool?.prepared_input && bindings[tool.prepared_input]) return false;
+    const baseVersion = tool && bindings[tool.packages[0]]?.ps4?.app_version;
+    return item.required !== false || Boolean(tool && item.id !== tool.packages[0] && baseVersion && baseVersion !== tool.app_version);
+  });
+}
 function gameAvailability(project) {
   if (projectActiveJob(project)) return "Working…";
   if (gameNeedsAttention(project)) return "Needs attention";
@@ -287,7 +298,7 @@ function gameAvailability(project) {
     return (project.targets || []).every(target => available.has(target)) ? "Downloads available" : "Some downloads available";
   }
   if (project.releases?.some(release => release.status === "needs_review")) return "New version needs review";
-  if (project.packaging?.runner === "operations" && project.packaging.inputs?.some(item => item.required !== false && !project.input_bindings?.[item.id])) return "Needs your game files";
+  if (project.packaging?.runner === "operations" && missingGameFiles(project).length) return "Needs your game files";
   if (rommImportsLoading.has(importKey(project))) return "Checking RomM…";
   if (rommImports.get(importKey(project))?.error) return "RomM check unavailable";
   return project.recipe?.mode === "capture" ? "Needs packaging steps" : "No downloads yet";
@@ -526,7 +537,7 @@ function renderNotificationPreference() {
   $("browser-notification-state").textContent = !supported ? "This browser does not support desktop notifications. The in-app inbox is available." : Notification.permission === "denied" ? "Browser permission is blocked. Enable it in your browser’s site settings if you want desktop notifications." : desktopNotifications && allowed ? "Enabled for this browser while Portkeeper is open." : "Disabled for this browser. Your inbox still records updates.";
 }
 function render() {
-  const fingerprint = JSON.stringify([state, [...busy], route, activityView, settingsView, libraryLayout]);
+  const fingerprint = JSON.stringify([state, [...busy], route, activityView, settingsView, libraryLayout, [...gameFileChoices], [...gameFileChoiceLoading], [...draftGameFileChoices]]);
   if (fingerprint === lastRender) return;
   lastRender = fingerprint;
   // Moving the game pane while rebuilding the library also drops browser focus.
@@ -602,7 +613,7 @@ function markAllRead() { return runAction("read-all", "/api/notifications/read-a
 function renderProject() {
   const project = projectById(route.projectId);
   const heading = $("project-heading"), content = $("project-content");
-  const fingerprint = JSON.stringify([route.projectId, route.tab, state.projects, state.jobs, state.artifacts, state.proposals, state.playtests, state.activity, state.assistant, state.runner, state.romm, state.settings, [...rommImports], [...rommImportsLoading], [...busy], [...assistantPromptDrafts], [...retentionDrafts], [...automationDrafts], [...inputDrafts], [...platformDetections], [...platformSelections], [...draftImports], [...draftPrompts], [...preservationCache], [...preservationLoading], selectedJobId]);
+  const fingerprint = JSON.stringify([route.projectId, route.tab, state.projects, state.jobs, state.artifacts, state.proposals, state.playtests, state.activity, state.assistant, state.runner, state.romm, state.settings, state.catalog?.definitions, [...rommImports], [...rommImportsLoading], [...busy], [...assistantPromptDrafts], [...retentionDrafts], [...automationDrafts], [...inputDrafts], [...gameFileChoices], [...gameFileChoiceLoading], [...draftGameFileChoices], [...inputChoiceDrafts], [...platformDetections], [...platformSelections], [...draftImports], [...draftPrompts], [...preservationCache], [...preservationLoading], selectedJobId]);
   if (fingerprint === lastProjectRender) return;
   lastProjectRender = fingerprint;
   const reading = jsonReadingState(content);
@@ -874,28 +885,69 @@ function inputsSection(project) {
   if (!(definition.inputs || []).length) return [...runtime, el("p", "field-help", definition.runner === "recipe" ? "Files used during packaging are listed in the saved recipe's inputs." : definition.runner === "capture" ? "This game preserves releases; files for packaging have not been configured." : "No game files need to be uploaded to Portkeeper for packaging.")];
   return [...runtime, el("p", "field-help", "The files below are used by Portkeeper while building the package."), ...definition.inputs.map((item) => {
     const binding = bindings[item.id], key = `input-${project.id}`;
-    const node = el("div", "instruction-input", [el("h4", "", item.label + (item.required === false ? " (optional)" : "")),
+    const requiredForBase = item.required === false && missingGameFiles(project).some(missing => missing.id === item.id);
+    const node = el("div", "instruction-input", [el("h4", "", item.label + (requiredForBase ? " (needed for the selected base)" : item.required === false ? " (optional)" : "")),
       el("p", "field-help", item.accepted?.length ? `Accepted: ${item.accepted.map((entry) => entry.label).join(", ")}${item.normalize ? " (checked after byte-order normalization)" : ""}` : "Validated after extraction; see the build steps."),
       ...(item.notes ? [el("p", "field-help", item.notes)] : []),
       el("p", "field-help", binding ? `Selected: ${binding.source === "prepared" ? "app data prepared/" : ""}${binding.path}${binding.accepted ? " · verified as " + binding.accepted : ""}` : item.required === false ? "Not selected." : "Not selected yet. Portkeeper searches your game files folder when a build starts.")]);
     const path = input(`input-path-${project.id}-${item.id}`, "text", inputDrafts.get(`${project.id}-${item.id}`) ?? binding?.path ?? "");
-    path.placeholder = item.kind === "directory" ? "Folder under the app data prepared/ folder" : "Path below your game files folder, such as n64/roms/game.z64";
+    path.placeholder = item.kind === "directory" ? "Folder under the app data prepared/ folder" : item.platform_hint === "ps4" ? "Path below your game files folder, such as ps4/roms/base.pkg" : "Path below your game files folder, such as n64/roms/game.z64";
     path.setAttribute("aria-label", `${item.label} path`);
     node.append(el("div", "inline-actions input-binding", [path, button("Save path", "button secondary small", () => bindInput(project.id, item.id, { path: path.value.trim(), source: item.kind === "directory" ? "prepared" : "inputs" }), busy.has(key) || !path.value), button("Find automatically", "button secondary small", () => bindInput(project.id, item.id, {}), busy.has(key)), ...(binding ? [button("Clear", "text-button", () => bindInput(project.id, item.id, { clear: true }), busy.has(key))] : [])]));
     path.addEventListener("input", () => { inputDrafts.set(`${project.id}-${item.id}`, path.value); node.querySelector(".input-binding button").disabled = !path.value.trim(); });
+    node.append(button(gameFileChoiceLoading.has(project.id) ? "Searching…" : item.kind === "directory" ? "Choose a folder" : "Choose a file", "button secondary small", () => loadGameFileChoices(project.id), gameFileChoiceLoading.has(project.id)));
+    const choices = gameFileChoices.get(project.id)?.inputs?.find(choice => choice.id === item.id);
+    if (choices) {
+      const select = el("select"); select.id = `input-choice-${project.id}-${item.id}`; select.setAttribute("aria-label", `${item.label} found files`);
+      select.append(el("option", "", "Choose a matching file…")); select.firstChild.value = "";
+      (choices.found || []).forEach(found => { const option = el("option", "", `${found.path}${found.ps4 ? ` · ${found.ps4.title_id} · ${found.ps4.app_version || "version checked after extraction"} · ${found.ps4.role}` : ""}`); option.value = JSON.stringify({path:found.path, source:found.source || (item.kind === "directory" ? "prepared" : "inputs")}); select.append(option); });
+      select.value = inputChoiceDrafts.get(`${project.id}-${item.id}`) || "";
+      const use = button("Use this file", "button secondary small", () => bindInput(project.id, item.id, JSON.parse(select.value)), !select.value);
+      select.addEventListener("change", () => { inputChoiceDrafts.set(`${project.id}-${item.id}`, select.value); use.disabled = !select.value; });
+      if (choices.found?.length) node.append(el("div", "inline-actions", [select, use]));
+      else node.append(el("p", "field-help", `No matching file found. Search root: ${gameFileChoices.get(project.id).input_root || state.settings?.input_root || "/inputs"}.`));
+      (choices.rejected || []).slice(0, 3).forEach(found => node.append(el("p", "field-help", `${found.name || found.path}: ${found.reason}`)));
+      if (choices.ps4) node.append(el("p", "field-help", "Base/update roles come from PKG headers. Extracted files are checked again before packaging."));
+    }
     return node;
   })];
+}
+async function loadGameFileChoices(id) {
+  if (gameFileChoiceLoading.has(id)) return;
+  gameFileChoiceLoading.add(id); render();
+  try { gameFileChoices.set(id, await api(`/api/projects/${encodeURIComponent(id)}/inputs`)); }
+  catch(error) { toast(error.message, true); }
+  finally { gameFileChoiceLoading.delete(id); render(); }
 }
 async function bindInput(projectId, inputId, body) {
   const result = await runAction(`input-${projectId}`, `/api/projects/${encodeURIComponent(projectId)}/inputs`, { input: inputId, ...body }, "");
   if (!result) return;
   inputDrafts.delete(`${projectId}-${inputId}`);
+  inputChoiceDrafts.delete(`${projectId}-${inputId}`);
   if (result.found && result.found.length !== 1) toast(`${result.message}${result.found.length ? ": " + result.found.map((item) => item.path).join(", ") : ""}`, true);
   else toast(body.clear ? "Game file selection cleared." : "Game file saved for future builds.");
 }
 async function applyCatalogDefinition(id) {
   try { const project = projectById(id); const definition = await api(`/api/catalog/definitions/${encodeURIComponent(project.packaging.id)}`); openRecipe(id); $("recipe-json").value = JSON.stringify(definition, null, 2); editorDirty = true; switchEditor("changes"); }
   catch(error) { toast(error.message, true); }
+}
+function ps4PreparationCard(project) {
+  const tools = (project.packaging?.operations || []).filter(op => op.tool === "ps4_pkg_extract");
+  const preset = state.catalog?.definitions?.find(item => item.prepares_ps4_pkgs && item.repository?.toLowerCase() === project.repo?.toLowerCase());
+  if (!tools.length && !preset) return null;
+  const card = el("section", "detail-card", el("h2", "", "Prepare game files from PS4 PKGs"));
+  if (!tools.length) {
+    card.append(el("p", "detail-note", "PKG packaging steps are available for this game. Review the JSON changes, then save them to add base-game and update selection. Existing packages stay available."));
+    card.append(button("Review PKG packaging steps", "button primary small", async () => {
+      try { const definition = await api(`/api/catalog/definitions/${encodeURIComponent(preset.id)}`); openRecipe(project.id); $("recipe-json").value = JSON.stringify(definition, null, 2); editorDirty = true; switchEditor("changes"); }
+      catch(error) { toast(error.message, true); }
+    })); return card;
+  }
+  tools.forEach(tool => card.append(el("p", "detail-note", `Required game: ${tool.title_id}, version ${tool.app_version}. Select the base game PKG first and the matching update PKG second under Your game files below. An optional update can be omitted only when the base already includes the required version.`)));
+  card.append(el("p", "field-help", `Put the files in the game folder mapped to ${state.settings?.input_root || "/inputs"}, normally under ps4/roms/. The files are read-only; extraction uses private copies.`));
+  card.append(el("ol", "instruction-steps", ["Choose the base and update files below. Package headers identify the title and base/update role.", "Build packages extracts the base, overlays the update, then checks the final title, version and eboot.bin hash.", "The prepared folder is cached for later builds. Changing PKG contents creates a different cache entry.", "The downloaded ZIP includes your prepared game data. Allow roughly twice the combined PKG size free in app data; the actual size can vary."].map(text => el("li", "", text))));
+  card.append(el("p", "quiet-note", "Only extractable package dumps are supported. A header match cannot establish that an encrypted retail package is extractable. Extraction and packaging do not verify gameplay."));
+  return card;
 }
 function releasesCard(project) {
   const card = el("section", "detail-card", [el("h2", "", "Releases & packaging status"), el("p", "detail-note", "Preserved means the upstream release is archived only. Packaged means Portkeeper produced a download from it. In RomM means the upload was indexed by RomM.")]);
@@ -1064,6 +1116,7 @@ async function saveProjectPlatforms(id) {
 
 function renderAdvanced(project, content, openJobs) {
   const stack = el("div", "advanced-stack");
+  const preparation = ps4PreparationCard(project); if (preparation) stack.prepend(preparation);
   const configuration = el("section", "detail-card", [el("h2", "", project.packaging ? "Your build instructions" : "Saved configuration & automation"), el("p", "detail-note", project.packaging ? "The readable instructions above are generated from this definition. Editing it creates a new definition revision, so new packages and their tests are never confused with older ones." + (project.profile ? " The reviewed profile's build commands stay fixed." : "") : project.profile ? "This game uses fixed, reviewed build instructions for its supported release. Automation settings are editable; changing trusted build execution requires a profile update. New unsupported releases are preserved for review." : "A custom recipe controls required inputs, outputs, and the build runner.")]);
   if (!project.packaging) configuration.append(el("div", "detail-facts", [meta("Packaging method", project.recipe?.mode || "capture"), meta("Automatic build", project.auto_build ? "Enabled" : "Disabled"), meta("Automatic local library copy", project.auto_publish ? "Enabled" : "Disabled"), meta("Polling interval", `${project.poll_minutes || 60} minutes`)]));
   configuration.append(externalLink("Configuration reference ↗", "https://github.com/Crimson3076/portkeeper/blob/main/docs/PACKAGING.md"));
@@ -1835,7 +1888,7 @@ function nextStepCard(project) {
   const working = busy.has(`setup-${project.id}`);
   if (active) { heading = "Working on it"; note = `${String(jobStage(active)).replaceAll("_", " ")}…`; action = button("View build progress", "button primary small", () => navigateProject(project.id, "activity", active.id)); }
   else if (projectJobs(project.id)[0]?.status === "failed") { heading = "A build needs your attention"; note = projectJobs(project.id)[0].error || "Review the failed step and retry when the cause is resolved."; action = button("View failure & logs", "button primary small", () => navigateProject(project.id, "activity", projectJobs(project.id)[0].id)); }
-  else if (project.packaging?.inputs?.some(item => item.required !== false && !project.input_bindings?.[item.id]) && runner === "operations") { heading = "Choose your game files"; note = "Select the required files before building packages."; action = button("Choose game files", "button primary small", () => navigateProject(project.id, "advanced")); }
+  else if (missingGameFiles(project).length && runner === "operations") { heading = "Choose your game files"; note = "Select the required files before building packages."; action = button("Choose game files", "button primary small", () => navigateProject(project.id, "advanced")); }
   else if (proposal) { heading = "Review the drafted packaging steps"; note = "Nothing is built until you approve them."; action = button("Review draft", "button primary small", () => navigateProject(project.id, "advanced")); }
   else if (runner === "capture" && !project.demo) { heading = "Add packaging steps"; note = "Portkeeper keeps this game's releases, but doesn't know how to package it yet."; action = button("Draft packaging steps", "button primary small", () => navigateProject(project.id, "advanced")); }
   else if (!packages.length && !project.demo) { heading = "Build packages"; note = "Check the latest release and build your selected platforms. Packages stay here; uploading is a separate action unless automatic publishing is enabled."; action = button(working ? "Starting…" : "Build packages", "button primary small", () => setupProject(project.id), working); }
@@ -1861,12 +1914,15 @@ function draftCard(project) {
   const prompt = el("textarea", "assistant-prompt"); prompt.id = `draft-instruction-${id}`; prompt.rows = 2; prompt.placeholder = "Anything the model should know, for example “Windows only” (optional)"; prompt.value = assistantPromptDrafts.get(id) || "";
   prompt.addEventListener("input", () => assistantPromptDrafts.set(id, prompt.value));
   field(card, "Notes for the model", prompt);
+  const prepare = input(`draft-game-files-${id}`, "checkbox"); prepare.checked = draftGameFileChoices.get(id) ?? drafting?.prepare_game_files ?? true;
+  prepare.addEventListener("change", () => { draftGameFileChoices.set(id, prepare.checked); render(); });
+  card.append(el("label", "check-label", [prepare, "Prepare and include my game files when supported"]), el("p", "field-help", "For supported PS4 ports, use base/update PKGs and the pinned extractor. Packages can be large. Turn this off for a runtime-only package that asks for an already prepared game folder when you play."));
   const noRelease = !project.capture_id;
   if (noRelease) card.append(el("p", "field-help", "Check upstream first, so there is a release to read."));
   const actions = el("div", "inline-actions");
   if (settings.configured) actions.append(button(busy.has(`draft-${id}`) ? "Starting…" : `Draft with ${settings.drafting_model}`, "button primary small", () => queueDraft(id), noRelease || busy.has(`draft-${id}`) || Boolean(drafting && jobActive(drafting))));
   actions.append(button(busy.has(`prompt-${id}`) ? "Preparing…" : "Copy prompt for my own chat", settings.configured ? "button secondary small" : "button primary small", () => copyDraftPrompt(id), noRelease || busy.has(`prompt-${id}`)));
-  const folder = el("a", "button secondary small", "Download folder for an agent"); folder.href = `/api/projects/${encodeURIComponent(id)}/draft-workspace`; folder.setAttribute("download", "");
+  const folder = el("a", "button secondary small", "Download folder for an agent"); folder.href = `/api/projects/${encodeURIComponent(id)}/draft-workspace?prepare_game_files=${prepare.checked}`; folder.setAttribute("download", "");
   if (!noRelease) actions.append(folder);
   card.append(actions);
   if (draftPrompts.has(id)) {
@@ -1917,9 +1973,10 @@ async function approveDraft(proposal, project) {
   const result = await runAction(`approve-${proposal.id}`, `/api/proposals/${encodeURIComponent(proposal.id)}/apply`, {}, "Packaging steps approved. Use Build packages to build it.");
   if (result) navigateProject(project.id, "overview");
 }
-function queueDraft(id) { return runAction(`draft-${id}`, `/api/projects/${encodeURIComponent(id)}/draft`, { instruction: (assistantPromptDrafts.get(id) || "").trim() }, "Drafting started. The draft appears here when it's ready."); }
+function prepareDraftGameFiles(id) { return draftGameFileChoices.get(id) ?? projectJobs(id).find(job => job.kind === "draft")?.prepare_game_files ?? true; }
+function queueDraft(id) { return runAction(`draft-${id}`, `/api/projects/${encodeURIComponent(id)}/draft`, { instruction: (assistantPromptDrafts.get(id) || "").trim(), prepare_game_files:prepareDraftGameFiles(id) }, "Drafting started. The draft appears here when it's ready."); }
 async function copyDraftPrompt(id) {
-  const result = await runAction(`prompt-${id}`, `/api/projects/${encodeURIComponent(id)}/draft-prompt`, { instruction: (assistantPromptDrafts.get(id) || "").trim() }, "");
+  const result = await runAction(`prompt-${id}`, `/api/projects/${encodeURIComponent(id)}/draft-prompt`, { instruction: (assistantPromptDrafts.get(id) || "").trim(), prepare_game_files:prepareDraftGameFiles(id) }, "");
   if (!result) return;
   draftPrompts.set(id, result.prompt); render();
   try { await navigator.clipboard.writeText(result.prompt); toast("Prompt copied. Paste it into your chat, then paste the answer below."); }

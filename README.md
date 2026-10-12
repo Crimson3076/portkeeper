@@ -27,6 +27,10 @@ To enable the reviewed Shipwright extractor build, supply a Linux build host wit
 
 `start.sh` forwards flags to `python3 -m portkeeper`. Without flags, data lives in `.data`, local inputs in `.data/inputs`, and published packages in `.data/library`. The original input directory is read without modifying its files.
 
+For PS4 ports, [prepare your base and update PKGs automatically](docs/PS4_GAME_FILES.md)
+with checked extraction and editable packaging steps. The GOW3 Windows candidate
+includes the prepared game folder; startup and gameplay remain untested.
+
 ## Start with Docker Compose
 
 ```bash
