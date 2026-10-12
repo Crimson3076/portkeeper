@@ -184,6 +184,24 @@ function testStatusBadge(artifact, rom) {
   const result = testStatus(artifact, rom);
   return el("span", `validation-label ${result === "played" ? "confirmed" : result === "starts" ? "launch" : result === "failed" ? "failed" : ""}`, testResultLabels[result]);
 }
+function downloadDetails(artifact, rom) {
+  const details = artifact?.manifest || rom?.package_details || {};
+  const review = reviewFor(artifact, rom);
+  const version = artifact?.version || details.version;
+  const revision = details.package_revision;
+  const revisionLabel = typeof revision === "string" && /^nvidiafix\d+$/.test(revision) ? `Portkeeper fix ${revision.match(/\d+$/)[0]}` : revision;
+  const section = el("div", "download-details");
+  section.append(el("p", "package-revision", `${version ? `Upstream ${version}` : "Upstream version: Unknown"} · ${revisionLabel || "Package revision: Unknown"}`));
+  const text = value => typeof value === "string" ? value : Array.isArray(value) ? value.filter(item => typeof item === "string").join("; ") : "";
+  const summary = rom?.summary || "";
+  const requirements = text(details.requirements) || summary.split(/(?<=[.!?])\s+/).filter(sentence => /\b(requires?|needs?|writable|Windows 10|Python 3|Vulkan 1)\b/i.test(sentence)).join(" ");
+  const changes = text(details.changes) || (revision ? text(details.validation) || review?.notes : "");
+  const issues = text(details.known_issues) || (review?.result === "failed" ? review.notes : "");
+  [["What changed", changes], ["Requirements", requirements], ["Known issues", issues]].forEach(([label, value]) => section.append(el("p", "download-detail-line", [el("strong", "", `${label}: `), value || "Unknown — not recorded for this download."])));
+  const result = testStatus(artifact, rom);
+  section.append(el("p", "compact-note", {starts:"Startup checked; gameplay has not been confirmed.",played:"Gameplay confirmed for this exact download. See the device and testing notes.",failed:"A test reported a problem. See the testing notes before downloading.",untested:"No startup or gameplay check has been recorded for this exact download."}[result]));
+  return section;
+}
 function gameNeedsAttention(project) {
   return relatedProjects(project).some((item) => item.last_error || ["needs_rom", "missing_inputs", "needs_attention", "failed", "blocked", "unsupported_version"].includes(item.status)) || gameTargets(project).some((target) => validationLevel(projectArtifacts(project.id).find((artifact) => artifact.target === target) || {}) === "failed") || importedPackages(project).some((rom) => { const result = reviewFor(null, rom)?.result; return result === "failed" || (!result && /\bfailed\b/i.test(rom.summary || "")); });
 }
@@ -533,7 +551,7 @@ function renderOverview(project, content) {
     const info = el("div", "download-platform-info", [el("h3", "", targetLabels[target] || target)]);
     if (artifact) info.append(el("p", "field-help", artifact.version), testStatusBadge(artifact, null));
     else if (roms.length) info.append(el("p", "field-help", "Imported into RomM"), testStatusBadge(null, roms[0]));
-    else info.append(el("p", "field-help", rommImportsLoading.has(importKey(project)) ? "Checking your RomM library…" : rommImports.get(importKey(project))?.error ? "RomM could not be checked. Refresh to retry." : "No download recorded yet"));
+    else info.append(el("p", "field-help", rommImportsLoading.has(importKey(project)) ? "Checking your RomM library…" : rommImports.get(importKey(project))?.error ? "RomM could not be checked. Refresh to retry." : project.recipe?.mode === "capture" ? "This game tracks upstream releases, but no platform download is recorded. Build setup is needed; check RomM for an existing import." : "No platform download is recorded. A completed build or matching RomM import will appear here."));
     const actions = el("div", "inline-actions");
     if (artifact) actions.append(artifactDownload(artifact, "button primary small", "Download ZIP"));
     roms.forEach((rom) => { const link = el("a", "button secondary small", "Open in RomM"); link.href = `${rommConfig().url}/rom/${rom.id}`; link.target = "_blank"; link.rel = "noopener noreferrer"; actions.append(link); });
@@ -542,6 +560,7 @@ function renderOverview(project, content) {
     if (latestReview?.device) info.append(el("span", "field-help", `${latestReview.device} · ${dateLabel(latestReview.created_at)}`));
     if (latestReview?.notes) info.append(el("p", "review-notes", latestReview.notes));
     row.append(info, actions); packageCard.append(row);
+    if (artifact || roms.length) packageCard.append(downloadDetails(artifact, artifact ? null : roms[0]));
     if (!artifact && roms.some((rom) => rom.summary)) {
       const notes = el("details", "import-testing-notes", [el("summary", "", `${targetLabels[target] || target}: testing & launch notes`), ...roms.filter((rom) => rom.summary).map((rom) => el("p", "field-help", rom.summary))]);
       packageCard.append(notes);
@@ -660,7 +679,7 @@ async function exportPreservation(id) {
 }
 function renderVersions(project, content) {
   const artifacts = projectArtifacts(project.id);
-  if (!artifacts.length) { content.append(emptyState("▱", "No packages yet", "Start a test build. Versions will appear here with download, pin, and rollback controls.")); return; }
+  if (!artifacts.length) { content.append(emptyState("▱", "No packages yet", "This page lists archives built by Portkeeper. Existing RomM imports are shown under Downloads & artwork; they do not create a build archive here.")); return; }
   const list = el("div", "version-list");
   artifacts.forEach((artifact) => {
     const labels = [validationLabel(artifact)];
@@ -700,7 +719,7 @@ function activityEvent(event) {
 function renderProjectActivity(project, content) {
   const ids = new Set(relatedProjects(project).map((item) => item.id));
   const events = unifiedActivity().filter((event) => ids.has(event.project_id));
-  content.append(events.length ? el("div", "activity-timeline", events.map(activityEvent)) : emptyState("◷", "No activity recorded yet", "RomM imports and your manual test results appear here alongside builds."));
+  content.append(events.length ? el("div", "activity-timeline", events.map(activityEvent)) : emptyState("◷", "No activity recorded yet", "No import discovery, test result, build or update check has been recorded for this game. Existing RomM imports appear after the library connection is checked; Record test result adds a testing event."));
 }
 function renderAdvanced(project, content, openJobs) {
   const stack = el("div", "advanced-stack");
