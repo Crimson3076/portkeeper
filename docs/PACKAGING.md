@@ -42,6 +42,18 @@ recipe is kept in `legacy_recipe` and earlier notes move to `history`.
 | `verified_releases` | Reviewed releases with the SHA-256 of each upstream file and the evidence. |
 | `history` | Provenance notes, such as how a package was assembled before automation. |
 
+`strip_prefix` removes an enclosing archive folder. For a ZIP containing
+`game-windows/Game.exe`, use `strip_prefix: "game-windows"` and
+`required_members: ["Game.exe"]`. Without stripping, the package retains
+`game-windows/`. Expected output paths are relative to the final package.
+`required_members` and `expected_files` use literal paths, not wildcards:
+choose an actual filename or an expected output directory such as `bin/`, never `bin/*.dll`.
+
+Inputs are files needed on the Portkeeper server during packaging. If a Windows
+launcher asks the player to choose an existing game folder on their PC, keep
+`inputs: []` and describe it with `first_run.mode: "asks_user"`. Directory inputs
+must be consumed by the fixed PS4 extraction tool as `prepared_input`.
+
 ## Operations
 
 Paths start with `$package` (the platform package being assembled) or `$shared` (a work
@@ -132,6 +144,17 @@ Never game files, local paths or tokens. The material is marked as untrusted dat
 as definitions; a rejected draft is sent back with the reason, up to three attempts. Accepted hashes must
 appear in the material. Drafts are proposals: nothing runs until a person approves one, and the approved
 definition then needs a successful build like any other.
+
+The prompt includes a small worked example for an archive with an enclosing folder
+and a launcher that asks for game files, plus a final checklist. Archive summaries
+show enclosing folders; only the first 300 member names per download are sent to
+the model to keep the prompt manageable. Connected drafts are checked against full
+manifests of up to 30,000 members. For simple unpack-and-launch definitions, Portkeeper
+also checks whether expected files and launcher executables would appear at their
+declared paths. These errors are sent back to Ollama or another connected provider
+for correction before a proposal is saved. Unavailable or incomplete inspections
+do not prove a file is missing, and complex tool workflows still need build validation.
+These checks do not launch the game or establish gameplay compatibility.
 
 ## Manual actions
 

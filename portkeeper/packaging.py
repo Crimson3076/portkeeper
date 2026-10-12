@@ -99,6 +99,13 @@ def _path(value, field):
         raise Invalid(f"{field}: {error}. Use forward slashes and a relative filename, such as game/eboot.bin; omit optional empty path fields.") from None
 
 
+def _literal_path(value, field):
+    path = _path(value, field)
+    if "*" in value or "?" in value:
+        raise Invalid(f"{field}: {value!r} must be a literal path, not a wildcard. Use an inspected filename or a directory such as bin/; glob patterns are not expanded.")
+    return path
+
+
 def split_root(value, field, roots=("package", "shared")):
     """Return (root, relative path) for $package/... and $shared/... locations."""
     if not isinstance(value, str) or not value.startswith("$"):
@@ -307,7 +314,7 @@ def validate_definition(definition):
         if item.get("format", "auto") not in ("auto", "zip", "tar", "file"):
             raise Invalid(f"Download {key} format must be auto, zip, tar or file")
         for member in _list(item.get("required_members"), f"Download {key} required_members", 50):
-            _path(member, f"downloads.{key}.required_members")
+            _literal_path(member, f"downloads.{key}.required_members")
         if item.get("strip_prefix") is not None:
             _path(item["strip_prefix"], f"downloads.{key}.strip_prefix")
         _text(item.get("description"), f"Download {key} description", 500)
@@ -360,7 +367,7 @@ def validate_definition(definition):
         if not isinstance(output, dict) or set(output) - {"expected_files", "compression", "max_bytes"}:
             raise Invalid(f"Output {target} supports expected_files, compression and max_bytes")
         for path in _list(output.get("expected_files"), f"Output {target} expected_files"):
-            _path(path, f"outputs.{target}.expected_files")
+            _literal_path(path, f"outputs.{target}.expected_files")
         if output.get("compression", "deflate") not in ("deflate", "stored"):
             raise Invalid("Output compression must be deflate or stored")
         size = output.get("max_bytes", 2 * GIB)
@@ -399,6 +406,10 @@ def validate_definition(definition):
             raise Invalid("An operations definition needs at least one operation")
         for index, op in enumerate(operations):
             _check_operation(op, d, index)
+        prepared = {op.get("prepared_input") for op in operations if op["op"] == "tool" and op.get("tool") == "ps4_pkg_extract"}
+        for item in inputs:
+            if item["kind"] == "directory" and item["id"] not in prepared:
+                raise Invalid(f"inputs.{item['id']}: directory inputs must be consumed as prepared_input by ps4_pkg_extract. For a game folder chosen on the player's PC, remove this input, use first_run.mode asks_user, and describe folder selection. Packaging does not need that folder on the server.")
         for target in targets:
             if not outputs.get(target, {}).get("expected_files"):
                 raise Invalid(f"Declare expected files for the {target} package")

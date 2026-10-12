@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from portkeeper import assistant as assistant_module
-from portkeeper import drafting
+from portkeeper import drafting, packaging
 from portkeeper.assistant import RecipeAssistant
 from portkeeper.safety import Invalid, checksum
 
@@ -98,6 +98,80 @@ class DraftingTests(unittest.TestCase):
         del ghost["launch"]["linux"]
         with self.assertRaisesRegex(Invalid, "Platform linux has no launch.command"):
             drafting.check(ghost, PROJECT)
+
+    def test_wildcard_outputs_and_unused_directory_inputs_get_actionable_errors(self):
+        bad = definition()
+        bad['outputs']['windows']['expected_files'].append('bin/*.dll')
+        with self.assertRaisesRegex(Invalid, r'outputs.windows.expected_files.*literal path.*wildcard'):
+            drafting.check(bad, PROJECT)
+        bad = definition()
+        bad['downloads']['windows']['required_members'] = ['bin/*.dll']
+        with self.assertRaisesRegex(Invalid, r'downloads.windows.required_members.*literal path'):
+            drafting.check(bad, PROJECT)
+        bad = definition()
+        bad['inputs'].append({'id': 'game_folder', 'label': 'Game folder', 'kind': 'directory', 'verify': 'downstream'})
+        with self.assertRaisesRegex(Invalid, r'inputs.game_folder.*remove this input.*asks_user'):
+            drafting.check(bad, PROJECT)
+        for item in packaging.bundled().values():
+            packaging.validate_definition(item)  # Prepared PS4 directories stay supported.
+
+    def simple_draft(self, members=None):
+        draft = drafting.extract_json(drafting.SIMPLE_EXAMPLE)
+        project = {'name': 'Demo', 'repo': 'example/demo', 'targets': ['windows']}
+        members = members if members is not None else ['demo-windows/Game.exe', 'demo-windows/bin/runtime.dll']
+        context = drafting.build_context(project, self.capture, [{'name': 'demo-windows.zip', 'size': 10}],
+                                         {'demo-windows.zip': members}, {}, 60_000)
+        return drafting.check(draft, project), context
+
+    def test_worked_example_and_complete_archive_layout_are_consistent(self):
+        draft, context = self.simple_draft()
+        drafting.check_archive_evidence(draft, context)
+        layout = context['release']['archive_layouts']['demo-windows.zip']
+        self.assertTrue(layout['complete'])
+        self.assertEqual(layout['enclosing_folder'], 'demo-windows')
+
+    def test_archive_folder_and_final_output_mistakes_are_rejected(self):
+        draft, context = self.simple_draft()
+        draft['downloads']['windows']['required_members'] = ['demo-windows/Game.exe']
+        with self.assertRaisesRegex(Invalid, r'required_members.*do not repeat strip_prefix'):
+            drafting.check_archive_evidence(draft, context)
+        draft, context = self.simple_draft()
+        del draft['downloads']['windows']['strip_prefix']
+        draft['downloads']['windows']['required_members'] = ['demo-windows/Game.exe']
+        with self.assertRaisesRegex(Invalid, r'outputs.windows.expected_files.*strip_prefix'):
+            drafting.check_archive_evidence(draft, context)
+        draft, context = self.simple_draft()
+        draft['operations'][1]['exec'] = 'Missing.exe'
+        with self.assertRaisesRegex(Invalid, r'launcher.exec.*final executable path'):
+            drafting.check_archive_evidence(draft, context)
+        draft, context = self.simple_draft()
+        draft['downloads']['windows']['asset_pattern'] = '^imaginary.zip$'
+        with self.assertRaisesRegex(Invalid, r'matched 0 release files'):
+            drafting.check_archive_evidence(draft, context)
+
+    def test_partial_manifests_stay_small_in_prompt_but_complete_for_validation(self):
+        members = ['demo-windows/data/%04d.txt' % i for i in range(500)] + ['demo-windows/Game.exe', 'demo-windows/bin/runtime.dll']
+        draft, context = self.simple_draft(members)
+        self.assertEqual(len(context['release']['archive_contents']['demo-windows.zip']), 300)
+        self.assertEqual(len(context['archive_evidence']['demo-windows.zip']), 502)
+        _, user = drafting.prompt_parts(context, {})
+        self.assertNotIn('archive_evidence', user)
+        self.assertIn('enclosing_folder', user)
+        self.assertNotIn('data/0499.txt', user)
+        drafting.check_archive_evidence(draft, context)
+
+    def test_unavailable_or_incomplete_manifests_do_not_prove_missing_files(self):
+        draft, context = self.simple_draft(['(could not list: network error)'])
+        drafting.check_archive_evidence(draft, context)
+        draft, context = self.simple_draft(['demo-windows/partial.txt'])
+        context['release']['archive_layouts']['demo-windows.zip']['complete'] = False
+        drafting.check_archive_evidence(draft, context)
+
+    def test_windows_zip_member_names_are_normalized_before_drafting(self):
+        path = self.root / 'windows.zip'
+        with zipfile.ZipFile(path, 'w') as archive:
+            archive.writestr(r'demo-windows\Game.exe', b'MZ')
+        self.assertEqual(drafting.archive_listing(path), ['demo-windows/Game.exe'])
 
     def test_draft_cannot_silently_drop_a_selected_platform(self):
         with self.assertRaisesRegex(Invalid, "missing selected platforms: handheld"):
@@ -214,6 +288,36 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("downloads.windows.strip_prefix", server.requests[1]["body"]["messages"][-1]["content"])
         self.assertIn("Operation 3", server.requests[2]["body"]["messages"][-1]["content"])
         self.assertIn("stage_input accepts declared file inputs only", server.requests[2]["body"]["messages"][-1]["content"])
+
+    def test_model_retry_receives_archive_layout_feedback_before_review(self):
+        good = drafting.extract_json(drafting.SIMPLE_EXAMPLE)
+        bad = json.loads(json.dumps(good))
+        del bad['downloads']['windows']['strip_prefix']
+        bad['downloads']['windows']['required_members'] = ['demo-windows/Game.exe']
+        context = {'release': {'assets': [{'name': 'demo-windows.zip'}],
+                              'archive_layouts': {'demo-windows.zip': {'complete': True}}},
+                   'archive_evidence': {'demo-windows.zip': ['demo-windows/Game.exe', 'demo-windows/bin/runtime.dll']}}
+        def read(text):
+            checked = drafting.read_reply(text, {'repo': 'example/demo', 'targets': ['windows']})
+            drafting.check_archive_evidence(checked[0], context)
+            return checked
+        for provider in ('openai', 'ollama'):
+            with self.subTest(provider=provider):
+                replies = [({'message': {'content': json.dumps(item)}} if provider == 'ollama'
+                            else {'choices': [{'message': {'content': json.dumps(item)}}]}) for item in (bad, good)]
+                server = self.serve(replies)
+                config = {'provider': provider, 'model': 'qwen3-coder:30b'}
+                config.update({'endpoint': server.url} if provider == 'ollama' else {'base_url': server.url + '/v1'})
+                self.assistant.configure_provider(config)
+                checked, _ = self.assistant.draft_definition('SYSTEM', 'USER', read, lambda _: None)
+                self.assertEqual(checked['downloads']['windows']['strip_prefix'], 'demo-windows')
+                feedback = server.requests[1]['body']['messages'][-1]['content']
+                self.assertIn('outputs.windows.expected_files', feedback)
+                self.assertIn('enclosing ZIP folders', feedback)
+                self.assertIn('literal paths, never wildcards', feedback)
+                if provider == 'ollama':
+                    self.assertEqual(server.requests[1]['path'], '/api/chat')
+                    self.assertEqual(server.requests[1]['body']['format'], 'json')
 
     def test_claude_api_request_uses_structured_output_and_fallbacks(self):
         reply = {"stop_reason": "end_turn", "content": [{"type": "thinking", "thinking": ""},

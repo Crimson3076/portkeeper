@@ -1341,7 +1341,7 @@ class Engine:
                 target = work / "asset"
                 try:
                     self.github.download(asset["browser_download_url"], target)
-                    listings[asset["name"]] = drafting.archive_listing(target)
+                    listings[asset["name"]] = drafting.archive_listing(target, limit=30_001)
                 except Invalid as error:
                     listings[asset["name"]] = [f"(could not list: {error})"]
                 finally:
@@ -1356,7 +1356,7 @@ class Engine:
         project = self.store.get("projects", project_id)
         _, context = self._draft_material(project, 150_000)
         return {"prompt": drafting.prompt_text(context, self.catalog.definitions(), instruction),
-                "context": context}
+                "context": {key: value for key, value in context.items() if key != "archive_evidence"}}
 
     def draft_workspace(self, project_id, instruction=""):
         from . import drafting
@@ -1394,6 +1394,7 @@ class Engine:
             self.stage(job_id, "drafting", "Waiting for the model's draft")
             def read(text):
                 checked = drafting.read_reply(text, project)
+                drafting.check_archive_evidence(checked[0], context)
                 invented = drafting.unsupported_hashes(checked[0], user)
                 if invented:
                     raise Invalid("These accepted hashes do not appear in the project material: " + ", ".join(invented)
@@ -1419,7 +1420,7 @@ class Engine:
 
     def save_definition_proposal(self, project, definition, explanation, source, capture=None):
         from . import drafting, packaging
-        definition["history"] = list(definition.get("history", [])) + [f"Drafted by {source} on {now()[:10]} for release {capture['version'] if capture else 'unknown'}; reviewed before use."]
+        definition["history"] = list(definition.get("history", [])) + [f"Drafted by {source} on {now()[:10]} for release {capture['version'] if capture else 'unknown'}; requires human review before use."]
         definition = packaging.validate_definition(definition)
         for older in self.store.all("proposals"):
             if older.get("project_id") == project["id"] and older.get("kind") == "definition" and older.get("status") == "pending_review":
