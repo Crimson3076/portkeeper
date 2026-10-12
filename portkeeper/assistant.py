@@ -161,8 +161,8 @@ class RecipeAssistant:
             return bool(config.get('base_url') and config.get('cloud_model'))
         return False
 
-    def public_config(self):
-        config = self._config()
+    def public_config(self, config=None):
+        config = config or self._config()
         provider = config['provider']
         model = {'ollama': config.get('model', ''), 'anthropic': config.get('cloud_model') or ANTHROPIC_DEFAULT_MODEL,
                  'openai': config.get('cloud_model', '')}.get(provider, '')
@@ -393,7 +393,7 @@ class RecipeAssistant:
         names = sorted({item['id'] for item in data.get('data', []) if isinstance(item, dict) and isinstance(item.get('id'), str) and _MODEL.fullmatch(item['id'])}, key=str.casefold)
         return {'models': names}
 
-    def chat(self, system, messages, config=None, timeout=900):
+    def chat(self, system, messages, config=None, timeout=900, response_schema=None):
         """Send a conversation to the configured model and return its text reply."""
         config = config or self._config()
         provider = config['provider']
@@ -409,6 +409,8 @@ class RecipeAssistant:
                     'output_config': {'effort': 'high', 'format': {'type': 'json_schema', 'schema': {
                         'type': 'object', 'additionalProperties': False, 'required': ['explanation', 'definition_json'],
                         'properties': {'explanation': {'type': 'string'}, 'definition_json': {'type': 'string'}}}}}}
+            if response_schema is not None:
+                body['output_config']['format']['schema'] = response_schema
             headers = {'x-api-key': config['api_key'], 'anthropic-version': '2023-06-01'}
             if model in ANTHROPIC_FALLBACK_MODELS:
                 body['fallbacks'] = 'default'
@@ -451,24 +453,45 @@ class RecipeAssistant:
         _atomic_json(self.path, {**config, 'last_test': {**result, 'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}})
         return result
 
-    def draft_definition(self, system, user, read, log, attempts=3):
+    def draft_definition(self, system, user, read, log, attempts=3, record=None, config=None):
         """Ask the model, then let it fix what Portkeeper rejected. read(text) validates or raises Invalid."""
-        config = self._config()
+        config = config or self._config()
         if not self.connected(config):
             raise Invalid('No model is connected. Use the prepared prompt with your own chat, or connect a model in Settings.')
         messages = [{'role': 'user', 'content': user}]
         for attempt in range(1, attempts + 1):
-            log(f'Asking {self.public_config()["drafting_model"]} for a draft (attempt {attempt} of {attempts})')
+            log(f'Asking {self.public_config(config)["drafting_model"]} for a draft (attempt {attempt} of {attempts})')
             text = self.chat(system, messages, config)
             try:
-                return read(text)
+                result = read(text)
             except Invalid as error:
+                if record:
+                    record({'kind': 'draft', 'attempt': attempt, 'messages': copy.deepcopy(messages), 'response': text, 'result': 'rejected', 'error': str(error)})
                 log(f'Portkeeper rejected the draft: {error}')
                 if attempt == attempts:
                     raise Invalid(f'The model could not produce a valid definition: {error}') from None
                 messages += [{'role': 'assistant', 'content': text[:60000]},
                              {'role': 'user', 'content': f'Portkeeper rejected that definition: {error}\nCorrect the named field while keeping valid parts of the definition. Use forward-slash relative paths; omit optional empty path fields. expected_files and required_members are literal paths, never wildcards. required_members must be a JSON array of at most 50 items; choose 2-10 essential files instead of copying the archive listing. All files are unpacked regardless. expected_files has at most 100 items. strip_prefix removes the ZIP folder; required_members must not repeat it. Match the launcher executable to its final unpacked path. stage_input accepts declared file inputs only, never directories. If the player chooses a game folder on their PC, remove that input, use first_run.mode asks_user and explain how to select it. Do not invent hashes, release assets, tools or operations. Return the corrected JSON object only.'}]
+            else:
+                if record:
+                    record({'kind': 'draft', 'attempt': attempt, 'messages': copy.deepcopy(messages), 'response': text, 'result': 'accepted'})
+                return result
         raise Invalid('No draft was produced')
+
+    def review_definition(self, definition, context, record=None, config=None):
+        from . import drafting
+        system, user = drafting.review_prompt(definition, context)
+        text = self.chat(system, [{'role': 'user', 'content': user}], config=config,
+                         response_schema=drafting.REVIEW_SCHEMA)
+        try:
+            review = drafting.read_review(text, context)
+        except Invalid as error:
+            if record:
+                record({'kind': 'review', 'response': text, 'result': 'unavailable', 'error': str(error)})
+            raise
+        if record:
+            record({'kind': 'review', 'response': text, 'result': 'complete'})
+        return review
 
 
 Assistant = RecipeAssistant

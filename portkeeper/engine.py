@@ -1331,6 +1331,7 @@ class Engine:
         release = self.github.release_tag(project["repo"], capture["version"])
         assets = [a for a in release.get("assets", []) if isinstance(a.get("name"), str)]
         listings = {}
+        archive_checksums = {}
         work = self.work_root / ("draft-" + identifier())
         work.mkdir(parents=True)
         try:
@@ -1340,7 +1341,8 @@ class Engine:
                     continue
                 target = work / "asset"
                 try:
-                    self.github.download(asset["browser_download_url"], target)
+                    saved = self.github.download(asset["browser_download_url"], target)
+                    archive_checksums[asset['name']] = saved['sha256']
                     listings[asset["name"]] = drafting.archive_listing(target, limit=30_001)
                 except Invalid as error:
                     listings[asset["name"]] = [f"(could not list: {error})"]
@@ -1348,7 +1350,10 @@ class Engine:
                     target.unlink(missing_ok=True)
         finally:
             shutil.rmtree(work, ignore_errors=True)
-        return capture, drafting.build_context(project, capture, assets, listings, self.catalog.definitions(), budget)
+        context = drafting.build_context(project, capture, assets, listings, self.catalog.definitions(), budget)
+        context['release']['archive_sha256'] = archive_checksums
+        context['release']['source_sha256'] = capture['source']['sha256']
+        return capture, context
 
     def draft_prompt(self, project_id, instruction=""):
         """The prompt for the person's own chat, and a workspace folder for their own agent."""
@@ -1379,17 +1384,30 @@ class Engine:
     def _draft(self, project_id, job_id, instruction):
         from . import drafting
         log = lambda message: self.store.append_log(job_id, message)
+        record = None
         try:
             project = self.store.get("projects", project_id)
             original_targets = list(project["targets"])
             requested_targets = self.store.get("jobs", job_id).get("requested_targets")
             if requested_targets:
                 project = {**project, "targets": requested_targets}
-            config = self.assistant.public_config()
+            model_config = self.assistant._config()
+            config = self.assistant.public_config(model_config)
             budget = max(20_000, (config["context_tokens"] - 8000) * 3) if config["provider"] == "ollama" else 300_000
             self.stage(job_id, "drafting", "Reading the release, README and source")
             capture, context = self._draft_material(project, budget)
             system, user = drafting.prompt_parts(context, self.catalog.definitions(), instruction)
+            starter = drafting.starter_definition(context)
+            record = {'schema': 1, 'job_id': job_id, 'project_id': project_id, 'created_at': now(),
+                      'model': {key: config.get(key) for key in ('provider', 'drafting_model', 'context_tokens')},
+                      'temperature': 0.1 if config['provider'] == 'ollama' else None,
+                      'starter': starter, 'context': context, 'draft_prompt': {'system': system, 'user': user},
+                      'attempts': [], 'status': 'drafting', 'build_test': 'not_run', 'gameplay_test': 'not_run'}
+            self.save_draft_record(job_id, record)
+            self.store.update('jobs', job_id, draft_record_available=True)
+            def remember(event):
+                record['attempts'].append({**event, 'at': now()})
+                self.save_draft_record(job_id, record)
             log(f"Prepared {len(user) // 1000} KB of project material for {config['drafting_model']}")
             self.stage(job_id, "drafting", "Waiting for the model's draft")
             def read(text):
@@ -1400,16 +1418,51 @@ class Engine:
                     raise Invalid("These accepted hashes do not appear in the project material: " + ", ".join(invented)
                                   + ". Use only hashes quoted in the material, or verify \"downstream\".")
                 return checked
-            definition, explanation = self.assistant.draft_definition(system, user, read, log)
-            proposal = self.save_definition_proposal(project, definition, explanation, f"{config['provider_label']} · {config['drafting_model']}", capture)
+            definition, explanation = self.assistant.draft_definition(system, user, read, log, record=remember, config=model_config)
+            record['automatic_checks'] = {'schema': 'passed', 'release_assets': 'checked',
+                                          'archive_inspections': context['release'].get('archive_layouts', {})}
+            self.stage(job_id, 'drafting', 'Reviewing first-launch instructions and source claims')
+            log('Starting a fresh model review; this does not run a build or the game')
+            review_system, review_user = drafting.review_prompt(definition, context)
+            record['review_prompt'] = {'system': review_system, 'user': review_user}
+            try:
+                review = self.assistant.review_definition(definition, context, record=remember, config=model_config)
+            except Invalid as error:
+                review = {'status': 'unavailable', 'summary': str(error), 'findings': [],
+                          'note': 'The draft passed automatic checks, but the model review could not be completed. Inspect it manually. Build and gameplay are untested.'}
+                log('Model review unavailable: ' + str(error))
+            record.update(status='ready', finished_at=now(), model_review=review, accepted_definition=definition)
+            self.save_draft_record(job_id, record)
+            details = {'model_review': review, 'starter': starter, 'automatic_checks': record['automatic_checks'], 'draft_job_id': job_id}
             if requested_targets:
-                self.store.update("proposals", proposal["id"], requested_targets=requested_targets, base_targets=original_targets)
+                details.update(requested_targets=requested_targets, base_targets=original_targets)
+            proposal = self.save_definition_proposal(project, definition, explanation, f"{config['provider_label']} · {config['drafting_model']}", capture, draft_details=details)
             self.store.update("jobs", job_id, status="ready", finished_at=now(), proposal_id=proposal["id"])
             self.stage(job_id, "complete", "Draft ready for your review")
             self.notify(project_id, "ready", f"A packaging draft for {project['name']} is ready for your review", event_key="draft:" + proposal["id"])
         except Exception as error:
+            if record is not None:
+                record.update(status='failed', error=str(error), finished_at=now())
+                try:
+                    self.save_draft_record(job_id, record)
+                except OSError:
+                    log('Could not save the final drafting record')
             log(str(error))
             self.store.update("jobs", job_id, status="failed", error=str(error), finished_at=now())
+
+    def save_draft_record(self, job_id, record):
+        root = self.data / 'drafts'
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / (job_id + '.json')
+        temporary = path.with_suffix('.tmp')
+        temporary.write_text(json.dumps(record, indent=2) + '\n')
+        temporary.replace(path)
+
+    def draft_record(self, job_id):
+        job = self.store.get('jobs', job_id)
+        if job.get('kind') != 'draft' or not job.get('draft_record_available'):
+            raise Invalid('This job has no saved drafting record')
+        return json.loads(confined(self.data / 'drafts', job_id + '.json', must_exist=True).read_text())
 
     def import_draft(self, project_id, text):
         from . import drafting
@@ -1418,7 +1471,7 @@ class Engine:
         capture = self.store.get("captures", project["capture_id"]) if project.get("capture_id") else None
         return self.save_definition_proposal(project, definition, explanation, "Your own chat or agent", capture)
 
-    def save_definition_proposal(self, project, definition, explanation, source, capture=None):
+    def save_definition_proposal(self, project, definition, explanation, source, capture=None, draft_details=None):
         from . import drafting, packaging
         definition["history"] = list(definition.get("history", [])) + [f"Drafted by {source} on {now()[:10]} for release {capture['version'] if capture else 'unknown'}; requires human review before use."]
         definition = packaging.validate_definition(definition)
@@ -1429,6 +1482,8 @@ class Engine:
                     "definition": definition, "explanation": explanation, "source": source, "view": packaging.view(definition),
                     "warnings": drafting.warnings(definition), "requires_review": True, "executed": False,
                     "base_definition_sha256": hashlib.sha256(json.dumps(project.get("packaging"), sort_keys=True).encode()).hexdigest()}
+        if draft_details:
+            proposal.update(draft_details)
         return self.store.put("proposals", proposal)
 
     def apply_definition_proposal(self, proposal):

@@ -36,6 +36,12 @@ previous definition in **Saved revisions** (up to 20). Review a previous revisio
 and save it to restore its content as a new revision. Existing packages and their
 test results stay unchanged.
 
+Connected models now start from release facts, correct automatic-check errors, and
+review the resulting draft in a fresh conversation. Review findings and their evidence
+appear before approval; an unavailable review is clearly labeled. The starter, review
+JSON and complete drafting record are available for inspection or download. These
+model checks remain separate from building and testing the game.
+
 Automation lives under **Updates**. Newly added games default to keeping packages
 in Portkeeper and waiting for your decision on future builds. Building, uploading
 to RomM, and confirming gameplay are separate choices. Existing automation settings

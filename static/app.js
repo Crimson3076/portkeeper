@@ -1853,7 +1853,9 @@ function draftCard(project) {
   if (proposal) { renderProposalReview(card, project, proposal); return card; }
   const settings = assistantSettings(), id = project.id, drafting = projectJobs(id).find((job) => job.kind === "draft");
   card.append(el("p", "detail-note", project.packaging?.runner === "operations" ? "Ask for a revised draft, for example after a new release changed something. The current steps stay in use until you approve a draft." : "A model reads this game's latest release, README and source, then proposes the packaging steps. Nothing is built until you approve them."));
+  card.append(el("p", "field-help", "Portkeeper prepares an editable starter from release facts, checks the model's answer, and sends specific errors back for correction. Connected models then review the draft in a fresh conversation. Usually this uses one drafting call and one review call; corrections add calls."));
   if (drafting && (jobActive(drafting) || drafting.status === "failed")) card.append(el("div", "inline-actions", [statusBadge(jobActive(drafting) ? "building" : "failed", jobActive(drafting) ? "Drafting…" : "Draft failed"), el("span", "field-help", drafting.error || (drafting.logs || []).slice(-1)[0] || "")]));
+  if (drafting?.draft_record_available) card.append(draftingRecordLink(drafting.id));
   const prompt = el("textarea", "assistant-prompt"); prompt.id = `draft-instruction-${id}`; prompt.rows = 2; prompt.placeholder = "Anything the model should know, for example “Windows only” (optional)"; prompt.value = assistantPromptDrafts.get(id) || "";
   prompt.addEventListener("input", () => assistantPromptDrafts.set(id, prompt.value));
   field(card, "Notes for the model", prompt);
@@ -1885,9 +1887,29 @@ function renderProposalReview(card, project, proposal) {
   card.append(el("div", "detail-facts", [meta("Platforms", definition.targets.map((target) => targetLabels[target] || target).join(", ")), meta("Your files", definition.inputs.filter((item) => item.required !== false).map((item) => item.label).join("; ") || "None"), meta("First launch", view.first_run?.text || "Not stated", true)]));
   if (view.steps?.length) card.append(el("h3", "", "Build steps"), el("ol", "instruction-steps", view.steps.map((step) => el("li", "", step.text))));
   if (proposal.warnings?.length) card.append(el("h3", "", "Check before approving"), el("ul", "review-problems", proposal.warnings.map((warning) => el("li", "", warning))));
+  if (proposal.automatic_checks) {
+    const layouts = Object.values(proposal.automatic_checks.archive_inspections || {}), complete = layouts.filter(layout => layout.complete).length;
+    card.append(el("p", "field-help", `Automatic checks: definition structure and release filenames checked. ${complete} of ${layouts.length} archive listings fully inspected. Build and gameplay have not been tested.`));
+  }
+  const review = proposal.model_review;
+  if (review) {
+    card.append(el("h3", "", review.status === "unavailable" ? "Model review unavailable" : "Model review"), el("p", "review-notes", review.summary), el("p", "quiet-note", review.note));
+    (review.findings || []).forEach(finding => {
+      const label = {issue:"Concern", uncertain:"Uncertain", note:"Note"}[finding.severity] || "Finding";
+      card.append(el("p", "field-help", [el("strong", "", `${label} · ${finding.field}: `), finding.message]));
+      if (finding.evidence?.quote) card.append(el("p", "quiet-note", `${finding.evidence_status === "quote_found" ? "Quote found in supplied material" : "Evidence could not be matched"} · ${finding.evidence.path}: “${finding.evidence.quote}”`));
+    });
+    card.append(disclosure(`model-review:${proposal.id}`, "diagnostics-list", [el("summary", "table-action", "View review JSON"), jsonViewer(`review:${proposal.id}`, review, "proposal-json")]));
+  } else card.append(el("p", "quiet-note", "No fresh model review was recorded for this draft. Inspect the instructions yourself before approving."));
+  if (proposal.starter) card.append(disclosure(`starter:${proposal.id}`, "diagnostics-list", [el("summary", "table-action", "View starter JSON and unresolved choices"), jsonViewer(`starter:${proposal.id}`, proposal.starter, "proposal-json")]));
+  if (proposal.draft_job_id) card.append(draftingRecordLink(proposal.draft_job_id));
   card.append(disclosure(`draft-definition:${proposal.id}`, "diagnostics-list", [el("summary", "table-action", "View definition JSON"), jsonViewer(`proposal:${proposal.id}`, definition, "proposal-json")]));
   card.append(el("div", "inline-actions", [button(busy.has(`approve-${proposal.id}`) ? "Approving…" : "Approve", "button primary small", () => approveDraft(proposal, project), busy.has(`approve-${proposal.id}`)), button("Discard", "button secondary small", () => runAction(`discard-${proposal.id}`, `/api/proposals/${encodeURIComponent(proposal.id)}/discard`, {}, "Draft discarded."))]));
   card.append(el("p", "quiet-note", "After approving, use Build packages to run a test build. A failed build changes nothing else."));
+}
+function draftingRecordLink(jobId) {
+  const link = el("a", "button secondary small", "Download drafting record (JSON)");
+  link.href = `/api/jobs/${encodeURIComponent(jobId)}/draft-record`; link.setAttribute("download", ""); return link;
 }
 async function approveDraft(proposal, project) {
   const result = await runAction(`approve-${proposal.id}`, `/api/proposals/${encodeURIComponent(proposal.id)}/apply`, {}, "Packaging steps approved. Use Build packages to build it.");

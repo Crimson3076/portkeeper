@@ -160,6 +160,35 @@ for correction before a proposal is saved. Unavailable or incomplete inspections
 do not prove a file is missing, and complex tool workflows still need build validation.
 These checks do not launch the game or establish gameplay compatibility.
 
+Connected drafting follows one guided draft with up to three attempts to correct
+automatic-check failures, followed by one model review in a fresh conversation.
+Portkeeper provides an editable starter definition with the repository, chosen platforms,
+unambiguous release downloads and enclosing folders already filled in. It leaves launcher
+choice and first-launch requirements for the model to establish from the project material.
+Several downloads for one OS remain an explicit unresolved choice rather than a guessed asset.
+
+The fresh review checks source claims about game files, first launch, dependencies,
+settings and saves. It does not see the drafting explanation or correction history.
+Findings show their quoted evidence; Portkeeper checks that each quote occurs in the
+supplied README, documentation or source excerpt. An unmatched issue becomes **Uncertain**.
+A matching quote still needs a person to judge whether the interpretation is correct.
+The same configured model performs both passes; this is an advisory review, not independent
+verification or a quality score. A failed model review preserves the structurally valid
+draft with a **Model review unavailable** warning. Imported chat drafts keep their normal
+manual-review flow and do not automatically make a model call.
+
+Normally a connected draft uses one drafting call and one review call; rejected drafts
+use additional correction calls. The provider and model settings are held constant for
+that run. **View starter JSON**, **View review JSON**, and **Download drafting record (JSON)**
+keep the details open for inspection. Run records are stored under `/data/drafts/` and include
+public material, source/archive checksums, model name/settings, prompts, original model replies,
+validation errors and findings. They exclude application credentials and private game-file
+locations. Failed attempts can also be downloaded. Model tags can change over time; a recorded
+model name alone does not guarantee the same weights on a later run.
+
+Draft quality, a successful package build and recorded launch/gameplay tests remain separate.
+Neither a clean automatic check nor a model review marks a package as gameplay tested.
+
 ## Manual actions
 
 - **Build packages** (on a game's Play page) checks upstream and builds. Uploading is a separate action unless the game already has automatic publication enabled.

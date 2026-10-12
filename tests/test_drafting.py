@@ -55,6 +55,18 @@ class DraftingTests(unittest.TestCase):
         with self.assertRaisesRegex(Invalid, "changed"):
             drafting.build_context(PROJECT, self.capture, [], {}, {}, 60_000)
 
+    def test_selected_platform_launch_and_settings_evidence_survives_trimming(self):
+        source = self.root / 'prioritized.zip'
+        with zipfile.ZipFile(source, 'w') as archive:
+            archive.writestr('port/README.md', '# Game\nWindows runtime.')
+            for i in range(12):
+                archive.writestr('port/src/rom%d.cpp' % i, '// game.z64\n')
+            archive.writestr('port/packaging/windows/README.md', '# Windows build\nBuild for Windows.')
+            archive.writestr('port/launcher/game_win.py', 'CONFIG_DIR = APPDATA / "game"\nCONFIG_FILE = CONFIG_DIR / "settings.json"\nchoose_game_dir()\n')
+        bundle = drafting.source_bundle(source, 4000, targets=['windows'])
+        self.assertTrue(any(item['path'] == 'launcher/game_win.py' and 'APPDATA' in item['lines'] for item in bundle['source_excerpts']))
+        self.assertTrue(any(item['path'] == 'packaging/windows/README.md' for item in bundle['documentation']))
+
     def test_trim_keeps_the_readme_and_drops_excerpts_first(self):
         bundle = {"readme": "r" * 5000, "documentation": [{"path": "a", "text": "d" * 4000}] * 5,
                   "file_tree": ["f"] * 1000, "source_excerpts": [{"path": "x", "lines": "e" * 3000}] * 30}
@@ -361,6 +373,29 @@ class ProviderTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(server.requests[0]["body"]["options"]["num_ctx"], 65536)
         self.assertEqual(self.assistant.public_config()["last_test"]["model"], "qwen3-coder:30b")
+
+    def test_ollama_review_uses_a_fresh_conversation_and_keeps_raw_response(self):
+        response = {'summary': 'No issues flagged.', 'findings': []}
+        server = self.serve([{'message': {'content': json.dumps(response)}}])
+        self.assistant.configure_provider({'provider': 'ollama', 'endpoint': server.url, 'model': 'qwen3-coder:30b'})
+        events = []
+        result = self.assistant.review_definition(definition(), {'material': {'readme': 'Public README'}}, record=events.append)
+        body = server.requests[0]['body']
+        self.assertEqual(body['format'], 'json')
+        self.assertEqual(len(body['messages']), 2)
+        self.assertNotIn('approved definitions', body['messages'][1]['content'])
+        self.assertEqual(result['status'], 'no_issues_flagged')
+        self.assertEqual(events[0]['response'], json.dumps(response))
+
+    def test_claude_review_uses_review_schema_instead_of_draft_schema(self):
+        response = {'summary': 'No issues flagged.', 'findings': []}
+        server = self.serve([{'content': [{'type': 'text', 'text': json.dumps(response)}]}])
+        self.assistant.configure_provider({'provider': 'anthropic', 'api_key': 'sk-ant-key'})
+        with mock.patch.object(assistant_module, 'ANTHROPIC_URL', server.url + '/v1'):
+            result = self.assistant.review_definition(definition(), {'material': {}})
+        schema = server.requests[0]['body']['output_config']['format']['schema']
+        self.assertEqual(schema['required'], ['summary', 'findings'])
+        self.assertEqual(result['status'], 'no_issues_flagged')
 
 
 if __name__ == "__main__":

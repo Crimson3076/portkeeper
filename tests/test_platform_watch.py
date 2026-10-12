@@ -60,12 +60,13 @@ class PlatformWatchTests(unittest.TestCase):
         candidate = definition(upstream={'repository': 'example/game'})
         job = self.engine.job(self.project, 'capture', 'v2')
         self.engine.store.update('jobs', job['id'], kind='draft', requested_targets=['linux', 'windows'])
-        context = {'project': self.project, 'release': {'version': 'v2'}, 'material': {}}
-        def reply(system, user, read, log):
+        context = {'project': {'name': 'Game', 'repository': 'example/game', 'definition_id': 'game', 'targets': ['linux', 'windows']}, 'release': {'version': 'v2', 'assets': []}, 'material': {}}
+        def reply(system, user, read, log, **kwargs):
             return read(json.dumps(candidate))
         with patch.object(self.engine, '_draft_material', return_value=(None, context)), \
              patch('portkeeper.drafting.prompt_parts', return_value=('system', 'material')), \
              patch('portkeeper.drafting.unsupported_hashes', return_value=[]), \
+             patch('portkeeper.drafting.check_archive_evidence'), \
              patch.object(self.engine.assistant, 'draft_definition', side_effect=reply):
             self.engine._draft(self.project['id'], job['id'], '')
         self.assertEqual(self.engine.store.get('jobs', job['id'])['status'], 'ready')

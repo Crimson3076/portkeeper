@@ -178,6 +178,22 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   dom.window.close();
   for(const value of ['collection','list','invalid']){dom=await create(value);assert(dom.window.document.getElementById('project-grid').classList.contains('layout-'+(value==='invalid'?'workspace':value)));dom.window.close();}
   dom=await create(null,true);assert(dom.window.document.getElementById('project-grid').classList.contains('layout-workspace'));dom.window.close();
+  const reviewed=JSON.parse(JSON.stringify(editable));
+  reviewed.proposals=[{id:id(25),project_id:id(2),kind:'definition',status:'pending_review',source:'Ollama · fixture',definition:reviewed.projects[1].packaging,view:{},
+    automatic_checks:{schema:'passed',archive_inspections:{'game-windows.zip':{complete:true}}},draft_job_id:id(26),starter:{definition:{targets:['windows']},unresolved:['Choose launcher']},
+    model_review:{status:'needs_attention',summary:'Inspect the settings location.',note:'Model review is advisory. Build and gameplay are untested.',findings:[
+      {severity:'issue',field:'saves',message:'Settings use APPDATA.',evidence_status:'quote_found',evidence:{path:'launcher.py',quote:'CONFIG_DIR = APPDATA'}},
+      {severity:'uncertain',field:'dependencies',message:'Cannot establish this dependency.',evidence_status:'unconfirmed',evidence:{path:'README.md',quote:'Unmatched quote'}}]}}];
+  dom=await create(null,false,reviewed);w=dom.window;d=w.document;
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();d.getElementById('project-advanced-tab').click();await tick();
+  const reviewText=d.getElementById('project-content').textContent;
+  assert(reviewText.includes('Quote found in supplied material'));assert(reviewText.includes('Evidence could not be matched'));assert(reviewText.includes('Uncertain · dependencies'));
+  assert(reviewText.includes('Build and gameplay have not been tested'));assert(reviewText.includes('View starter JSON'));
+  assert(d.querySelector(`a[href="/api/jobs/${id(26)}/draft-record"]`).hasAttribute('download'));
+  const reviewDisclosure=[...d.querySelectorAll('details')].find(node=>node.textContent.includes('View review JSON'));reviewDisclosure.open=true;
+  let reviewCopied='';w.navigator.clipboard={writeText:async text=>{reviewCopied=text;}};
+  [...reviewDisclosure.querySelectorAll('button')].find(node=>node.textContent==='Copy JSON').click();await tick();
+  assert.equal(JSON.parse(reviewCopied).status,'needs_attention');dom.window.close();
   dom=await create(null,false,{...fixture,projects:[],artifacts:[]});assert(dom.window.document.getElementById('project-grid').textContent.includes('first game'));dom.window.close();
   console.log('UI layouts passed: add a game, next step, drafting settings, default workspace, saved preferences, collection/list switching, grouped platforms, RomM imports, correct counts, game selection, deep links, filters, empty state and blocked storage.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
