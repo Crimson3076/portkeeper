@@ -576,7 +576,8 @@ class OperationRunner:
             output.parent.mkdir(parents=True, exist_ok=True)
             data = Path(record["path"]).read_bytes() if item.get("normalize") else None
             if data is not None:
-                output.write_bytes(packaging_normalize(item, data))
+                with output.open("wb") as handle:
+                    handle.write(packaging_normalize(item, data))
             else:
                 shutil.copyfile(record["path"], output)
             if item.get("verify", "hash") == "hash":
