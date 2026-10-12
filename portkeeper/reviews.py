@@ -2,6 +2,7 @@
 import hashlib
 import json
 import time
+from pathlib import Path
 from .romm import _normalize_record
 from .safety import Invalid
 from .storage import identifier, now
@@ -41,6 +42,25 @@ class Reviews:
     def latest(self, reference):
         return next((item for item in self.store.all('playtests') if item['package'] == reference), None)
 
+    def package_details(self, project, record):
+        """Small preserved manifests only; never fetch or unpack game archives."""
+        root = getattr(self.engine, 'library_root', None)
+        if not root or len(record.get('files', [])) != 1:
+            return {}
+        target = 'windows' if record['platform_slug'] == 'win' else 'linux'
+        candidates = []
+        for path in (Path(root) / 'native-ports').glob('*.json'):
+            try:
+                if path.is_symlink() or path.stat().st_size > 32768:
+                    continue
+                details = json.loads(path.read_text())
+                filename = details.get('filename', '')
+                if details.get('platform') == target and details.get('size') == record['files'][0].get('size') and any(filename.lower().startswith(prefix.lower() + '-') for prefix in self.prefixes(project)):
+                    candidates.append({key: details[key] for key in ('version', 'package_revision', 'requirements', 'known_issues', 'changes', 'validation') if key in details})
+            except (OSError, ValueError, AttributeError, TypeError):
+                continue
+        return candidates[0] if len(candidates) == 1 else {}
+
     def imports(self, project_id, force=False):
         project = self.store.get('projects', project_id)
         server = self.engine.romm.public_config().get('url')
@@ -71,7 +91,7 @@ class Reviews:
                     self.store.get('imports', event_id)
                 except KeyError:
                     self.store.put('imports', {'id': event_id, 'kind': 'import', 'project_id': project_id, 'project_name': project['name'], 'target': 'windows' if record['platform_slug'] == 'win' else 'linux', 'package': reference, 'package_name': record['name'], 'created_at': now(), 'message': 'Found in RomM. This records when Portkeeper discovered it, not its original upload time.'})
-            items.append({**record, 'package_signature': reference['signature'], 'review': self.latest(reference)})
+            items.append({**record, 'package_signature': reference['signature'], 'review': self.latest(reference), 'package_details': self.package_details(project, record)})
         return {'items': items}
 
     def record(self, project_id, payload, origin='manual'):
