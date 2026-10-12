@@ -122,6 +122,9 @@ class Handler(BaseHTTPRequestHandler):
                 from .profiles import supported_hashes
                 payload = self.body()
                 self.json(200, self.engine.romm.inspect_rom(payload.get("rom_id"), payload.get("filename"), supported_hashes(payload.get("profile", "shipwright"))))
+            elif method == "POST" and path == "/api/assistant/models":
+                payload = self.body()
+                self.json(200, self.engine.assistant.models(payload.get("endpoint")))
             elif method == "POST" and path == "/api/assistant/config":
                 payload = self.body()
                 self.json(200, self.engine.assistant.configure(payload.get("endpoint", ""), payload.get("model", "")))
