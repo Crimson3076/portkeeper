@@ -868,9 +868,11 @@ function definitionInstructions(project) {
 }
 function inputsSection(project) {
   const definition = project.packaging, bindings = project.input_bindings || {};
-  if (definition.runner === "profile") return [el("p", "field-help", "Chosen and verified in the worker wizard: " + (project.rom_source?.member || project.rom_source?.filename || project.rom_source?.path || "not selected"))];
-  if (!(definition.inputs || []).length) return [el("p", "field-help", definition.runner === "recipe" ? "Declared in the saved recipe's inputs." : "No game files are needed.")];
-  return definition.inputs.map((item) => {
+  const firstRun = definition.first_run || project.packaging_view?.first_run;
+  const runtime = firstRun?.mode === "asks_user" ? [el("p", "first-run-note warn", [el("strong", "", "When you play: "), firstRun.summary || firstRun.text || "Complete the launcher's setup on the device where you play."])] : [];
+  if (definition.runner === "profile") return [...runtime, el("p", "field-help", "Chosen and verified in the worker wizard: " + (project.rom_source?.member || project.rom_source?.filename || project.rom_source?.path || "not selected"))];
+  if (!(definition.inputs || []).length) return [...runtime, el("p", "field-help", definition.runner === "recipe" ? "Files used during packaging are listed in the saved recipe's inputs." : definition.runner === "capture" ? "This game preserves releases; files for packaging have not been configured." : "No game files need to be uploaded to Portkeeper for packaging.")];
+  return [...runtime, el("p", "field-help", "The files below are used by Portkeeper while building the package."), ...definition.inputs.map((item) => {
     const binding = bindings[item.id], key = `input-${project.id}`;
     const node = el("div", "instruction-input", [el("h4", "", item.label + (item.required === false ? " (optional)" : "")),
       el("p", "field-help", item.accepted?.length ? `Accepted: ${item.accepted.map((entry) => entry.label).join(", ")}${item.normalize ? " (checked after byte-order normalization)" : ""}` : "Validated after extraction; see the build steps."),
@@ -882,7 +884,7 @@ function inputsSection(project) {
     node.append(el("div", "inline-actions input-binding", [path, button("Save path", "button secondary small", () => bindInput(project.id, item.id, { path: path.value.trim(), source: item.kind === "directory" ? "prepared" : "inputs" }), busy.has(key) || !path.value), button("Find automatically", "button secondary small", () => bindInput(project.id, item.id, {}), busy.has(key)), ...(binding ? [button("Clear", "text-button", () => bindInput(project.id, item.id, { clear: true }), busy.has(key))] : [])]));
     path.addEventListener("input", () => { inputDrafts.set(`${project.id}-${item.id}`, path.value); node.querySelector(".input-binding button").disabled = !path.value.trim(); });
     return node;
-  });
+  })];
 }
 async function bindInput(projectId, inputId, body) {
   const result = await runAction(`input-${projectId}`, `/api/projects/${encodeURIComponent(projectId)}/inputs`, { input: inputId, ...body }, "");
@@ -1626,9 +1628,9 @@ function renderGamePicker(content, actions) {
   const grid = el("div", "game-pick-grid");
   addGame.games.forEach((game) => {
     const card = el("button", `game-pick${addGame.pick?.id === game.id ? " selected" : ""}`); card.type = "button";
-    const needs = game.needs.length ? "Needs your " + game.needs.map((need) => need.label.replace(/^Your /, "")).join(" and ") : game.runner === "profile" ? "Needs your ROM, chosen from RomM" : "No game files needed";
+    const needs = game.needs.length ? "Packaging needs your " + game.needs.map((need) => need.label.replace(/^Your /, "")).join(" and ") : game.runner === "profile" ? "Packaging needs your ROM, chosen from RomM" : "No game files needed for packaging";
     card.append(el("strong", "", game.name), el("span", "field-help", needs), el("span", "game-pick-tags", [...[...new Set((game.variants || [game]).flatMap(item => item.targets))].map((target) => el("span", "status-badge", targetLabels[target] || target)), ...(game.in_library ? [statusBadge("ready", "In your library")] : [])]));
-    if (game.first_run) card.append(el("span", "field-help", game.first_run.mode === "asks_user" ? "Asks for something on first launch" : "No setup on first launch"));
+    if (game.first_run) card.append(el("span", "field-help", game.first_run.mode === "asks_user" ? "When you play: " + (game.first_run.text || "Complete setup in the launcher.") : "No setup on first launch"));
     card.addEventListener("click", () => {
       if (game.in_library && !(game.variants || []).some(item => !item.in_library)) { $("add-game-dialog").close(); navigateProject(game.in_library); toast(`${game.name} is already in your library.`); return; }
       addGame.pick = game.variants ? {...(game.variants.find(item => !item.in_library) || game), variants: game.variants} : game; renderAddGame();
@@ -1884,7 +1886,7 @@ function renderProposalReview(card, project, proposal) {
   const definition = proposal.definition, view = proposal.view || {};
   card.append(el("p", "detail-note", `Drafted by ${proposal.source} · ${dateLabel(proposal.created_at)}. Nothing has run. Review it before approving.`));
   if (proposal.explanation) card.append(el("p", "review-notes", proposal.explanation));
-  card.append(el("div", "detail-facts", [meta("Platforms", definition.targets.map((target) => targetLabels[target] || target).join(", ")), meta("Your files", definition.inputs.filter((item) => item.required !== false).map((item) => item.label).join("; ") || "None"), meta("First launch", view.first_run?.text || "Not stated", true)]));
+  card.append(el("div", "detail-facts", [meta("Platforms", definition.targets.map((target) => targetLabels[target] || target).join(", ")), meta("Files for packaging", definition.inputs.filter((item) => item.required !== false).map((item) => item.label).join("; ") || "None"), meta("First launch", view.first_run?.text || definition.first_run?.summary || "Not stated", true)]));
   if (view.steps?.length) card.append(el("h3", "", "Build steps"), el("ol", "instruction-steps", view.steps.map((step) => el("li", "", step.text))));
   if (proposal.warnings?.length) card.append(el("h3", "", "Check before approving"), el("ul", "review-problems", proposal.warnings.map((warning) => el("li", "", warning))));
   if (proposal.automatic_checks) {

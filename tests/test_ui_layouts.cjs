@@ -83,7 +83,7 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   d.getElementById('add-project').click();await tick();await tick();
   assert(d.getElementById('add-game-dialog').open);
   const pick=[...d.querySelectorAll('.game-pick')];assert.equal(pick.length,2,'Catalog games plus a custom game');
-  assert(pick[0].textContent.includes('Needs your Banjo-Kazooie'));assert(pick[1].textContent.includes('Custom game'));
+  assert(pick[0].textContent.includes('Packaging needs your Banjo-Kazooie'));assert(pick[1].textContent.includes('Custom game'));
   pick[0].click();await tick();[...d.querySelectorAll('#add-game-actions button')].find(n=>n.textContent.includes('Continue')).click();await tick();await tick();
   assert(d.getElementById('add-game-content').textContent.includes('verified as USA 1.0'));
   assert(d.getElementById('add-game-content').textContent.includes('Your ROM is placed where Banjo looks for it.'));
@@ -194,6 +194,15 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   let reviewCopied='';w.navigator.clipboard={writeText:async text=>{reviewCopied=text;}};
   [...reviewDisclosure.querySelectorAll('button')].find(node=>node.textContent==='Copy JSON').click();await tick();
   assert.equal(JSON.parse(reviewCopied).status,'needs_attention');dom.window.close();
+  const runtimeFiles=JSON.parse(JSON.stringify(editable));
+  runtimeFiles.projects[1].packaging.runner='operations';runtimeFiles.projects[1].packaging.inputs=[];
+  runtimeFiles.projects[1].packaging.first_run={mode:'asks_user',summary:'Choose your owned game folder in the launcher on your Windows PC.'};
+  dom=await create(null,false,runtimeFiles);w=dom.window;d=w.document;
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();d.getElementById('project-advanced-tab').click();await tick();
+  const gameFiles=[...d.querySelectorAll('.instruction-section')].find(node=>node.querySelector('h3')?.textContent==='3. Your game files');
+  assert(gameFiles.textContent.includes('When you play: Choose your owned game folder'),'An empty build-input list still shows runtime game requirements');
+  assert(gameFiles.textContent.includes('No game files need to be uploaded to Portkeeper for packaging.'));
+  assert(!gameFiles.textContent.includes('No game files are needed.'));dom.window.close();
   dom=await create(null,false,{...fixture,projects:[],artifacts:[]});assert(dom.window.document.getElementById('project-grid').textContent.includes('first game'));dom.window.close();
   console.log('UI layouts passed: add a game, next step, drafting settings, default workspace, saved preferences, collection/list switching, grouped platforms, RomM imports, correct counts, game selection, deep links, filters, empty state and blocked storage.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

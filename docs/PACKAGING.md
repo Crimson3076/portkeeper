@@ -57,6 +57,9 @@ Inputs are files needed on the Portkeeper server during packaging. If a Windows
 launcher asks the player to choose an existing game folder on their PC, keep
 `inputs: []` and describe it with `first_run.mode: "asks_user"`. Directory inputs
 must be consumed by the fixed PS4 extraction tool as `prepared_input`.
+The **Your game files** section shows these first-launch requirements separately
+from files uploaded for packaging. An empty `inputs` list does not mean the player
+can run the game without their own game files.
 
 ## Operations
 
