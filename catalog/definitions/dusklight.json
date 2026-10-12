@@ -6,6 +6,10 @@
   "game": "The Legend of Zelda: Twilight Princess",
   "package_prefix": "Dusklight",
   "summary": "Official Dusklight builds with your Twilight Princess disc image and launchers that keep user data in the package folder.",
+  "first_run": {
+    "mode": "configured",
+    "summary": "Your disc image is included as game.ciso and the launcher passes it with --dvd, so Dusklight starts without asking for the disc."
+  },
   "runner": "operations",
   "runner_version": 1,
   "upstream": {

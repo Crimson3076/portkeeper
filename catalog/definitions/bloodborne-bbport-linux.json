@@ -6,6 +6,10 @@
   "game": "Bloodborne",
   "package_prefix": "Bloodborne-bbport",
   "summary": "bbport Linux AppImage with your extracted CUSA00900 game and 1.09 update, portable data paths and the NVIDIA libcuda startup fix.",
+  "first_run": {
+    "mode": "configured",
+    "summary": "Your PKGs are extracted during the build and bbport.ini points the runtime at that game folder, so nothing needs to be chosen on first launch."
+  },
   "runner": "operations",
   "runner_version": 1,
   "upstream": {

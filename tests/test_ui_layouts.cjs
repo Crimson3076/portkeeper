@@ -13,6 +13,7 @@ const id = n => String(n).padStart(32, '0');
 const project = (n,name,prefix,profile=null) => ({id:id(n),name,repo:'example/game',targets:['linux','windows'],profile,recipe:{mode:profile?'profile':'capture'},status:'archived',metadata:{filename_prefix:prefix,igdb_id:n===3?2:n,romm_rom_id:100+n,game:name,cover_policy:'romm'},poll_minutes:360});
 const fixture = {projects:[project(1,'Ship of Harkinian','Ship', 'shipwright'),project(2,'Bloodborne','Bloodborne'),project(3,'Bloodborne Windows','Bloodborne')],artifacts:[{id:id(4),project_id:id(1),version:'9.3',target:'linux',sha256:'build-signature',validation_level:'launch_checked',created_at:'2026-10-11T12:00:00Z'}],jobs:[],notifications:[],summary:{projects:3,artifacts:1},settings:{},runner:{},romm:{url:'https://romm.example',has_token:true,configured:true,connected:true},assistant:{}};
 const imports = prefix => ['linux','win'].map((platform,n) => ({id:200+n+(prefix==='Bloodborne'?10:0),name:prefix+' portable',platform_slug:platform,summary:prefix==='Bloodborne'&&platform==='linux'?'Experimental: Linux startup failed.':'Testing notes retained',package_signature:prefix+'-'+platform,files:[{name:prefix+'-v1-'+platform+'.zip'}]}));
+const requests=[];
 async function create(saved, storageBlocked=false, source=fixture) {
   const errors=[];
   const dom=new JSDOM(fs.readFileSync(path.join(base,'static/index.html'),'utf8'),{url:'http://localhost:8787',runScripts:'outside-only'});
@@ -29,6 +30,9 @@ async function create(saved, storageBlocked=false, source=fixture) {
     else if(endpoint.startsWith('/preservation',0)||endpoint.includes('/preservation'))payload={};
     else if(endpoint==='/api/profiles')payload={profiles:[]};
     else if(endpoint==='/api/recipes')payload={recipes:[]};
+    else if(endpoint==='/api/catalog/games')payload={games:[{id:'banjo-recompiled',name:'Banjo Recompiled',targets:['linux','windows'],runner:'operations',needs:[{label:'Banjo-Kazooie (USA) 1.0 N64 ROM'}],first_run:{mode:'preloaded',text:'Your ROM is placed where Banjo looks for it.'},in_library:null}],romm_connected:true};
+    else if(endpoint==='/api/catalog/games/banjo-recompiled/files')payload={inputs:[{id:'rom',label:'Banjo-Kazooie (USA) 1.0 N64 ROM',kind:'file',required:true,accepted:['USA 1.0'],found:[{path:'n64/roms/Banjo-Kazooie (USA).z64',name:'Banjo-Kazooie (USA).z64',accepted:'USA 1.0'}],rejected:[]}]};
+    else if(endpoint==='/api/setup'){requests.push({endpoint,body:JSON.parse(options.body)});payload={project:source.projects[1],job:{}};}
     return {ok:true,status:200,json:async()=>JSON.parse(JSON.stringify(payload))};
   };
   w.eval(fs.readFileSync(path.join(base,'static/app.js'),'utf8'));
@@ -69,8 +73,30 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   w.location.hash='settings';await tick();selectLayout('list');w.location.hash='library';await tick();assert(d.getElementById('project-grid').classList.contains('layout-list'));
   const stage=d.getElementById('library-stage');stage.value='attention';stage.dispatchEvent(new w.Event('change',{bubbles:true}));assert.equal(d.querySelectorAll('#project-grid .project-card').length,1);
   dom.window.close();
+  dom=await create();w=dom.window;d=w.document;
+  assert(d.querySelector('.next-step-card').textContent.includes('Send to RomM'),'A built package that is not in RomM offers to send it');
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();
+  assert(d.querySelector('.next-step-card').textContent.includes('Add packaging steps'),'A preserve-only game points to drafting');
+  d.getElementById('add-project').click();await tick();await tick();
+  assert(d.getElementById('add-game-dialog').open);
+  const pick=[...d.querySelectorAll('.game-pick')];assert.equal(pick.length,2,'Catalog games plus a custom game');
+  assert(pick[0].textContent.includes('Needs your Banjo-Kazooie'));assert(pick[1].textContent.includes('Custom game'));
+  pick[0].click();await tick();[...d.querySelectorAll('#add-game-actions button')].find(n=>n.textContent.includes('Continue')).click();await tick();await tick();
+  assert(d.getElementById('add-game-content').textContent.includes('verified as USA 1.0'));
+  assert(d.getElementById('add-game-content').textContent.includes('Your ROM is placed where Banjo looks for it.'));
+  d.getElementById('add-game-target-windows').click();
+  const submit=d.getElementById('add-game-submit');assert.equal(submit.textContent,'Set up and send to RomM');assert(!submit.disabled);submit.click();await tick();await tick();
+  assert.deepEqual(requests[0].body,{definition_id:'banjo-recompiled',targets:['linux'],files:{rom:'n64/roms/Banjo-Kazooie (USA).z64'},keep_updated:true,publish:true});
+  assert(!d.getElementById('add-game-dialog').open);
+  w.location.hash='settings';await tick();d.getElementById('settings-assistant-tab').click();
+  assert(d.getElementById('assistant-cloud-fields').hidden);
+  const provider=value=>{const radio=d.querySelector(`[name="assistant-provider"][value="${value}"]`);radio.checked=true;radio.dispatchEvent(new w.Event('change',{bubbles:true}));};
+  provider('anthropic');assert(!d.getElementById('assistant-cloud-fields').hidden);assert(d.getElementById('assistant-base-url-field').hidden);
+  provider('openai');assert(!d.getElementById('assistant-base-url-field').hidden);
+  provider('ollama');assert(!d.getElementById('assistant-ollama-fields').hidden);assert(d.getElementById('assistant-cloud-fields').hidden);
+  dom.window.close();
   for(const value of ['collection','list','invalid']){dom=await create(value);assert(dom.window.document.getElementById('project-grid').classList.contains('layout-'+(value==='invalid'?'workspace':value)));dom.window.close();}
   dom=await create(null,true);assert(dom.window.document.getElementById('project-grid').classList.contains('layout-workspace'));dom.window.close();
   dom=await create(null,false,{...fixture,projects:[],artifacts:[]});assert(dom.window.document.getElementById('project-grid').textContent.includes('first game'));dom.window.close();
-  console.log('UI layouts passed: default workspace, saved preferences, collection/list switching, grouped platforms, RomM imports, correct counts, game selection, deep links, filters, empty state and blocked storage.');
+  console.log('UI layouts passed: add a game, next step, drafting settings, default workspace, saved preferences, collection/list switching, grouped platforms, RomM imports, correct counts, game selection, deep links, filters, empty state and blocked storage.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
