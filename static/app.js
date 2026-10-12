@@ -421,7 +421,7 @@ function renderSettings() {
   if (fingerprint !== formConfigFingerprint) {
     if (!$('romm-url').dataset.dirty) $("romm-url").value = config.url || "";
     if (!$('assistant-endpoint').dataset.dirty) $("assistant-endpoint").value = assistant.endpoint || "http://127.0.0.1:11434";
-    if (!$('assistant-model').dataset.dirty) $("assistant-model").value = assistant.model || "";
+    if (!$('assistant-model').dataset.dirty) setAssistantModel(assistant.model || "");
     formConfigFingerprint = fingerprint;
   }
   const settings = state.settings || {};
@@ -1107,6 +1107,32 @@ async function clearRomMToken() {
   const result = await runAction("romm-settings", "/api/romm/config", { url: rommConfig().url, clear_token: true }, "Saved RomM token removed.");
   if (result) { $("romm-token").value = ""; $("romm-form-result").textContent = "Token removed. Workers will need a new token to download game files."; }
 }
+let assistantModelsSerial = 0;
+function setAssistantModel(name) {
+  const select = $("assistant-model");
+  if (name && ![...select.options].some(option => option.value === name)) {
+    const option = el("option", "", `${name} (saved — refresh to check availability)`); option.value = name; select.append(option);
+  }
+  select.value = name;
+}
+async function refreshAssistantModels() {
+  const endpoint = $("assistant-endpoint").value.trim(), serial = ++assistantModelsSerial;
+  const control = $("assistant-models-refresh"), status = $("assistant-models-status");
+  control.disabled = true; control.textContent = "Loading models…"; status.textContent = "Connecting to Ollama…";
+  try {
+    const result = await api("/api/assistant/models", {method:"POST", body:{endpoint}});
+    if (serial !== assistantModelsSerial || $("assistant-endpoint").value.trim() !== endpoint) return;
+    const select = $("assistant-model"), selected = select.value;
+    select.replaceChildren(el("option", "", result.models.length ? "Choose a model…" : "No models installed")); select.firstChild.value = "";
+    result.models.forEach(name => { const option = el("option", "", name); option.value = name; select.append(option); });
+    setAssistantModel(selected);
+    status.textContent = result.models.length ? `${result.models.length} installed model${result.models.length === 1 ? "" : "s"} loaded.${selected && !result.models.includes(selected) ? " Your selected model was not returned; choose an installed model before saving." : " Choose one and save your settings."}` : "Ollama is reachable, but no models are installed. Install a model in Ollama, then refresh.";
+  } catch (error) {
+    if (serial === assistantModelsSerial && $("assistant-endpoint").value.trim() === endpoint) status.textContent = error.message + ". Your selection has been kept.";
+  } finally {
+    if (serial === assistantModelsSerial) { control.disabled = false; control.textContent = "Refresh models"; }
+  }
+}
 async function submitAssistant(event) {
   event.preventDefault(); const submit = $("assistant-save"); if (submit.disabled) return; submit.disabled = true; $("assistant-result").textContent = "";
   try { await api("/api/assistant/config", { method: "POST", body: { endpoint: $("assistant-endpoint").value.trim(), model: $("assistant-model").value.trim() } }); $("assistant-result").classList.remove("error"); $("assistant-result").textContent = "Assistant configured. Draft a proposal from a game’s Advanced tab."; [$("assistant-endpoint"), $("assistant-model")].forEach((node) => { node.dataset.dirty = ""; }); await refresh(); }
@@ -1224,3 +1250,7 @@ renderRoute(); render();
 Promise.allSettled([refresh(), loadCatalog()]);
 setInterval(() => { if (!document.hidden) refresh(); }, 3000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+
+$("assistant-models-refresh").addEventListener("click", refreshAssistantModels);
+$("assistant-model").addEventListener("change", () => { $("assistant-model").dataset.dirty = "true"; });
+$("assistant-endpoint").addEventListener("input", () => { assistantModelsSerial++; $("assistant-models-refresh").disabled = false; $("assistant-models-refresh").textContent = "Refresh models"; $("assistant-models-status").textContent = "Endpoint changed. Refresh to load models from this endpoint."; });

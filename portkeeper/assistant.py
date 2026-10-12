@@ -112,6 +112,31 @@ class RecipeAssistant:
         _atomic_json(self.path, {'endpoint': endpoint, 'model': model})
         return self.public_config()
 
+    def models(self, endpoint=None):
+        endpoint = _endpoint(endpoint if endpoint is not None else self._config().get('endpoint', ''))
+        request = urllib.request.Request(endpoint + '/api/tags', headers={'Accept': 'application/json'})
+        try:
+            with urllib.request.build_opener(_OriginRedirect(_origin(endpoint))).open(request, timeout=15) as response:
+                data = response.read(MAX_RESPONSE + 1)
+        except (urllib.error.URLError, TimeoutError, OSError):
+            raise Invalid('Ollama could not be reached. Check the endpoint and that Ollama is running') from None
+        if len(data) > MAX_RESPONSE:
+            raise Invalid('Ollama model list exceeds the size limit')
+        try:
+            payload = json.loads(data)
+            items = payload['models']
+            if not isinstance(items, list):
+                raise ValueError()
+            names = set()
+            for item in items:
+                name = item.get('name') if isinstance(item, dict) else None
+                if not isinstance(name, str) or not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,150}', name):
+                    raise ValueError()
+                names.add(name)
+        except (ValueError, KeyError, TypeError):
+            raise Invalid('Ollama returned an invalid model list') from None
+        return {'endpoint': endpoint, 'models': sorted(names, key=str.casefold)}
+
     def draft(self, project, logs=None, instruction=''):
         config = self._config()
         if not config.get('endpoint') or not config.get('model'):
