@@ -92,8 +92,8 @@ CLUE = re.compile(r"(?i)(\.z64|\.n64|\.v64|\.iso\b|\.ciso|\.pkg\b|\.o2r|\.otr|po
                   r"sha-?1|sha256|checksum|extract|select (?:a |your )?(?:rom|game|file)|file ?dialog|first (?:run|launch))")
 DOC_NAME = re.compile(r"(?i)(readme|build|install|portable|usage|faq|rom|setup|getting.?started|guide)")
 VENDORED = re.compile(r"(?i)(^|/)(\.git|\.github|node_modules|third_party|thirdparty|external|vendor|deps|lib|libs|submodules?)/")
-PLATFORM_ASSET = re.compile(r"(?i)(linux|win(dows|64)|x(86_)?64|appimage|steamdeck)|\.exe$")
-SKIP_ASSET = re.compile(r"(?i)(source|src|debug|symbols|pdb|arm64|aarch64|mac|darwin|osx|android|ios|\.sha\d+$|\.sig$|\.asc$)")
+PLATFORM_ASSET = re.compile(r"(?i)linux|win(dows|64)|x(86_)?64|appimage|steamdeck|\.exe\b")
+SKIP_ASSET = re.compile(r"(?i)source|src|debug|symbols|pdb|arm64|aarch64|mac|darwin|osx|android|ios|\.(sha\d+|sig|asc)\b")
 
 
 def _strip_top(name):
