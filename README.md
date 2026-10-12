@@ -113,3 +113,7 @@ archive copies. Build recipes and saved releases remain available in game detail
 Frontend interaction tests: install `jsdom@26.1.0` in a temporary Node environment,
 then set `PORTKEEPER_JSDOM` to that environment's `node_modules/jsdom` path and run
 `node tests/test_ui_layouts.cjs`. CI runs these checks alongside the Python suite.
+
+## Project verification
+
+See [verification criteria and the human/LLM review workflow](docs/PROJECT_VERIFICATION.md). The [GitHub catalog](catalog/projects.json) records version- and platform-specific evidence and approval. Catalog verification is separate from download startup/gameplay results; the initial entries await an explicit approval reference. Remote catalog fetching and caching are not installed yet.
