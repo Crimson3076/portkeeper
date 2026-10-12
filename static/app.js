@@ -554,6 +554,11 @@ function renderOverview(project, content) {
     else info.append(el("p", "field-help", rommImportsLoading.has(importKey(project)) ? "Checking your RomM library…" : rommImports.get(importKey(project))?.error ? "RomM could not be checked. Refresh to retry." : project.recipe?.mode === "capture" ? "This game tracks upstream releases, but no platform download is recorded. Build setup is needed; check RomM for an existing import." : "No platform download is recorded. A completed build or matching RomM import will appear here."));
     const actions = el("div", "inline-actions");
     if (artifact) actions.append(artifactDownload(artifact, "button primary small", "Download ZIP"));
+    else roms.forEach((rom) => (rom.files || []).filter(file => file.id && file.name?.toLowerCase().endsWith(".zip")).forEach((file) => {
+      const download = el("a", "button primary small", "Download ZIP");
+      download.href = `/api/projects/${project.id}/imports/${rom.id}/files/${file.id}/download`;
+      download.setAttribute("download", ""); download.title = file.name; actions.append(download);
+    }));
     roms.forEach((rom) => { const link = el("a", "button secondary small", "Open in RomM"); link.href = `${rommConfig().url}/rom/${rom.id}`; link.target = "_blank"; link.rel = "noopener noreferrer"; actions.append(link); });
     if (artifact || roms.length) actions.append(button("Record test result", "button secondary small", () => openReview(project, artifact, artifact ? null : roms[0])));
     const latestReview = reviewFor(artifact, artifact ? null : roms[0]);

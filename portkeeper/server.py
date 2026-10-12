@@ -25,7 +25,7 @@ class Handler(BaseHTTPRequestHandler):
         # Avoid logging query strings or local input/recipe content.
         print(f"{self.log_date_time_string()} {self.command} {urllib.parse.urlsplit(self.path).path} {args[1] if len(args) > 1 else ''}", flush=True)
 
-    def respond_headers(self, status, content_type, length, disposition=None, cache_control="no-store"):
+    def respond_headers(self, status, content_type, length, disposition=None, cache_control="no-store", extra_headers=None):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(length))
@@ -36,6 +36,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
         if disposition:
             self.send_header("Content-Disposition", disposition)
+        for key, value in (extra_headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
 
     def json(self, status, value):
@@ -139,6 +141,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(200, self.engine.update_project(path.split("/")[3], self.body()))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/imports", path) and method == "GET":
                 self.json(200, self.engine.reviews.imports(path.split("/")[3]))
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/imports/[0-9]+/files/[0-9]+/download", path) and method == "GET":
+                parts = path.split("/")
+                self.import_download(parts[3], int(parts[5]), int(parts[7]))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/playtest", path) and method == "POST":
                 self.json(201, self.engine.reviews.record(path.split("/")[3], self.body()))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/cover", path) and method == "GET":
@@ -231,6 +236,58 @@ class Handler(BaseHTTPRequestHandler):
     def image(self, content_type, body):
         self.respond_headers(200, content_type, len(body), cache_control="private, max-age=60")
         self.wfile.write(body)
+
+    def import_download(self, project_id, rom_id, file_id):
+        from .romm import _normalize_record
+        project = self.engine.store.get('projects', project_id)
+        record = _normalize_record(self.engine.romm._json('roms/' + str(rom_id)))
+        if not self.engine.reviews.belongs(project, record):
+            raise Invalid('This download does not belong to this game')
+        files = [file for file in record['files'] if file['id'] == file_id and isinstance(file['name'], str) and file['name'].lower().endswith('.zip') and any(file['name'].lower().startswith(prefix.lower() + '-') for prefix in self.engine.reviews.prefixes(project))]
+        if len(files) != 1:
+            raise Invalid('Choose a unique portable ZIP listed for this game')
+        file = files[0]
+        size = file['size']
+        if type(size) is not int or size < 1:
+            raise Invalid('RomM has not indexed this download size yet')
+        requested = self.headers.get('Range')
+        byte_range, expected_range = None, None
+        if requested:
+            match = re.fullmatch(r'bytes=(\d*)-(\d*)', requested)
+            if not match or not any(match.groups()):
+                self.respond_headers(416, 'application/octet-stream', 0, extra_headers={'Content-Range': f'bytes */{size}'})
+                return
+            first, last = match.groups()
+            start = int(first) if first else max(0, size - int(last))
+            end = min(size - 1, int(last)) if first and last else size - 1
+            if start >= size or end < start or (not first and int(last) == 0):
+                self.respond_headers(416, 'application/octet-stream', 0, extra_headers={'Content-Range': f'bytes */{size}'})
+                return
+            byte_range = f'bytes={start}-{end}'
+            expected_range = f'bytes {start}-{end}/{size}'
+        route = f'roms/{file_id}/files/content/{urllib.parse.quote(file["name"], safe="")}'
+        with self.engine.romm._open(route, byte_range=byte_range) as response:
+            length = response.headers.get('Content-Length', '')
+            expected_length = end - start + 1 if requested else size
+            if response.status != (206 if requested else 200) or not length.isdigit() or int(length) != expected_length or (requested and response.headers.get('Content-Range') != expected_range):
+                raise Invalid('RomM download changed or could not serve this range. Refresh and retry')
+            headers = {'Accept-Ranges': 'bytes'}
+            if expected_range:
+                headers['Content-Range'] = expected_range
+            name = file['name']
+            disposition = "attachment; filename*=UTF-8''" + urllib.parse.quote(name, safe='')
+            self.respond_headers(response.status, 'application/zip', int(length), disposition=disposition, extra_headers=headers)
+            try:
+                remaining = int(length)
+                while remaining:
+                    chunk = response.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        self.close_connection = True
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+            except (OSError, TimeoutError):
+                self.close_connection = True
 
     def download(self, path, expected_hash, filename):
         archive = Path(path).resolve()

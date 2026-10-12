@@ -66,6 +66,35 @@ class HttpIntegrationTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def test_import_download_streams_full_file_ranges_and_checks_game(self):
+        project_id = 'a' * 32
+        self.engine.store.put('projects', {'id': project_id, 'name': 'Example', 'metadata': {'filename_prefix': 'Example', 'igdb_id': 1}})
+        raw = {'id': 10, 'platform_slug': 'linux', 'files': [{'id': 20, 'file_name': 'Example-v1-linux.zip', 'file_size_bytes': 8}]}
+        content = b'PK\x03\x04test'
+        def opened(route, byte_range=None):
+            self.assertEqual(route, 'roms/20/files/content/Example-v1-linux.zip')
+            start, end = map(int, byte_range[6:].split('-')) if byte_range else (0, 7)
+            response = io.BytesIO(content[start:end + 1])
+            response.status = 206 if byte_range else 200
+            response.headers = {'Content-Length': str(end - start + 1), 'Content-Range': f'bytes {start}-{end}/8'}
+            return response
+        route = f'/api/projects/{project_id}/imports/10/files/20/download'
+        with patch.object(self.engine.romm, '_json', return_value=raw), patch.object(self.engine.romm, '_open', side_effect=opened) as stream:
+            status, headers, body = self.request('GET', route)
+            self.assertEqual((status, body), (200, content))
+            self.assertIn('attachment;', headers['Content-Disposition'])
+            self.assertNotIn('Authorization', headers)
+            for request_range, expected in [('bytes=0-3', content[:4]), ('bytes=-4', content[-4:]), ('bytes=4-', content[4:])]:
+                status, headers, body = self.request('GET', route, headers={'Range': request_range})
+                self.assertEqual((status, body), (206, expected))
+            calls = stream.call_count
+            for request_range in ['bytes=8-', 'bytes=-0', 'bytes=1-0', 'bytes=0-1,3-4']:
+                self.assertEqual(self.request('GET', route, headers={'Range': request_range})[0], 416)
+            self.assertEqual(stream.call_count, calls)
+            raw['files'][0]['file_name'] = 'Other-v1-linux.zip'
+            self.assertEqual(self.request('GET', route)[0], 400)
+            self.assertEqual(stream.call_count, calls)
+
     def test_static_assets_and_state_are_served_and_traversal_rejected(self):
         for path, mime in (("/", "text/html"), ("/static/styles.css", "text/css"), ("/static/app.js", "javascript")):
             with self.subTest(path=path):
