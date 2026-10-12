@@ -313,7 +313,7 @@ class Engine:
             checkpoints[-1]["status"] = "complete"
         if not checkpoints or checkpoints[-1]["stage"] != stage:
             checkpoints.append({"stage": stage, "started_at": now(), "status": "complete" if stage == "complete" else "running"})
-        self.store.update("jobs", job_id, stage=stage, checkpoints=checkpoints)
+        self.store.update("jobs", job_id, stage=stage, checkpoints=checkpoints, **({"status": "running"} if job.get("status") == "queued" and stage not in ("queued", "complete") else {}))
         self.store.append_log(job_id, message)
 
     def notify(self, project_id, kind, message, **details):

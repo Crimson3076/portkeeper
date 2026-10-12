@@ -69,3 +69,14 @@ https://raw.githubusercontent.com/Crimson3076/portkeeper/main/unraid/portkeeper.
 ```
 
 Image updates do not replace an existing container's saved icon setting.
+
+### Check image labels separately from container labels
+
+Unraid can retain labels from an earlier container template during recreation. Inspect the revision on the image actually referenced by the running container, not only the container label:
+
+```sh
+docker inspect --format='{{.Image}}' portkeeper
+docker image inspect <that-image-id> --format='{{index .Config.Labels "org.opencontainers.image.revision"}}'
+```
+
+Also compare the served browser assets/API capabilities with the expected release. Updating an image does not replace a saved runtime-only project definition: review and save the PKG preset separately. The service user must be able to write `/data/prepared/ps4`; keep `/inputs` read-only.

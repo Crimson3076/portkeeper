@@ -622,9 +622,17 @@ class OperationRunner:
                     count += 1
         return {"title_id": op["title_id"], "app_version": op["app_version"], "eboot_sha256": digest, "files": count, "bytes": total}, None
 
+    def run_ps4_extraction(self, arguments, work, env, log_path, timeout):
+        try:
+            self.run(arguments, work, env, log_path, timeout)
+        except Invalid as error:
+            if 'PFS image is encrypted but no decryption key was provided' in str(error):
+                raise Invalid('This PKG has an encrypted game filesystem and PkgTool could not obtain its decryption key. Readable title/version metadata does not establish extractability. Choose an extractable dump from your owned game, or a prepared game folder matching the required title, version and eboot.bin SHA-256. Original PKGs and existing packages are unchanged; see the extraction log for tool details.') from None
+            raise
+
     def extract_ps4_package(self, ctx, binary, package, part, metadata, work, env, log_path, timeout):
         if metadata['content_type'] != 0x1E:
-            self.run([str(binary), 'pkg_makegp4', str(package), str(part)], work, env, log_path, timeout)
+            self.run_ps4_extraction([str(binary), 'pkg_makegp4', str(package), str(part)], work, env, log_path, timeout)
             return
         # PkgTool v0.2's GP4 creator rejects DP project types even for full patch
         # filesystems. Its fixed extraction commands handle those filesystems.
@@ -633,7 +641,7 @@ class OperationRunner:
             raise Invalid('The update PKG has no param.sfo entry; its version cannot be checked')
         deadline = time.monotonic() + timeout
         raw = part.with_name(part.name + '-filesystem')
-        self.run([str(binary), 'pkg_extract', str(package), str(raw)], work, env, log_path, timeout)
+        self.run_ps4_extraction([str(binary), 'pkg_extract', str(package), str(raw)], work, env, log_path, timeout)
         self.keep_log(ctx, 'pkgtool-filesystem', log_path)
         self.check_tree(raw, packaging.MAX_PACKAGE_BYTES)
         if (raw / 'uroot').is_dir():
@@ -668,6 +676,18 @@ class OperationRunner:
                     ctx.log(f"Using the previously extracted game: {result['files']} files, eboot.bin accepted")
                     return
                 ctx.log(f"The prepared game folder was not used: {problem}")
+        # Check cache write access before hashing/copying potentially huge inputs.
+        cache_root = confined(self.prepared, 'ps4')
+        try:
+            cache_root.mkdir(parents=True, exist_ok=True)
+            probe = cache_root / ('.write-check-' + identifier())
+            try:
+                with probe.open('xb'):
+                    pass
+            finally:
+                probe.unlink(missing_ok=True)
+        except PermissionError:
+            raise Invalid('PS4 preparation cache is not writable. Give the Portkeeper service user write access to /data/prepared/ps4 in the app-data mount, then retry; original PKGs remain read-only.') from None
         selected = [(key, self.resolve_input(ctx, key)) for key in op['packages']]
         selected = [(key, package) for key, package in selected if package is not None]
         if not selected or selected[0][0] != op['packages'][0]:
@@ -740,7 +760,15 @@ class OperationRunner:
                 # PkgTool maps files read-write, so it gets a private copy, never the original.
                 ctx.stage("preparing_inputs", f"Copying PKG {index + 1} of {len(packages)} to a private work folder")
                 copy = work / "pkgs" / f"{index}.pkg"
-                shutil.copyfile(package["path"], copy)
+                copied, last_report = 0, time.monotonic()
+                with package['path'].open('rb') as source, copy.open('wb') as output:
+                    for chunk in iter(lambda: source.read(CHUNK), b''):
+                        output.write(chunk)
+                        copied += len(chunk)
+                        if time.monotonic() - last_report >= 5:
+                            ctx.log(f"Copying {input_id}: {copied / packaging.GIB:.1f} of {package['size'] / packaging.GIB:.1f} GB")
+                            last_report = time.monotonic()
+                ctx.log(f"Private copy of {input_id} complete; verifying its checksum")
                 if copy.stat().st_size != package["size"]:
                     raise Invalid("A PKG changed while it was being copied")
                 if checksum(copy) != fingerprints[index]['sha256']:
