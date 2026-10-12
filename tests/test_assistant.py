@@ -53,10 +53,18 @@ class AssistantTests(unittest.TestCase):
     def enable(self):
         self.assistant.configure(self.url, 'qwen:latest')
 
+    def test_private_lan_endpoints_are_allowed_but_public_and_metadata_addresses_are_not(self):
+        from portkeeper.assistant import _endpoint
+        for endpoint in ['http://192.168.0.189:11434', 'http://10.0.0.2:11434', 'http://172.16.1.2:11434', 'http://[fd00::2]:11434']:
+            self.assertEqual(_endpoint(endpoint), endpoint)
+        for endpoint in ['http://8.8.8.8:11434', 'http://169.254.169.254', 'http://0.0.0.0:11434', 'http://192.0.2.1:11434']:
+            with self.assertRaises(Invalid):
+                _endpoint(endpoint)
+
     def test_not_configured_and_remote_endpoints_are_rejected(self):
         with self.assertRaisesRegex(Invalid, 'Configure a local Ollama'):
             self.assistant.draft(self.project)
-        for endpoint in ('https://external.test', 'http://192.168.1.2:11434', 'http://user:secret@localhost:11434',
+        for endpoint in ('https://external.test', 'http://8.8.8.8:11434', 'http://user:secret@localhost:11434',
                          'http://localhost:11434/api', 'http://localhost:bad'):
             with self.subTest(endpoint=endpoint), self.assertRaises(Invalid):
                 self.assistant.configure(endpoint, 'model')

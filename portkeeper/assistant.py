@@ -22,13 +22,15 @@ def _endpoint(value):
         parsed.port
     except ValueError:
         raise Invalid('Invalid Ollama port') from None
-    loopback = parsed.hostname == 'localhost'
+    local = parsed.hostname == 'localhost'
     try:
-        loopback = loopback or ipaddress.ip_address(parsed.hostname or '').is_loopback
+        address = ipaddress.ip_address(parsed.hostname or '')
+        private_networks = [ipaddress.ip_network(network) for network in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', 'fc00::/7')]
+        local = local or address.is_loopback or any(address in network for network in private_networks)
     except ValueError:
         pass
-    if not loopback or parsed.scheme not in ('http', 'https') or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ('', '/'):
-        raise Invalid('Recipe assistance supports only a loopback Ollama server URL')
+    if not local or parsed.scheme not in ('http', 'https') or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ('', '/'):
+        raise Invalid('Enter a loopback or private LAN IP address for Ollama (for example http://192.168.0.189:11434)')
     return value.rstrip('/')
 
 
