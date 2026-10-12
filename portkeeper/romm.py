@@ -238,7 +238,7 @@ class RomM:
             self.secrets.parent.chmod(0o700)
         return self.public_config()
 
-    def _open(self, path, config=None):
+    def _open(self, path, config=None, byte_range=None):
         config = config or self._config()
         if not config.get('url') or not config.get('token'):
             raise Invalid('Connect RomM with a read-only Client API Token in Settings first')
@@ -247,6 +247,8 @@ class RomM:
             raise Invalid('RomM request must stay on the configured server')
         request = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + config['token'],
                                         'User-Agent': 'Portkeeper/0.2', 'Accept': '*/*'})
+        if byte_range:
+            request.add_header('Range', byte_range)
         opener = urllib.request.build_opener(_OriginRedirect(_origin(url)))
         try:
             return opener.open(request, timeout=60)
