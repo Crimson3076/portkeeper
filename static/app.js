@@ -1436,7 +1436,7 @@ function continueAddGame() {
   $("add-game-error").textContent = "";
   if (pick.id === "custom") { addGame.step = "custom"; renderAddGame(); return; }
   if (pick.runner === "profile") { $("add-game-dialog").close(); openWizard(); return; }
-  addGame.step = "files"; addGame.targets = [...pick.targets]; addGame.choices = {}; renderAddGame(); findGameFiles();
+  addGame.step = "files"; addGame.targets = [...pick.targets]; addGame.choices = {}; renderAddGame(); void findGameFiles();
 }
 async function findGameFiles() {
   const pick = addGame.pick; addGame.files = null; addGame.searching = true; $("add-game-error").textContent = ""; renderAddGame();
@@ -1518,7 +1518,7 @@ function renderCustomGame(content, actions) {
   const where = el("div", "setup-panel", el("h3", "", "Where is it on GitHub?"));
   const repo = input("custom-repo", "text", custom.repo, "owner/repository or a GitHub link"); repo.setAttribute("aria-label", "GitHub repository");
   repo.addEventListener("input", () => { custom.repo = repo.value; });
-  repo.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); lookupCustomGame(); } });
+  repo.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); void lookupCustomGame(); } });
   where.append(el("div", "inline-actions", [repo, button(custom.looking ? "Looking up…" : "Look up", "button secondary small", lookupCustomGame, custom.looking)]));
   const found = custom.lookup;
   if (found) {

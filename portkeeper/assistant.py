@@ -22,6 +22,18 @@ from .safety import Invalid, validate_recipe
 MAX_RESPONSE = 512 * 1024
 
 
+def _lan_host(hostname):
+    """True for localhost, loopback and private LAN addresses."""
+    if hostname == 'localhost':
+        return True
+    try:
+        address = ipaddress.ip_address(hostname or '')
+    except ValueError:
+        return False
+    private_networks = [ipaddress.ip_network(network) for network in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', 'fc00::/7')]
+    return address.is_loopback or any(address in network for network in private_networks)
+
+
 def _endpoint(value):
     if not isinstance(value, str) or any(ord(c) < 32 for c in value):
         raise Invalid('Enter a local Ollama endpoint')
@@ -30,14 +42,7 @@ def _endpoint(value):
         parsed.port
     except ValueError:
         raise Invalid('Invalid Ollama port') from None
-    local = parsed.hostname == 'localhost'
-    try:
-        address = ipaddress.ip_address(parsed.hostname or '')
-        private_networks = [ipaddress.ip_network(network) for network in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', 'fc00::/7')]
-        local = local or address.is_loopback or any(address in network for network in private_networks)
-    except ValueError:
-        pass
-    if not local or parsed.scheme not in ('http', 'https') or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ('', '/'):
+    if not _lan_host(parsed.hostname) or parsed.scheme not in ('http', 'https') or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ('', '/'):
         raise Invalid('Enter a loopback or private LAN IP address for Ollama (for example http://192.168.0.189:11434)')
     return value.rstrip('/')
 
@@ -103,7 +108,6 @@ ANTHROPIC_DEFAULT_MODEL = 'claude-opus-5-5'
 ANTHROPIC_FALLBACK_MODELS = ('claude-fable-5-1', 'claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5-5')
 MAX_DRAFT_RESPONSE = 2 * 1024 * 1024
 _MODEL = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9._:/@-]{0,150}')
-_BLOCKED_NETWORKS = [ipaddress.ip_network(n) for n in ('169.254.0.0/16', 'fe80::/10', '0.0.0.0/8', '100.64.0.0/10')]
 
 
 def _cloud_url(value):
@@ -122,15 +126,10 @@ def _cloud_url(value):
         address = ipaddress.ip_address(parsed.hostname)
     except ValueError:
         address = None
-    if address is not None and (address.is_unspecified or any(address in network for network in _BLOCKED_NETWORKS)):
+    if address is not None and (address.is_unspecified or address.is_link_local or address.is_multicast or address.is_reserved):
         raise Invalid('That address cannot be used for an API')
-    if parsed.scheme == 'http':
-        try:
-            _endpoint(f'http://{parsed.netloc}')  # plain http only for loopback or private LAN servers
-        except Invalid:
-            raise Invalid('Use https, or http only for a server on your own network (a private LAN address)') from None
-    elif parsed.scheme != 'https':
-        raise Invalid('Use an https URL, or http for a server on your own network')
+    if parsed.scheme not in ('https', 'http') or (parsed.scheme != 'https' and not _lan_host(parsed.hostname)):
+        raise Invalid('Use https, or http only for a server on your own network (a private LAN address)')
     return value
 
 
