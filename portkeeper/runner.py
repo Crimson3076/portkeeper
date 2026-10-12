@@ -139,7 +139,7 @@ class OperationRunner:
                           "ps4_pkg_extract": "needs the pinned PkgTool and OpenSSL 1.1 libraries (included in the container image)"}}
 
     # Inputs -----------------------------------------------------------------
-    def locate(self, project, definition, input_id):
+    def locate(self, _project, definition, input_id):
         """Find a unique accepted file below the input root (or prepared folder) for an input."""
         item = next(i for i in definition["inputs"] if i["id"] == input_id)
         if item["kind"] == "directory":
@@ -176,6 +176,56 @@ class OperationRunner:
                                 continue
                     found.append({"source": source, "path": path.relative_to(root_for).as_posix()})
         return found
+
+    def find_files(self, definition):
+        """For each declared input: accepted files found, and near misses with the reason they were not used."""
+        result = []
+        for item in definition["inputs"]:
+            entry = {"id": item["id"], "label": item["label"], "kind": item["kind"], "required": item.get("required", True),
+                     "notes": item.get("notes"), "platform_hint": item.get("platform_hint"),
+                     "accepted": [a["label"] for a in item.get("accepted", [])], "found": [], "rejected": []}
+            if item["kind"] == "directory":
+                entry["found"] = self.locate(None, definition, item["id"])
+                result.append(entry)
+                continue
+            hint = item.get("platform_hint")
+            base = self.engine.input_root / hint if hint else self.engine.input_root
+            pattern = re.compile(item["name_hint"]) if item.get("name_hint") else None
+            if base.is_dir() and not base.is_symlink():
+                for directory, dirs, files in os.walk(base):
+                    if len(Path(directory).relative_to(base).parts) >= 4:
+                        dirs[:] = []
+                    dirs[:] = sorted(d for d in dirs if not (Path(directory) / d).is_symlink())
+                    for name in sorted(files):
+                        path = Path(directory) / name
+                        if path.is_symlink() or (pattern and not pattern.search(name)):
+                            continue
+                        record = {"source": "inputs", "path": path.relative_to(self.engine.input_root).as_posix(), "name": name}
+                        try:
+                            size = path.stat().st_size
+                        except OSError:
+                            continue
+                        if size > item.get("max_bytes", packaging.GIB):
+                            entry["rejected"].append({**record, "reason": "larger than this game accepts"})
+                            continue
+                        if item.get("verify", "hash") != "hash":
+                            entry["found"].append({**record, "accepted": "checked during the build", "size": size})
+                            continue
+                        try:
+                            digest = digests(path, item.get("normalize"))
+                        except (Invalid, OSError):
+                            entry["rejected"].append({**record, "reason": "not a readable game file"})
+                            continue
+                        match = accepted(item, digest)
+                        if match:
+                            entry["found"].append({**record, "accepted": match["label"], "sha1": digest["sha1"], "size": size})
+                        else:
+                            entry["rejected"].append({**record, "reason": "not an accepted version", "sha1": digest["sha1"]})
+                        if len(entry["found"]) + len(entry["rejected"]) >= 25:
+                            break
+            entry["rejected"] = entry["rejected"][:10]
+            result.append(entry)
+        return result
 
     def bind_inputs(self, project, definition, log=None, search=True):
         bindings = dict(project.get("input_bindings") or {})
@@ -239,6 +289,59 @@ class OperationRunner:
         ctx.inputs[input_id] = record
         ctx.provenance["inputs"][input_id] = {k: v for k, v in record.items() if k in ("accepted", "digest", "fingerprint", "size")}
         return record
+
+    def build_key(self, project, definition, capture, target):
+        """Identify what a package is made from. The same key means the same package would be built again."""
+        inputs = {}
+        for item in definition.get("inputs", []):
+            binding = (project.get("input_bindings") or {}).get(item["id"])
+            if not binding:
+                inputs[item["id"]] = None
+                continue
+            root = self.prepared if binding.get("source") == "prepared" else self.engine.input_root
+            try:
+                stat_result = confined(root, binding["path"]).stat()
+                inputs[item["id"]] = [binding["path"], stat_result.st_size, stat_result.st_mtime_ns]
+            except (Invalid, OSError):
+                inputs[item["id"]] = [binding["path"], None, None]
+        payload = {"definition": hashlib.sha256(json.dumps(definition, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+                   "runner_version": packaging.RUNNER_VERSION, "target": target, "commit": capture.get("commit"),
+                   "assets": sorted((a.get("name"), a.get("sha256")) for a in capture.get("assets", [])), "inputs": inputs}
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+    def same_package(self, project, version, target, key):
+        """An archived package built from exactly the same release, definition and game files, if any."""
+        for artifact in self.engine.store.all("artifacts"):
+            if (artifact["project_id"] == project["id"] and artifact["target"] == target and artifact.get("version") == version
+                    and artifact.get("build_key") == key and Path(artifact.get("file", "")).is_file()):
+                return artifact
+        return None
+
+    def replace_older(self, artifact, log):
+        """Remove earlier packages of the same version and platform that nothing else refers to."""
+        engine = self.engine
+        project = engine.store.get("projects", artifact["project_id"])
+        good = set((project.get("known_good") or {}).values())
+        tested = {(t.get("package") or {}).get("artifact_id") for t in engine.store.all("playtests")}
+        for older in engine.store.all("artifacts"):
+            if (older["id"] == artifact["id"] or older["project_id"] != artifact["project_id"] or older["target"] != artifact["target"]
+                    or older.get("version") != artifact.get("version")):
+                continue
+            reasons = [label for flag, label in ((older.get("pinned"), "pinned"), (older["id"] in good, "known-good"),
+                                                 (older["id"] in tested, "has a test result"), (older.get("published"), "copied to the library"),
+                                                 ((older.get("romm") or {}).get("status") in ("uploading", "awaiting_scan", "in_romm"), "in RomM"))
+                       if flag]
+            if reasons:
+                log(f"Kept the earlier {older.get('filename')} because it is " + " and ".join(reasons))
+                continue
+            try:
+                path = engine.lifecycle._archive_directory(older)
+            except Invalid as error:
+                log(f"Kept the earlier {older.get('filename')}: {error}")
+                continue
+            shutil.rmtree(path)
+            engine.store.delete("artifacts", older["id"])
+            log(f"Replaced the earlier {older.get('filename')} to save space")
 
     # Downloads --------------------------------------------------------------
     def dependency(self, item, log=None):
@@ -716,6 +819,10 @@ class OperationRunner:
     def archive(self, ctx, package, target, job):
         output = ctx.definition["outputs"][target]
         ctx.stage("validating", "Checking expected files and package limits")
+        for op in ctx.definition["operations"]:
+            if op["op"] == "launcher" and (not op.get("targets") or target in op["targets"]):
+                if not confined(package, op["exec"]).is_file():
+                    raise Invalid(f"The launcher {op['path']} runs {op['exec']}, which is not in the {target} package. Nothing was packaged.")
         total, count = self.check_tree(package, output.get("max_bytes", 2 * packaging.GIB), ctx.includes)
         for name in output["expected_files"]:
             include = next(((source, prefix) for source, prefix in ctx.includes if name.startswith(prefix + "/")), None)
@@ -727,13 +834,19 @@ class OperationRunner:
         ctx.log("Expected files and output safety checks passed. Game launch has not been tested.")
         engine = self.engine
         previous = [a for a in engine.store.all("artifacts") if a["project_id"] == ctx.project["id"] and a["target"] == target and a["version"] == ctx.capture["version"]]
-        revision = len(previous) + 1
+        counter = f"{target}:{ctx.capture['version']}"
+        with engine.lock:
+            counters = dict(engine.store.get("projects", ctx.project["id"]).get("package_revisions") or {})
+            revision = max([counters.get(counter, 0), *[a.get("package_revision") or 0 for a in previous], len(previous)]) + 1
+            counters[counter] = revision
+            engine.store.update("projects", ctx.project["id"], package_revisions=counters)
+        build_key = job.get("build_key") or self.build_key(ctx.project, ctx.definition, ctx.capture, target)
         definition_sha = hashlib.sha256(json.dumps(ctx.definition, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         compatibility = packaging.evaluate_release(ctx.definition, ctx.capture, targets=[target])
         manifest = {"schema": 2, "project": ctx.project["name"], "repo": ctx.project["repo"], "version": ctx.capture["version"],
                     "target": target, "upstream_commit": ctx.capture["commit"], "capture_id": ctx.capture["id"],
                     "definition": {"id": ctx.definition["id"], "revision": ctx.definition["revision"], "sha256": definition_sha},
-                    "package_revision": revision, "release_review": compatibility["status"],
+                    "package_revision": revision, "release_review": compatibility["status"], "build_key": build_key,
                     "downloads": ctx.provenance["downloads"], "inputs": ctx.provenance["inputs"], "tools": ctx.provenance["tools"],
                     "launch": ctx.definition.get("launch", {}).get(target), "dependencies": ctx.definition.get("dependencies", {}).get(target, []),
                     "limitations": ctx.definition.get("limitations", []), "files": count, "bytes": total, "created_at": now(),
@@ -746,7 +859,7 @@ class OperationRunner:
         root = engine.archive_root / "packages" / ctx.project["id"] / aid
         root.mkdir(parents=True)
         prefix = (ctx.project.get("metadata") or {}).get("filename_prefix") or ctx.definition.get("package_prefix") or slug(ctx.project["name"])
-        filename = f"{slug(prefix)}-{slug(ctx.capture['version'])}-{target}.zip"
+        filename = f"{slug(prefix)}-{slug(ctx.capture['version'])}-{target}-{now()[:10]}.zip"
         archive = root / filename
         temp = root / (filename + ".part")
         try:
@@ -769,9 +882,10 @@ class OperationRunner:
                     "published": False, "file": str(archive), "filename": filename, "manifest": manifest,
                     "download_url": f"/api/artifacts/{aid}/download", "demo": False, "validation_level": "packaged", "pinned": False,
                     "package_revision": revision, "definition_id": ctx.definition["id"], "definition_revision": ctx.definition["revision"],
-                    "release_review": compatibility["status"], "zip_crc_checked": crc_checked}
+                    "release_review": compatibility["status"], "zip_crc_checked": crc_checked, "build_key": build_key}
         engine.store.put("artifacts", artifact)
         ctx.log(f"Archived package: {filename} (revision {revision})")
+        self.replace_older(artifact, ctx.log)
         return artifact
 
 

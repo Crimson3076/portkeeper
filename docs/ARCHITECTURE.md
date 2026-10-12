@@ -94,6 +94,6 @@ Toolchains can be saved from a locally installed digest-pinned Docker image or r
 
 ## Optional recipe assistant
 
-Ollama endpoints are restricted to loopback addresses. The assistant receives a bounded, redacted recipe/log context and returns validated JSON proposals. The base runner mode, base payload kind, and verified private inputs cannot be changed by a proposal. Private input guards and path redaction include per-target overrides. No tools or commands execute during drafting; the user reviews and explicitly applies a proposal. Applying checks that the base recipe has not changed and saves the recipe for future normal jobs.
+Packaging definitions can also be drafted by a model; see [packaging](PACKAGING.md#drafting-with-a-model). Ollama endpoints are restricted to loopback and private LAN addresses. The assistant receives a bounded, redacted recipe/log context and returns validated JSON proposals. The base runner mode, base payload kind, and verified private inputs cannot be changed by a proposal. Private input guards and path redaction include per-target overrides. No tools or commands execute during drafting; the user reviews and explicitly applies a proposal. Applying checks that the base recipe has not changed and saves the recipe for future normal jobs.
 
 Under Compose, loopback refers to the service container, so a host Ollama service is not reachable at the container's `127.0.0.1`. Use the host Python deployment for a host-local assistant unless you deliberately provide a loopback service in the same network namespace.

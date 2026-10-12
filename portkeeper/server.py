@@ -124,7 +124,25 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(200, self.engine.romm.inspect_rom(payload.get("rom_id"), payload.get("filename"), supported_hashes(payload.get("profile", "shipwright"))))
             elif method == "POST" and path == "/api/assistant/models":
                 payload = self.body()
-                self.json(200, self.engine.assistant.models(payload.get("endpoint")))
+                if payload.get("provider") and payload["provider"] != "ollama":
+                    self.json(200, self.engine.assistant.list_models(payload))
+                else:
+                    self.json(200, self.engine.assistant.models(payload.get("endpoint")))
+            elif method == "POST" and path == "/api/assistant/provider":
+                self.json(200, self.engine.assistant.configure_provider(self.body()))
+            elif method == "POST" and path == "/api/assistant/test":
+                self.body()
+                self.json(200, self.engine.assistant.test())
+            elif method == "GET" and path == "/api/catalog/games":
+                self.json(200, self.engine.catalog_games())
+            elif re.fullmatch(r"/api/catalog/games/[a-z0-9][a-z0-9_.-]{0,63}/files", path) and method == "POST":
+                self.body()
+                self.json(200, self.engine.find_game_files(path.split("/")[4]))
+            elif method == "POST" and path == "/api/setup":
+                self.json(202, self.engine.add_from_catalog(self.body()))
+            elif method == "GET" and path == "/api/github/lookup":
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                self.json(200, self.engine.github_lookup(query.get("repo", [""])[0]))
             elif method == "POST" and path == "/api/assistant/config":
                 payload = self.body()
                 self.json(200, self.engine.assistant.configure(payload.get("endpoint", ""), payload.get("model", "")))
@@ -167,10 +185,25 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(200, self.engine.link_metadata(path.split("/")[3], self.body()))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/check", path) and method == "POST":
                 payload = self.body()
-                self.json(202, self.engine.check(path.split("/")[3], release_version=payload.get("version")))
+                self.json(202, self.engine.check(path.split("/")[3], release_version=payload.get("version"), draft_after=payload.get("draft") is True))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/build", path) and method == "POST":
                 payload = self.body()
-                self.json(202, self.engine.build(path.split("/")[3], payload.get("targets"), capture_id=payload.get("capture_id")))
+                self.json(202, self.engine.build(path.split("/")[3], payload.get("targets"), capture_id=payload.get("capture_id"),
+                                                 publish=bool(payload.get("publish"))))
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/setup", path) and method == "POST":
+                payload = self.body()
+                self.json(202, self.engine.setup(path.split("/")[3], publish=payload.get("publish", True) is True))
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/draft", path) and method == "POST":
+                self.json(202, self.engine.queue_draft(path.split("/")[3], self.body().get("instruction", "")))
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/draft-prompt", path) and method == "POST":
+                result = self.engine.draft_prompt(path.split("/")[3], self.body().get("instruction", ""))
+                self.json(200, {"prompt": result["prompt"]})
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/draft-workspace", path) and method == "GET":
+                data = self.engine.draft_workspace(path.split("/")[3])
+                self.respond_headers(200, "application/zip", len(data), 'attachment; filename="portkeeper-draft-workspace.zip"')
+                self.wfile.write(data)
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/draft-import", path) and method == "POST":
+                self.json(201, self.engine.import_draft(path.split("/")[3], self.body().get("text", "")))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/test-build", path) and method == "POST":
                 self.body()
                 self.json(202, self.engine.test_build(path.split("/")[3]))
@@ -218,6 +251,9 @@ class Handler(BaseHTTPRequestHandler):
             elif re.fullmatch(r"/api/proposals/[a-f0-9]{32}/apply", path) and method == "POST":
                 self.body()
                 self.json(200, self.engine.apply_proposal(path.split("/")[3]))
+            elif re.fullmatch(r"/api/proposals/[a-f0-9]{32}/discard", path) and method == "POST":
+                self.body()
+                self.json(200, self.engine.discard_proposal(path.split("/")[3]))
             elif re.fullmatch(r"/api/notifications/[a-f0-9]{64}/read", path) and method == "POST":
                 self.body()
                 self.json(200, self.engine.lifecycle.mark_read(path.split("/")[3]))

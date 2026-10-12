@@ -6,6 +6,10 @@
   "game": "Bloodborne",
   "package_prefix": "Bloodborne-bbport",
   "summary": "Supermedo's Windows bbport build with your extracted CUSA00900 game and 1.09 update in a portable folder.",
+  "first_run": {
+    "mode": "configured",
+    "summary": "Your PKGs are extracted during the build and the launcher settings point the runtime at that game folder, so nothing needs to be chosen on first launch."
+  },
   "runner": "operations",
   "runner_version": 1,
   "upstream": {

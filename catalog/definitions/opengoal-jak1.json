@@ -6,6 +6,10 @@
   "game": "Jak and Daxter: The Precursor Legacy",
   "package_prefix": "Jak-and-Daxter-OpenGOAL",
   "summary": "Official OpenGOAL runtimes with Jak 1 game data extracted, validated, decompiled and compiled from your PS2 ISO by the release's own extractor.",
+  "first_run": {
+    "mode": "generated",
+    "summary": "Jak 1 game data is extracted and compiled from your ISO during the build, and the launcher boots it directly."
+  },
   "runner": "operations",
   "runner_version": 1,
   "upstream": {

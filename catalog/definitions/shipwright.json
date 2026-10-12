@@ -6,6 +6,10 @@
   "game": "The Legend of Zelda: Ocarina of Time",
   "package_prefix": "Ship-of-Harkinian",
   "summary": "Extract your verified Ocarina of Time ROM and package matching official runtimes.",
+  "first_run": {
+    "mode": "generated",
+    "summary": "oot.o2r is generated from your Ocarina of Time ROM during the build, so the game starts without asking for the ROM."
+  },
   "runner": "profile",
   "runner_version": 1,
   "profile": "shipwright",

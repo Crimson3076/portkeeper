@@ -25,6 +25,12 @@ OPERATIONS = ("unpack_download", "stage_input", "tool", "copy", "include_tree", 
 TOOLS = ("ship_o2r_headless", "opengoal_extract", "ps4_pkg_extract")
 HELPERS = ("bbport_portable_paths", "bbport_nvidia_libraries")
 NORMALIZERS = ("n64_big_endian",)
+# How a package handles what the game would otherwise ask for on its first launch.
+FIRST_RUN = {"ready": "Nothing to set up on first launch.",
+             "preloaded": "Your game file is placed where the game looks for it, so it doesn't ask on first launch.",
+             "generated": "Files the game needs are generated from your game file during the build.",
+             "configured": "The package's settings already point the game at its data.",
+             "asks_user": "The game asks for something on first launch; Portkeeper can't do it in advance."}
 GIB = 1024 ** 3
 MAX_INPUT_BYTES = 64 * GIB
 MAX_PACKAGE_BYTES = 96 * GIB
@@ -230,7 +236,8 @@ def validate_definition(definition):
     d = copy.deepcopy(definition)
     fields = {"schema", "id", "revision", "name", "game", "summary", "runner", "runner_version", "upstream", "targets",
               "downloads", "inputs", "source_checks", "operations", "outputs", "launch", "saves", "dependencies",
-              "limitations", "verified_releases", "profile", "recipe", "notes", "history", "package_prefix", "legacy_recipe"}
+              "limitations", "verified_releases", "profile", "recipe", "notes", "history", "package_prefix", "legacy_recipe",
+              "first_run"}
     unknown = set(d) - fields
     if unknown:
         raise Invalid("Packaging definition has unsupported fields: " + ", ".join(sorted(unknown)))
@@ -244,6 +251,11 @@ def validate_definition(definition):
         _text(d.get(key), key.capitalize(), 4000)
     if d.get("package_prefix") is not None and (not isinstance(d["package_prefix"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", d["package_prefix"])):
         raise Invalid("package_prefix must be a filename prefix such as 2-Ship-2-Harkinian")
+    first_run = d.get("first_run")
+    if first_run is not None:
+        if not isinstance(first_run, dict) or set(first_run) - {"mode", "summary"} or first_run.get("mode") not in FIRST_RUN:
+            raise Invalid("first_run needs a mode (" + ", ".join(FIRST_RUN) + ") and an optional summary")
+        _text(first_run.get("summary"), "first_run.summary", 1000)
     if d.get("runner") not in RUNNERS:
         raise Invalid("Definition runner must be operations, profile, recipe or capture")
     version = d.get("runner_version", RUNNER_VERSION)
@@ -603,6 +615,11 @@ def _where(value):
     return ("the package" if root == "package" else "the shared work area") + (f" at {rest}" if rest else "")
 
 
+def _named(value):
+    root, rest = split_root(value, "path")
+    return f"{rest} in " + ("the package" if root == "package" else "the shared work area")
+
+
 def describe_operation(op, definition):
     """One readable sentence per operation. Kept server-side so it is tested with the schema."""
     targets = f" ({', '.join(op['targets'])})" if op.get("targets") else ""
@@ -632,9 +649,9 @@ def describe_operation(op, definition):
     if kind == "helper":
         return lead + f"Add the reviewed {op['name']} helper as {_where(op['to'])}{targets}."
     if kind == "write_text":
-        return lead + f"Write {_where(op['path'])}{targets}."
+        return lead + f"Write {_named(op['path'])}{targets}."
     if kind == "touch":
-        return lead + f"Create the empty marker file {_where(op['path'])}{targets}."
+        return lead + f"Create the empty marker file {_named(op['path'])}{targets}."
     tool = op["tool"]
     if tool == "ship_o2r_headless":
         return lead + f"Run the official {op['appimage']} once under a virtual display with your ROM to generate {op['output']}; stop it after the archive is complete and contains at least {op.get('min_entries', 1)} entries."
@@ -653,4 +670,7 @@ def view(definition):
     elif definition["runner"] == "recipe":
         recipe = definition["recipe"]
         steps = [{"text": f"Run the saved {recipe['mode']} recipe from an earlier Portkeeper version. Expected files: {', '.join(recipe.get('expected_files', [])) or 'not recorded'}.", "op": "recipe"}]
-    return {"runner": definition["runner"], "builds": builds(definition), "steps": steps, "requirements": requirements(definition)}
+    first_run = definition.get("first_run")
+    first = {"mode": first_run["mode"], "text": first_run.get("summary") or FIRST_RUN[first_run["mode"]]} if first_run else None
+    return {"runner": definition["runner"], "builds": builds(definition), "steps": steps, "requirements": requirements(definition),
+            "first_run": first}

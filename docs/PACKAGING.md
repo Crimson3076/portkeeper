@@ -37,6 +37,7 @@ recipe is kept in `legacy_recipe` and earlier notes move to `history`.
 | `source_checks` | Text that must still appear in a new release's source, or `contains_input_hash` to require that upstream still lists your input's hash. |
 | `operations` | Ordered build steps (below). |
 | `outputs` | Per platform: `expected_files`, `compression` (`deflate` or `stored`) and `max_bytes`. |
+| `first_run` | What the package does about the game's first-launch setup: `mode` is `ready`, `preloaded` (your file is placed where the game looks for it), `generated` (files are generated during the build), `configured` (settings or launcher arguments point the game at its data) or `asks_user` (the game still asks for something), plus a `summary`. Shown when adding the game and on its page. |
 | `launch`, `saves`, `dependencies`, `limitations` | Launch command and instructions, where saves/settings live, host requirements and known limitations. They are shown in the UI and copied into each package manifest. |
 | `verified_releases` | Reviewed releases with the SHA-256 of each upstream file and the evidence. |
 | `history` | Provenance notes, such as how a package was assembled before automation. |
@@ -89,8 +90,53 @@ leaves earlier packages untouched. Nothing marks a new release verified.
 Each release in **Releases & packaging status** shows whether it is only **Preserved**,
 **Needs review**, **Packaged** (with platforms), or also **In RomM**.
 
+## Package names and rebuilding the same version
+
+Package files are named `<prefix>-<version>-<platform>-<YYYY-MM-DD>.zip`, the date being the build date.
+
+A build is identified by the definition, the release (commit and file checksums), the selected game files
+(path, size and modification time) and the platform. Building the same release again with nothing
+changed does nothing and says so. When something changed, the new package replaces the earlier package
+of the same version and platform, unless that one is pinned, known-good, has a recorded test result,
+was copied to the library or is in RomM; those are kept and the log says why.
+
+Every launcher's program must exist in the package, so a definition cannot produce a download whose
+launcher points at nothing.
+
+## Adding a game
+
+**＋ Add a game** lists the catalog's games with what each needs. Choosing one searches the RomM library
+folder (`/inputs`) for each needed file, verifies it, and explains a wrong version or a missing file in plain
+words. **Set up and send to RomM** creates the game, preserves the latest release, builds the chosen
+platforms and uploads them to RomM in one step. **Keep up to date** turns on automatic builds and, when
+RomM is connected, automatic publication.
+
+**Custom game** looks up any GitHub repository, saves its latest release, and then either drafts packaging
+steps with a model, prepares a prompt for your own chat or agent, opens the definition editor, or only keeps
+releases.
+
+## Drafting with a model
+
+Settings → **Drafting assistant** chooses how drafts are made. All of it is optional; catalog games never need it.
+
+- **My own chat or agent** (default): no connection. A game's **Draft packaging steps** card copies a prompt,
+  or downloads a folder (`INSTRUCTIONS.md`, `PROMPT.md`, `FORMAT.md`, examples and the project material) for an
+  agent such as Claude Code. Paste the JSON answer back. This works with a chat subscription and no API key.
+- **Local model with Ollama**: an address on loopback or the private LAN, a model and a context size. The
+  context size is sent as `num_ctx`; use 32768 or more. A 30B-class coding model fits a 32 GB GPU.
+- **Claude API**: an API key; defaults to `claude-opus-5-5` with structured output and server-side fallback.
+- **Another API (OpenAI-compatible)**: a base URL (https, or http on the private LAN), model and optional key.
+
+The model receives the release's file names and the member lists of its platform archives, the README and
+documentation, the file tree and short source excerpts that mention ROMs, extraction or portable mode.
+Never game files, local paths or tokens. The material is marked as untrusted data. Replies are validated
+as definitions; a rejected draft is sent back with the reason, up to three attempts. Accepted hashes must
+appear in the material. Drafts are proposals: nothing runs until a person approves one, and the approved
+definition then needs a successful build like any other.
+
 ## Manual actions
 
+- **Set up** (on a game's page) checks upstream, builds and sends to RomM in one step.
 - **Check upstream** preserves the latest stable release and applies the rules above.
 - **Build now…** chooses a preserved release and platforms.
 - **Build diagnostics** shows each job's stages, logs and errors.

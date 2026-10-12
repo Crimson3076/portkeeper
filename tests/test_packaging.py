@@ -14,6 +14,7 @@ from portkeeper import packaging
 from portkeeper.engine import Engine
 from portkeeper.runner import normalize_n64, overlay, read_sfo
 from portkeeper.safety import Invalid
+from portkeeper.storage import now
 
 
 ROM = b"\x80\x37\x12\x40" + bytes(range(256)) * 16
@@ -230,7 +231,7 @@ class PackagingEngineTests(unittest.TestCase):
         self.assertEqual(project["input_bindings"]["rom"]["path"], "n64/roms/Example (USA).v64")
         self.assertEqual(project["input_bindings"]["rom"]["accepted"], "USA")
         artifacts = {a["target"]: a for a in self.engine.store.all("artifacts")}
-        self.assertEqual(artifacts["linux"]["filename"], "Example-Port-v1-linux.zip")
+        self.assertEqual(artifacts["linux"]["filename"], f"Example-Port-v1-linux-{now()[:10]}.zip")
         with zipfile.ZipFile(artifacts["linux"]["file"]) as bundle:
             self.assertEqual(bundle.read("game.z64"), ROM)
             launcher = bundle.read("Launch.sh").decode()
@@ -329,14 +330,14 @@ class PackagingEngineTests(unittest.TestCase):
 
         def upload(path, platform, name, progress, stop=None):
             uploaded.append(name)
-            if name == "Example-Port-v1-linux.zip":
+            if name == artifact["filename"]:
                 raise FileExistsError(name)
             progress(1, 1)
         romm.find_file.side_effect = find
         romm.upload.side_effect = upload
         self.engine.romm = romm
         state = self.engine.publisher.publish(artifact["id"], lambda m: None)
-        self.assertEqual(uploaded, ["Example-Port-v1-linux.zip", "Example-Port-v1-linux-r2.zip"])
+        self.assertEqual(uploaded, [artifact["filename"], artifact["filename"][:-4] + "-r2.zip"])
         self.assertEqual(state["status"], "in_romm")
         self.assertEqual(state["rom_id"], 99)
         romm.find_file.side_effect = lambda platform, name: None
@@ -355,6 +356,59 @@ class PackagingEngineTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertFalse(list(self.engine.library_root.glob("*.zip")))
 
+
+    def test_unchanged_rebuild_does_nothing_and_changed_rebuild_replaces_unprotected_package(self):
+        project = self.check(self.project())
+        self.engine.build(project["id"])
+        self.wait(project["id"])
+        first = {a["target"]: a for a in self.engine.store.all("artifacts")}
+        again = self.engine.build(project["id"])
+        self.assertEqual(again["jobs"], [])
+        self.assertEqual(sorted(item["target"] for item in again["skipped"]), ["linux", "windows"])
+        self.assertIn("Nothing changed", again["message"])
+        self.engine.lifecycle.pin(first["windows"]["id"])
+        changed = copy.deepcopy(project["packaging"])
+        changed["limitations"] = ["Edited"]
+        self.engine.update_project(project["id"], {"packaging": changed})
+        result = self.engine.build(project["id"])
+        self.wait(project["id"])
+        self.assertEqual(len(result["jobs"]), 2)
+        artifacts = self.engine.store.all("artifacts")
+        self.assertNotIn(first["linux"]["id"], [a["id"] for a in artifacts])
+        self.assertFalse(Path(first["linux"]["file"]).exists())
+        self.assertIn(first["windows"]["id"], [a["id"] for a in artifacts])
+        linux = [a for a in artifacts if a["target"] == "linux"]
+        self.assertEqual([a["package_revision"] for a in linux], [2])
+        logs = self.engine.store.get("jobs", result["jobs"][1]["id"])["logs"]
+        self.assertTrue(any("because it is pinned" in line for line in logs), logs)
+
+    def test_find_files_reports_accepted_files_and_wrong_versions(self):
+        found = self.engine.packager.find_files(definition())
+        self.assertEqual([f["path"] for f in found[0]["found"]], ["n64/roms/Example (USA).v64"])
+        self.assertEqual(found[0]["found"][0]["accepted"], "USA")
+        self.assertEqual([(r["path"], r["reason"]) for r in found[0]["rejected"]], [("n64/roms/Other.z64", "not an accepted version")])
+
+    def test_add_from_catalog_binds_files_and_sets_up_in_one_step(self):
+        self.engine.catalog.definitions = lambda: {"example-port": definition(first_run={"mode": "preloaded"})}
+        games = self.engine.catalog_games()["games"]
+        self.assertEqual(games[0]["needs"][0]["label"], "Example ROM")
+        self.assertIsNone(games[0]["in_library"])
+        result = self.engine.add_from_catalog({"definition_id": "example-port", "targets": ["linux"],
+                                               "files": {"rom": "n64/roms/Example (USA).v64"}, "keep_updated": True})
+        project = self.wait(result["project"]["id"])
+        self.assertTrue(project["auto_build"])
+        self.assertFalse(project["auto_publish"])  # RomM is not connected in this test
+        self.assertEqual(project["input_bindings"]["rom"]["accepted"], "USA")
+        self.assertEqual([a["target"] for a in self.engine.store.all("artifacts")], ["linux"])
+        self.assertEqual(self.engine.state()["projects"][0]["packaging_view"]["first_run"]["mode"], "preloaded")
+        with self.assertRaisesRegex(Invalid, "already in your library"):
+            self.engine.add_from_catalog({"definition_id": "example-port"})
+
+    def test_first_run_is_validated(self):
+        with self.assertRaisesRegex(Invalid, "first_run"):
+            packaging.validate_definition(definition(first_run={"mode": "magic"}))
+        view = packaging.view(packaging.validate_definition(definition(first_run={"mode": "generated", "summary": "Made at build time."})))
+        self.assertEqual(view["first_run"], {"mode": "generated", "text": "Made at build time."})
 
 class CatalogTests(unittest.TestCase):
     def setUp(self):

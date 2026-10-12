@@ -201,10 +201,14 @@ class Engine:
         from . import packaging
         captures = self.store.all("captures")
         all_artifacts = self.store.all("artifacts")
+        catalog_definitions = self.catalog.definitions()
         for project in projects:
             definition = project.get("packaging")
             if definition:
                 project["packaging_view"] = packaging.view(definition)
+                known = catalog_definitions.get(definition["id"])
+                if not project["packaging_view"]["first_run"] and known and known.get("first_run"):
+                    project["packaging_view"]["first_run"] = packaging.view(known)["first_run"]
                 project["releases"] = self.releases(project, captures, all_artifacts)
                 project["catalog_update"] = self.catalog.update_for(project)
         all_jobs = self.store.all("jobs")
@@ -227,7 +231,8 @@ class Engine:
         public_romm["last_test"] = health if health.get("url") == public_romm.get("url") else None
         public_romm["connected"] = bool(public_romm.get("last_test", {}).get("connected")) if public_romm["last_test"] else False
         assistant = self.assistant.public_config()
-        return {"projects": projects, "jobs": jobs, "artifacts": artifacts, "activity": self.reviews.activity(), "playtests": self.store.all("playtests")[:1000],
+        proposals = [p for p in self.store.all("proposals") if p.get("kind") == "definition" and p.get("status") == "pending_review"]
+        return {"projects": projects, "jobs": jobs, "artifacts": artifacts, "proposals": proposals, "activity": self.reviews.activity(), "playtests": self.store.all("playtests")[:1000],
                 "settings": {"input_root": str(self.input_root), "library_root": str(self.library_root),
                              "archive_root": str(self.archive_root), "docker_enabled": self.enable_docker,
                              "toolchain": self.get_setting("toolchain", {})},
@@ -320,6 +325,8 @@ class Engine:
             raise Invalid("Only failed jobs can be retried")
         if job.get("kind") == "publish":
             return self.publisher.queue(job["artifact_id"])
+        if job.get("kind") == "draft":
+            return self.queue_draft(job["project_id"])
         project = self.store.get("projects", job["project_id"])
         if job["target"] == "capture":
             return self.check(project["id"], build_after=job.get("build_after", False), release_version=job.get("release_version"))
@@ -605,7 +612,7 @@ class Engine:
                   "finished_at": None, "error": None, "logs": [], "artifact_id": None, "stage": "queued", "checkpoints": []}
         return self.store.put("jobs", record)
 
-    def check(self, project_id, build_after=False, release_version=None):
+    def check(self, project_id, build_after=False, release_version=None, publish_after=False, draft_after=False):
         project = self.store.get("projects", project_id)
         if project.get("demo"):
             raise Invalid("The synthetic demo is local and has no upstream updates")
@@ -616,9 +623,22 @@ class Engine:
             ensure_release(project["profile"], release_version)
         self.claim(project_id)
         job = self.job(project, "capture")
-        job = self.store.update("jobs", job["id"], build_after=build_after, release_version=release_version)
+        job = self.store.update("jobs", job["id"], build_after=build_after, release_version=release_version,
+                                publish_after=publish_after, draft_after=draft_after)
         self.executor.submit(self._check, project, job, build_after, release_version)
         return {"job": job}
+
+    def setup(self, project_id, publish=True):
+        """Set up a game in one step: preserve the latest release, build it and send it to RomM."""
+        project = self.store.get("projects", project_id)
+        runner = (project.get("packaging") or {}).get("runner")
+        if runner == "capture" or (runner is None and (project.get("recipe") or {}).get("mode") == "capture"):
+            raise Invalid("This game has no packaging steps yet. Draft or write them first.")
+        if publish and not self.romm.public_config().get("configured"):
+            publish = False
+        if project.get("profile"):
+            return self.test_build(project_id)
+        return self.check(project_id, build_after=True, publish_after=publish)
 
     def test_build(self, project_id):
         project = self.store.get("projects", project_id)
@@ -717,9 +737,18 @@ class Engine:
                 if build_after or project["auto_build"]:
                     log("Not packaged: this release needs review first")
                 return
+            if job.get("draft_after") and not definition and self.assistant.connected():
+                self.queue_draft(project["id"])
             if build_after or (changed and project["auto_build"]):
-                jobs = [self.store.update("jobs", self.job(project, target, capture["version"])["id"], capture_id=capture["id"]) for target in project["targets"]]
-                self._build_group(project, capture, jobs)
+                planned, skipped = self.plan_targets(self.store.get("projects", project["id"]), capture, project["targets"])
+                message = self.skipped_message(capture, skipped)
+                if message:
+                    log(message)
+                if job.get("publish_after"):
+                    self.publish_existing(skipped, log)
+                if planned:
+                    jobs = self.queue_jobs(project, capture, planned, bool(job.get("publish_after")))
+                    self._build_group(project, capture, jobs)
         except Exception as error:
             log(str(error))
             self.store.update("jobs", jid, status="failed", error=str(error), finished_at=now())
@@ -771,7 +800,48 @@ class Engine:
             return capture
         return None
 
-    def build(self, project_id, targets=None, capture_id=None):
+    def plan_targets(self, project, capture, targets):
+        """Split targets into those to build and those whose identical package already exists."""
+        definition = project.get("packaging") or {}
+        if definition.get("runner") != "operations":
+            return [(target, None) for target in targets], []
+        project = self.packager.bind_inputs(project, definition)
+        build, skipped = [], []
+        for target in targets:
+            key = self.packager.build_key(project, definition, capture, target)
+            existing = self.packager.same_package(project, capture["version"], target, key)
+            if existing:
+                skipped.append({"target": target, "artifact_id": existing["id"], "filename": existing.get("filename"),
+                                "built_at": existing.get("created_at"), "in_romm": (existing.get("romm") or {}).get("status") == "in_romm"})
+            else:
+                build.append((target, key))
+        return build, skipped
+
+    def queue_jobs(self, project, capture, planned, publish=False):
+        return [self.store.update("jobs", self.job(project, target, capture["version"])["id"], capture_id=capture["id"],
+                                  build_key=key, publish_after=publish) for target, key in planned]
+
+    @staticmethod
+    def skipped_message(capture, skipped):
+        if not skipped:
+            return None
+        dates = sorted({(item.get("built_at") or "")[:10] for item in skipped})
+        return (f"Nothing changed since the {', '.join(d for d in dates if d) or 'earlier'} build of {capture['version']} for "
+                + ", ".join(item["target"] for item in skipped) + ", so it wasn't built again.")
+
+    def publish_existing(self, skipped, log=None):
+        for item in skipped:
+            if item.get("in_romm"):
+                continue
+            try:
+                self.publisher.queue(item["artifact_id"])
+                if log:
+                    log(f"Sending the existing {item['filename']} to RomM")
+            except Invalid as error:
+                if log:
+                    log(f"Could not send {item['filename']} to RomM: {error}")
+
+    def build(self, project_id, targets=None, capture_id=None, publish=False):
         project = self.store.get("projects", project_id)
         if project["recipe"]["mode"] == "capture":
             raise Invalid("This recipe preserves source only. Configure an assembly or Docker recipe first.")
@@ -803,10 +873,16 @@ class Engine:
             self.store.update("captures", capture["id"], review={**review, "checked_at": now()})
             if review["status"] == "needs_review":
                 raise Invalid(f"{capture['version']} needs review before it can be packaged: " + "; ".join(review["problems"]))
+        planned, skipped = self.plan_targets(project, capture, chosen)
+        message = self.skipped_message(capture, skipped)
+        if publish:
+            self.publish_existing(skipped)
+        if not planned:
+            return {"jobs": [], "skipped": skipped, "message": message}
         self.claim(project_id)
-        jobs = [self.store.update("jobs", self.job(project, target, capture["version"])["id"], capture_id=capture["id"]) for target in chosen]
+        jobs = self.queue_jobs(project, capture, planned, publish)
         self.executor.submit(self._run_group, project, capture, jobs)
-        return {"jobs": jobs}
+        return {"jobs": jobs, "skipped": skipped, "message": message}
 
     def _run_group(self, project, capture, jobs):
         try:
@@ -824,7 +900,9 @@ class Engine:
                     self.store.update("jobs", job["id"], status="ready", artifact_id=artifact["id"], finished_at=now())
                     self.stage(job["id"], "complete", "Package ready; launch has not been tested")
                 self.notify(project["id"], "ready", f"{project['name']} {capture['version']} is packaged for {job['target']}", artifactid=artifact["id"])
-                if project.get("auto_publish"):
+                if job.get("publish_after") and not project.get("auto_publish"):
+                    self.auto_publish({**project, "auto_publish_destination": "romm"}, artifact, job)
+                elif project.get("auto_publish") or job.get("publish_after"):
                     self.auto_publish(project, artifact, job)
                 return
             self.store.append_log(job["id"], str(error))
@@ -1117,6 +1195,191 @@ class Engine:
                                         toolchain=toolchain, dependency_scope=scope,
                                         capture_id=compatible["id"] if compatible else None)
 
+    # Guided setup -------------------------------------------------------------
+    def catalog_games(self):
+        """Supported games for Add a game, with what each needs and whether it is already set up."""
+        projects = self.store.all("projects")
+        games = []
+        for definition in self.catalog.definitions().values():
+            if definition["runner"] not in ("operations", "profile"):
+                continue
+            existing = next((p for p in projects if (p.get("packaging") or {}).get("id") == definition["id"]), None)
+            first_run = definition.get("first_run")
+            games.append({"id": definition["id"], "name": definition["name"], "game": definition.get("game"),
+                          "summary": definition.get("summary"), "repository": definition["upstream"]["repository"],
+                          "targets": definition["targets"], "runner": definition["runner"], "profile": definition.get("profile"),
+                          "needs": [{"label": i["label"], "required": i.get("required", True), "platform": i.get("platform_hint")}
+                                    for i in definition.get("inputs", []) if i.get("required", True)],
+                          "first_run": {"mode": first_run["mode"], "text": first_run.get("summary")} if first_run else None,
+                          "limitations": definition.get("limitations", []),
+                          "in_library": existing["id"] if existing else None})
+        return {"games": sorted(games, key=lambda g: g["name"].casefold()), "romm_connected": self.romm.public_config().get("configured", False)}
+
+    def catalog_definition(self, definition_id):
+        definition = self.catalog.definitions().get(definition_id)
+        if not definition:
+            raise Invalid("That game is not in the catalog")
+        return definition
+
+    def find_game_files(self, definition_id):
+        definition = self.catalog_definition(definition_id)
+        if definition["runner"] != "operations":
+            raise Invalid("This game is set up with its own guided steps")
+        return {"inputs": self.packager.find_files(definition), "platform_root": str(self.input_root)}
+
+    def add_from_catalog(self, payload):
+        """Create a game from a catalog definition with the chosen files, then set it up."""
+        if not isinstance(payload, dict):
+            raise Invalid("Choose a game to add")
+        definition = self.catalog_definition(payload.get("definition_id"))
+        if definition["runner"] != "operations":
+            raise Invalid("This game is set up with its own guided steps")
+        if any((p.get("packaging") or {}).get("id") == definition["id"] for p in self.store.all("projects")):
+            raise Invalid(f"{definition['name']} is already in your library")
+        targets = payload.get("targets") or definition["targets"]
+        keep = bool(payload.get("keep_updated", True))
+        romm = bool(self.romm.public_config().get("configured"))
+        project = self.create_project({"name": (payload.get("name") or definition["name"]).strip(), "repo": definition["upstream"]["repository"],
+                                       "targets": targets, "poll_minutes": 60, "auto_build": keep, "auto_publish": keep and romm,
+                                       "auto_publish_destination": "romm", "packaging": json.loads(json.dumps(definition))})
+        files = payload.get("files") or {}
+        if not isinstance(files, dict):
+            raise Invalid("Game files must map each needed file to a path")
+        for input_id, path in files.items():
+            if path:
+                self.bind_input(project["id"], {"input": input_id, "path": path, "source": "inputs"})
+        self.store.update("projects", project["id"], definition_source={"kind": "catalog", "id": definition["id"], "revision": definition["revision"], "added_at": now()})
+        result = self.setup(project["id"], publish=bool(payload.get("publish", True)) and romm)
+        return {"project": self.store.get("projects", project["id"]), **result}
+
+    def github_lookup(self, repo):
+        if not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo.strip()):
+            raise Invalid("Use owner/repository, for example Zelda64Recomp/Zelda64Recomp")
+        repo = repo.strip()
+        release = self.github.release(repo)
+        names = [a.get("name") for a in release.get("assets", []) if isinstance(a.get("name"), str)][:60]
+        platforms = sorted({t for t, pattern in (("linux", r"(?i)linux|appimage"), ("windows", r"(?i)win|\.exe$"), ("handheld", r"(?i)arm64|aarch64"))
+                            if any(re.search(pattern, n) for n in names)})
+        known = next((d for d in self.catalog.definitions().values() if d["upstream"]["repository"].lower() == repo.lower()), None)
+        return {"repository": repo, "version": release["version"], "assets": names, "platforms": platforms or ["linux", "windows"],
+                "release_url": release["url"], "catalog_id": known["id"] if known else None}
+
+    # Drafting packaging with a model -------------------------------------------
+    def _draft_material(self, project, budget):
+        from . import drafting
+        if not project.get("capture_id"):
+            raise Invalid("Check upstream first, so Portkeeper has a release to read")
+        capture = self.store.get("captures", project["capture_id"])
+        release = self.github.release_tag(project["repo"], capture["version"])
+        assets = [a for a in release.get("assets", []) if isinstance(a.get("name"), str)]
+        listings = {}
+        work = self.work_root / ("draft-" + identifier())
+        work.mkdir(parents=True)
+        try:
+            for asset in drafting.platform_assets(assets):
+                if (asset.get("size") or 0) > 400 * 1024 * 1024:
+                    listings[asset["name"]] = ["(too large to list)"]
+                    continue
+                target = work / "asset"
+                try:
+                    self.github.download(asset["browser_download_url"], target)
+                    listings[asset["name"]] = drafting.archive_listing(target)
+                except Invalid as error:
+                    listings[asset["name"]] = [f"(could not list: {error})"]
+                finally:
+                    target.unlink(missing_ok=True)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        return capture, drafting.build_context(project, capture, assets, listings, self.catalog.definitions(), budget)
+
+    def draft_prompt(self, project_id, instruction=""):
+        """The prompt for the person's own chat, and a workspace folder for their own agent."""
+        from . import drafting
+        project = self.store.get("projects", project_id)
+        _, context = self._draft_material(project, 150_000)
+        return {"prompt": drafting.prompt_text(context, self.catalog.definitions(), instruction),
+                "context": context}
+
+    def draft_workspace(self, project_id, instruction=""):
+        from . import drafting
+        result = self.draft_prompt(project_id, instruction)
+        return drafting.workspace_zip(result["prompt"], result["context"], self.catalog.definitions())
+
+    def queue_draft(self, project_id, instruction=""):
+        project = self.store.get("projects", project_id)
+        if not self.assistant.connected():
+            raise Invalid("No model is connected. Use the prepared prompt with your own chat, or connect a model in Settings.")
+        if not isinstance(instruction, str) or len(instruction) > 4000:
+            raise Invalid("Keep the extra instructions under 4000 characters")
+        job = self.job(project, "capture", project.get("latest_version"))
+        job = self.store.update("jobs", job["id"], kind="draft", stage="drafting", status="running")
+        self.executor.submit(self._draft, project_id, job["id"], instruction)
+        return {"job": job}
+
+    def _draft(self, project_id, job_id, instruction):
+        from . import drafting
+        log = lambda message: self.store.append_log(job_id, message)
+        try:
+            project = self.store.get("projects", project_id)
+            config = self.assistant.public_config()
+            budget = max(20_000, (config["context_tokens"] - 8000) * 3) if config["provider"] == "ollama" else 300_000
+            self.stage(job_id, "drafting", "Reading the release, README and source")
+            capture, context = self._draft_material(project, budget)
+            system, user = drafting.prompt_parts(context, self.catalog.definitions(), instruction)
+            log(f"Prepared {len(user) // 1000} KB of project material for {config['drafting_model']}")
+            self.stage(job_id, "drafting", "Waiting for the model's draft")
+            def read(text):
+                checked = drafting.read_reply(text, project)
+                invented = drafting.unsupported_hashes(checked[0], user)
+                if invented:
+                    raise Invalid("These accepted hashes do not appear in the project material: " + ", ".join(invented)
+                                  + ". Use only hashes quoted in the material, or verify \"downstream\".")
+                return checked
+            definition, explanation = self.assistant.draft_definition(system, user, read, log)
+            proposal = self.save_definition_proposal(project, definition, explanation, f"{config['provider_label']} · {config['drafting_model']}", capture)
+            self.store.update("jobs", job_id, status="ready", finished_at=now(), proposal_id=proposal["id"])
+            self.stage(job_id, "complete", "Draft ready for your review")
+            self.notify(project_id, "ready", f"A packaging draft for {project['name']} is ready for your review", event_key="draft:" + proposal["id"])
+        except Exception as error:
+            log(str(error))
+            self.store.update("jobs", job_id, status="failed", error=str(error), finished_at=now())
+
+    def import_draft(self, project_id, text):
+        from . import drafting
+        project = self.store.get("projects", project_id)
+        definition, explanation = drafting.read_reply(text, project)
+        capture = self.store.get("captures", project["capture_id"]) if project.get("capture_id") else None
+        return self.save_definition_proposal(project, definition, explanation, "Your own chat or agent", capture)
+
+    def save_definition_proposal(self, project, definition, explanation, source, capture=None):
+        from . import drafting, packaging
+        definition["history"] = list(definition.get("history", [])) + [f"Drafted by {source} on {now()[:10]} for release {capture['version'] if capture else 'unknown'}; reviewed before use."]
+        definition = packaging.validate_definition(definition)
+        for older in self.store.all("proposals"):
+            if older.get("project_id") == project["id"] and older.get("kind") == "definition" and older.get("status") == "pending_review":
+                self.store.update("proposals", older["id"], status="superseded")
+        proposal = {"id": identifier(), "project_id": project["id"], "kind": "definition", "created_at": now(), "status": "pending_review",
+                    "definition": definition, "explanation": explanation, "source": source, "view": packaging.view(definition),
+                    "warnings": drafting.warnings(definition), "requires_review": True, "executed": False,
+                    "base_definition_sha256": hashlib.sha256(json.dumps(project.get("packaging"), sort_keys=True).encode()).hexdigest()}
+        return self.store.put("proposals", proposal)
+
+    def apply_definition_proposal(self, proposal):
+        project = self.store.get("projects", proposal["project_id"])
+        if hashlib.sha256(json.dumps(project.get("packaging"), sort_keys=True).encode()).hexdigest() != proposal["base_definition_sha256"]:
+            raise Invalid("The packaging changed after this draft; draft again before approving")
+        targets = [t for t in project["targets"] if t in proposal["definition"]["targets"]] or proposal["definition"]["targets"]
+        updated = self.update_project(project["id"], {"packaging": proposal["definition"], "targets": targets})
+        self.store.update("projects", project["id"], definition_source={"kind": "draft", "source": proposal["source"], "approved_at": now()})
+        self.store.update("proposals", proposal["id"], status="applied", reviewed_at=now())
+        return updated
+
+    def discard_proposal(self, proposal_id):
+        proposal = self.store.get("proposals", proposal_id)
+        if proposal["status"] != "pending_review":
+            raise Invalid("This draft was already reviewed")
+        return self.store.update("proposals", proposal_id, status="discarded", reviewed_at=now())
+
     def recipe_proposal(self, project_id, instruction=""):
         project = self.store.get("projects", project_id)
         jobs = [j for j in self.store.all("jobs") if j["project_id"] == project_id]
@@ -1132,6 +1395,8 @@ class Engine:
             proposal = self.store.get("proposals", proposal_id)
             if proposal["status"] != "pending_review":
                 raise Invalid("Proposal was already reviewed")
+            if proposal.get("kind") == "definition":
+                return self.apply_definition_proposal(proposal)
             project = self.store.get("projects", proposal["project_id"])
             if hashlib.sha256(json.dumps(project["recipe"], sort_keys=True).encode()).hexdigest() != proposal["base_recipe_sha256"]:
                 raise Invalid("Recipe changed after this proposal; draft again before applying")

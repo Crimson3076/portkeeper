@@ -6,6 +6,10 @@
   "game": "The Legend of Zelda: Majora's Mask",
   "package_prefix": "2-Ship-2-Harkinian",
   "summary": "Official 2 Ship 2 Harkinian runtimes with mm.o2r generated from your Majora's Mask ROM, in a portable folder.",
+  "first_run": {
+    "mode": "generated",
+    "summary": "mm.o2r is generated from your Majora's Mask ROM during the build, so 2Ship starts without asking for the ROM."
+  },
   "runner": "operations",
   "runner_version": 1,
   "upstream": {

@@ -6,6 +6,10 @@
   "game": "Banjo-Kazooie",
   "package_prefix": "Banjo-Recompiled",
   "summary": "Official Banjo Recompiled runtimes in portable mode with your normalized Banjo-Kazooie (USA) 1.0 ROM preloaded.",
+  "first_run": {
+    "mode": "preloaded",
+    "summary": "Your ROM is saved as bk.n64.us.1.0.z64 beside the game with portable.txt, where Banjo looks for it, so it starts without asking for the ROM."
+  },
   "runner": "operations",
   "runner_version": 1,
   "upstream": {
