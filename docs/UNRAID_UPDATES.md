@@ -48,3 +48,13 @@ If needed, set **Repository** to a previously recorded image digest, for example
 If the older version cannot read the current app data, stop the container and
 restore the matching backup before starting it. Return to `:latest` when ready to
 resume normal updates.
+
+## Dashboard icon
+
+New installs using `unraid/portkeeper.xml` include the Portkeeper icon. For an existing container, set its Icon URL in the Unraid template to:
+
+```text
+https://raw.githubusercontent.com/Crimson3076/portkeeper/main/unraid/portkeeper.png
+```
+
+Image updates do not replace an existing container's saved icon setting.

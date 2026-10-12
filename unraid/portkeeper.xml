@@ -10,6 +10,7 @@
   <Project>https://github.com/Crimson3076/portkeeper</Project>
   <Overview>Self-hosted companion for RomM that preserves game port releases and builds versioned packages from your own game files. No authentication: keep it on your LAN.</Overview>
   <Category>Tools: GameServers:</Category>
+  <Icon>https://raw.githubusercontent.com/Crimson3076/portkeeper/main/unraid/portkeeper.png</Icon>
   <WebUI>http://[IP]:[PORT:8787]/</WebUI>
   <ExtraParams>--init --security-opt no-new-privileges:true --pids-limit 512</ExtraParams>
   <Config Name="Web UI port" Target="8787" Default="8787" Mode="tcp" Description="Portkeeper web interface" Type="Port" Display="always" Required="true" Mask="false">8787</Config>
