@@ -61,6 +61,19 @@ class DraftingTests(unittest.TestCase):
         with self.assertRaisesRegex(Invalid, 'compact prompt limit'):
             drafting.prompt_parts(context, {})
 
+    def test_compact_prompt_keeps_runtime_asset_evidence_ahead_of_incidental_mentions(self):
+        context = drafting.build_context(PROJECT, self.capture, [], {}, {}, 20_000)
+        context['material']['source_excerpts'] = [
+            {'path': f'build/{i}.cmake', 'lines': 'package config save directory'} for i in range(8)
+        ] + [{'path': 'src/runtime.cpp', 'lines': 'GetPathRelativeToAppDirectory("game.otr")'},
+             {'path': 'config.yml', 'lines': 'binary: game.otr'}]
+        _, user = drafting.prompt_parts(context, {})
+        self.assertIn('src/runtime.cpp', user)
+        self.assertIn('binary: game.otr', user)
+        self.assertIn('to is a FILE path', user)
+        self.assertIn('hexadecimal hashes in lowercase', user)
+        self.assertLessEqual(len(drafting.SYSTEM) + len(user), 24000)
+
     def test_changed_source_is_refused(self):
         self.capture["source"]["sha256"] = "0" * 64
         with self.assertRaisesRegex(Invalid, "changed"):
