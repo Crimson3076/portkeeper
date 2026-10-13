@@ -242,6 +242,80 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   assert(d.querySelector(`a[href="/api/projects/${id(2)}/draft-workspace?prepare_game_files=false"]`));
   [...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Copy prompt for my own chat').click();await tick();await tick();
   assert.equal(requests.at(-1).body.prepare_game_files,false,'Copied prompts honor the runtime-only choice');dom.window.close();
+  const checks=JSON.parse(JSON.stringify(fixture));
+  const checkJob=(n,extra={})=>({id:id(n),project_id:id(1),target:'capture',version:'v0.3.8',status:'archived',created_at:'2026-10-13T04:50:00Z',finished_at:'2026-10-13T04:51:00Z',logs:[],...extra});
+  checks.jobs=[
+    checkJob(80,{upstream_changed:false,check_outcome:'unchanged',message:'No new release or download changes; latest is v0.3.8.'}),
+    checkJob(81,{logs:['2026-10-13T04:50:01Z  This source revision and selected assets are already archived']}),
+    checkJob(82,{target:'linux',status:'ready',check_outcome:'unchanged',message:'Portable build complete'}),
+    checkJob(83,{kind:'draft',check_outcome:'unchanged',logs:['This source revision and selected assets are already archived']}),
+    checkJob(84,{kind:'publish',check_outcome:'unchanged',logs:['This source revision and selected assets are already archived']}),
+    checkJob(85,{status:'failed',check_outcome:'unchanged',error:'Release lookup failed',logs:['This source revision and selected assets are already archived']}),
+    ...['changed','needs_review','builds_queued','packages_current'].map((outcome,n)=>checkJob(86+n,{check_outcome:outcome,message:outcome}))
+  ];
+  dom=await create(null,false,checks);w=dom.window;d=w.document;w.location.hash='activity';await tick();
+  const events=[...d.querySelectorAll('#activity-content .activity-event')];
+  const eventWith=text=>events.find(event=>event.querySelector('.field-help').textContent===text);
+  const currentCheck=eventWith('No new release or download changes; latest is v0.3.8.');
+  assert.equal(currentCheck.querySelector('.status-badge').textContent,'No upstream changes');
+  assert(currentCheck.textContent.includes('Check details'));assert(!currentCheck.textContent.includes('Build details'));
+  const legacyCheck=eventWith('No new release or download changes were found; latest is v0.3.8.');
+  assert.equal(legacyCheck.querySelector('.status-badge').textContent,'No upstream changes','Older unchanged checks use their exact recorded log evidence');
+  const ordinaryBuild=eventWith('Portable build complete');
+  assert.equal(ordinaryBuild.querySelector('h3').textContent,'Build');assert.equal(ordinaryBuild.querySelector('.status-badge').textContent,'Packaged');
+  assert(ordinaryBuild.textContent.includes('Build details'));assert(!ordinaryBuild.textContent.includes('Check details'));
+  assert.equal(events.filter(event=>event.querySelector('.status-badge')?.textContent==='No upstream changes').length,2,'Drafts, publication jobs and failures do not inherit update-check outcomes');
+  assert.equal(events.filter(event=>event.textContent.includes('Check details')).length,7);
+  for(const [outcome,label] of Object.entries({changed:'Release saved',needs_review:'Needs review',builds_queued:'Builds queued',packages_current:'Packages current'}))assert.equal(eventWith(outcome).querySelector('.status-badge').textContent,label);
+  assert.equal(eventWith('Release lookup failed').querySelector('.status-badge').textContent,'Needs attention');
+  dom.window.close();
+  const logViews=JSON.parse(JSON.stringify(fixture));logViews.playtests=[];
+  logViews.activity=[{id:id(90),kind:'test',project_id:id(1),target:'linux',result:'starts',notes:'Startup confirmed',created_at:'2026-10-13T05:00:00Z'},{id:id(91),kind:'import',project_id:id(1),target:'linux',message:'Found an existing package',created_at:'2026-10-13T05:00:00Z'}];
+  logViews.jobs=[checkJob(92,{target:'linux',status:'ready',artifact_id:id(96)}),checkJob(93,{check_outcome:'unchanged'}),checkJob(94,{kind:'draft',status:'ready'}),checkJob(95,{kind:'publish',target:'linux',status:'ready',artifact_id:id(97)}),checkJob(99,{project_id:id(3),check_outcome:'changed'})];
+  logViews.artifacts.push(
+    {id:id(96),project_id:id(1),target:'linux',filename:'automatic.zip',created_at:'2026-10-13T05:00:00Z',romm:{status:'awaiting_scan',uploaded_at:'2026-10-13T05:01:00Z'}},
+    {id:id(97),project_id:id(1),target:'linux',filename:'manual.zip',created_at:'2026-10-13T05:00:00Z',romm:{status:'in_romm',uploaded_at:'2026-10-13T05:02:00Z'}},
+    {id:id(98),project_id:id(1),target:'linux',filename:'cleared-upload.zip',created_at:'2026-10-12T05:00:00Z',romm:{status:'in_romm',uploaded_at:'2026-10-12T05:01:00Z',indexed_at:'2026-10-13T05:05:00Z'}}
+  );
+  logViews.activity_cutoffs={all:'2026-10-13T00:00:00Z'};
+  logViews.notifications=[{id:'unread',message:'New release',kind:'ready',created_at:'2026-10-13T05:00:00Z'}];
+  dom=await create(null,false,logViews);w=dom.window;d=w.document;w.location.hash='activity';await tick();
+  const activityNodes=()=>[...d.querySelectorAll('#activity-content .activity-event')];
+  const logCounts={jobs:8,builds:1,checks:2,drafts:1,uploads:2,tests:1,imports:1,artifacts:4,notifications:1};
+  for(const [view,count] of Object.entries(logCounts))assert.equal(d.getElementById(view+'-count').textContent,String(count),'Accurate activity count: '+view);
+  assert.equal(d.querySelectorAll('[data-activity-view]').length,9);assert.equal(activityNodes().length,8);
+  assert(!d.getElementById('activity-cleanup').hidden);assert.equal(d.getElementById('activity-cleanup').textContent,'Clear all completed activity & logs');
+  assert(!activityNodes().some(event=>event.textContent.includes('cleared-upload.zip')),'Indexing later does not resurrect a cleared upload');
+  for(const [view,title,count] of [['builds','Build',1],['checks','Update check',2],['drafts','Model draft',1],['uploads','Upload to RomM',2],['tests','Manual test result',1],['imports','Found in RomM',1]]){
+    d.getElementById(view+'-tab').click();assert.equal(activityNodes().length,count,'Filter activity by '+view);
+    assert(activityNodes().every(event=>event.querySelector('h3').textContent===title));assert.equal(d.getElementById('activity-content').getAttribute('aria-labelledby'),view+'-tab');
+    assert(d.getElementById('activity-type-field').hidden);assert.equal(d.getElementById(view+'-tab').tabIndex,0);
+    assert(d.getElementById('activity-cleanup').hidden,'Category views never offer global cleanup');
+  }
+  d.getElementById('uploads-tab').click();
+  assert.equal(activityNodes().filter(event=>event.textContent.includes('automatic.zip')).length,1,'Automatic uploads inside build jobs appear in Uploads');
+  assert.equal(activityNodes().filter(event=>event.textContent.includes('Uploaded · waiting for RomM')).length,1);
+  assert.equal(activityNodes().length,2,'Explicit publication jobs are not duplicated by artifact upload metadata');
+  d.getElementById('jobs-tab').click();const show=d.getElementById('activity-type-filter');show.value='uploads';show.dispatchEvent(new w.Event('change'));assert.equal(activityNodes().length,2);
+  d.getElementById('builds-tab').click();assert.equal(activityNodes().length,1,'Dedicated tabs are independent of the All activity Show filter');
+  const gameFilter=d.getElementById('activity-game-filter');gameFilter.value=id(2);gameFilter.dispatchEvent(new w.Event('change'));
+  d.getElementById('checks-tab').click();assert.equal(activityNodes().length,1);assert(activityNodes()[0].textContent.includes('Bloodborne Windows'),'A game filter includes related platform projects');
+  assert.equal(d.getElementById('jobs-count').textContent,'1');assert.equal(d.getElementById('checks-count').textContent,'1');assert.equal(d.getElementById('uploads-count').textContent,'0');
+  d.getElementById('jobs-tab').click();assert(d.getElementById('activity-cleanup').hidden,'Selecting a game hides global cleanup');
+  d.getElementById('packages-tab').click();assert(d.getElementById('activity-content').textContent.includes('No build archives'));
+  gameFilter.value='';gameFilter.dispatchEvent(new w.Event('change'));assert.equal(d.getElementById('artifacts-count').textContent,'4');assert.equal(d.querySelectorAll('#activity-content tbody tr').length,4,'Cleanup hides activity while retaining build archives');
+  const tabs=d.querySelector('.activity-tabs');d.getElementById('builds-tab').focus();tabs.dispatchEvent(new w.KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true,cancelable:true}));
+  assert.equal(d.activeElement.id,'checks-tab');assert.equal(d.getElementById('checks-tab').getAttribute('aria-selected'),'true');assert.equal(activityNodes().length,2);
+  tabs.dispatchEvent(new w.KeyboardEvent('keydown',{key:'End',bubbles:true,cancelable:true}));assert.equal(d.activeElement.id,'notifications-tab');assert.equal(d.getElementById('activity-content').getAttribute('aria-labelledby'),'notifications-tab');
+  tabs.dispatchEvent(new w.KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true,cancelable:true}));assert.equal(d.activeElement.id,'jobs-tab');
+  tabs.dispatchEvent(new w.KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true,cancelable:true}));assert.equal(d.activeElement.id,'notifications-tab');
+  tabs.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Home',bubbles:true,cancelable:true}));assert.equal(d.activeElement.id,'jobs-tab');
+  assert.equal(d.querySelectorAll('.activity-tabs [tabindex="0"]').length,1,'Activity tabs use one keyboard entry point');
+  assert(stylesheet.includes('#activity-page>.activity-tabs{flex-wrap:nowrap') && stylesheet.includes('overflow-x:auto'),'Mobile activity tabs scroll without wrapping');
+  logViews.artifacts.find(artifact=>artifact.id===id(96)).romm={status:'failed',error:'The server rejected the automatic upload'};w.pollRefresh();await tick();await tick();d.getElementById('uploads-tab').click();
+  const failedUpload=activityNodes().find(event=>event.textContent.includes('The server rejected the automatic upload'));
+  assert(failedUpload,'Failed automatic uploads use the associated build job timestamp if the publication record has none');assert.equal(failedUpload.querySelector('.status-badge').textContent,'Needs attention');
+  dom.window.close();
   dom=await create(null,false,{...fixture,projects:[],artifacts:[]});assert(dom.window.document.getElementById('project-grid').textContent.includes('first game'));dom.window.close();
   console.log('UI layouts passed: add a game, next step, drafting settings, default workspace, saved preferences, collection/list switching, grouped platforms, RomM imports, correct counts, game selection, deep links, filters, empty state and blocked storage.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

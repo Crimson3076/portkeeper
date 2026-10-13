@@ -306,6 +306,13 @@ function gameAvailability(project) {
 }
 function projectJobs(id) { return newestFirst(state.jobs.filter((job) => String(job.project_id) === String(id) && !job.activity_hidden)); }
 function jobActive(job) { return activeStatuses.has(job.status) && !job.finished_at; }
+function captureCheck(job) { return job.target === "capture" && !["draft", "publish"].includes(job.kind); }
+const checkOutcomeLabels = { unchanged: "No upstream changes", changed: "Release saved", needs_review: "Needs review", builds_queued: "Builds queued", packages_current: "Packages current" };
+function checkOutcome(job) {
+  if (!captureCheck(job) || job.status !== "archived") return null;
+  if (Object.hasOwn(checkOutcomeLabels, job.check_outcome)) return job.check_outcome;
+  return Array.isArray(job.logs) && job.logs.some(log => String(log).endsWith("This source revision and selected assets are already archived")) ? "unchanged" : null;
+}
 function projectActiveJob(project) { const jobs = projectJobs(project.id).filter(jobActive); return jobs.find((job) => job.status !== "queued") || jobs[0]; }
 function jobStage(job) { return job.status === "failed" ? "failed" : job.stage || job.status; }
 function projectStatus(project) { const active = projectActiveJob(project); return active ? jobStage(active) : project.status; }
@@ -460,22 +467,32 @@ function packageRow(artifact) {
   return el("tr", "", [el("td", "", [el("span", "table-title", artifact.project_name || project?.name || "Project"), el("span", "table-detail", `${artifact.version || "—"} · ${targetLabels[artifact.target] || artifact.target}`)]), el("td", "", validationLabel(artifact)), el("td", "", bytes(artifact.size)), el("td", "", el("div", "table-actions", [artifactDownload(artifact, "table-action", "Download"), button("All versions →", "table-action", () => navigateProject(artifact.project_id, "versions"))]))]);
 }
 function renderActivity() {
-  const tabs = { jobs: $("jobs-tab"), packages: $("packages-tab"), notifications: $("notifications-tab") };
-  Object.entries(tabs).forEach(([key, node]) => { node.classList.toggle("selected", activityView === key); node.setAttribute("aria-selected", String(activityView === key)); });
-  $("jobs-count").textContent = unifiedActivity().length; $("artifacts-count").textContent = state.artifacts.length; $("notifications-count").textContent = state.notifications.filter(notificationUnread).length;
+  const tabs = Object.fromEntries([...document.querySelectorAll("[data-activity-view]")].map(node => [node.dataset.activityView, node]));
+  const family = activityGameFilter ? new Set(relatedProjects(projectById(activityGameFilter)).map(project => project.id)) : null;
+  const familyEvents = unifiedActivity().filter(event => !family || family.has(event.project_id));
+  const artifacts = newestFirst(state.artifacts.filter(artifact => !family || family.has(artifact.project_id)));
+  Object.entries(tabs).forEach(([key, node]) => {
+    const selected = activityView === key;
+    node.classList.toggle("selected", selected); node.setAttribute("aria-selected", String(selected)); node.tabIndex = selected ? 0 : -1;
+    node.querySelector("span").textContent = key === "jobs" ? familyEvents.length : key === "packages" ? artifacts.length : key === "notifications" ? state.notifications.filter(notificationUnread).length : familyEvents.filter(event => event.activity_type === key).length;
+  });
   const content = $("activity-content"); content.setAttribute("aria-labelledby", tabs[activityView].id);
-  $("activity-filters").hidden = activityView !== "jobs";
+  $("activity-filters").hidden = activityView === "notifications";
+  $("activity-type-field").hidden = activityView !== "jobs";
+  $("activity-type-filter").value = activityTypeFilter;
+  const notes = { jobs: "Update checks, builds and uploads are recorded separately.", builds: "A completed build creates a downloadable package. Uploads to RomM have their own view.", checks: "Checks look for upstream release changes. A successful check does not mean a new package was built or uploaded.", drafts: "Model drafts propose build instructions. Saving, building and testing a draft are separate steps.", uploads: "Package uploads are recorded here. RomM may still be indexing an uploaded file.", tests: "Recorded startup and gameplay results apply to the package and device that were tested.", imports: "Packages found in RomM appear here.", packages: "Download previously completed packages and inspect their validation level." };
+  $("activity-view-note").hidden = activityView === "notifications"; $("activity-view-note").textContent = notes[activityView] || "";
   let cleanup = $("activity-cleanup");
-  if (!cleanup) { cleanup = button("Clear activity & logs", "button secondary small", () => maintenance("clear_activity")); cleanup.id = "activity-cleanup"; $("activity-content").before(cleanup); }
-  cleanup.hidden = activityView !== "jobs";
+  if (!cleanup) { cleanup = button("Clear all completed activity & logs", "button secondary small", () => maintenance("clear_activity")); cleanup.id = "activity-cleanup"; $("activity-content").before(cleanup); }
+  cleanup.hidden = activityView !== "jobs" || Boolean(activityGameFilter);
   const filter = $("activity-game-filter"); filter.replaceChildren(el("option", "", "All games")); filter.firstChild.value = "";
   libraryGames().forEach((game) => { const option = el("option", "", game.name); option.value = game.id; filter.append(option); }); filter.value = activityGameFilter;
-  if (activityView === "jobs") {
-    const family = activityGameFilter ? new Set(relatedProjects(projectById(activityGameFilter)).map((project) => project.id)) : null;
-    const events = unifiedActivity().filter((event) => (!family || family.has(event.project_id)) && (!activityTypeFilter || event.kind === activityTypeFilter));
-    content.replaceChildren(events.length ? el("div", "activity-timeline", events.map(activityEvent)) : emptyState("◷", "No activity matches", "Imports, tests, builds and update checks will appear here. Try All games and All activity."));
+  if (!["packages", "notifications"].includes(activityView)) {
+    const category = activityView === "jobs" ? activityTypeFilter : activityView;
+    const events = familyEvents.filter(event => !category || event.activity_type === category);
+    content.replaceChildren(events.length ? el("div", "activity-timeline", events.map(activityEvent)) : emptyState("◷", "No activity matches", "Events of this type will appear here. Try All games or All activity to see other events."));
   }
-  if (activityView === "packages") content.replaceChildren(state.artifacts.length ? table(["Game / package", "Validation", "Size", ""], newestFirst(state.artifacts).map(packageRow)) : emptyState("▱", "Your first package is ahead", "Completed packages will appear here with their validation level."));
+  if (activityView === "packages") content.replaceChildren(artifacts.length ? table(["Game / package", "Validation", "Size", ""], artifacts.map(packageRow)) : emptyState("▱", "No build archives", "Completed packages for the selected game will appear here with their validation level."));
   if (activityView === "notifications") renderNotifications(content);
 }
 function renderNotifications(parent) {
@@ -814,24 +831,51 @@ function renderVersions(project, content) {
 }
 function unifiedActivity() {
   const events = [...(state.activity || [])];
-  state.jobs.filter(job => !job.activity_hidden).forEach((job) => events.push({...job, kind: "build", message: job.error || job.message || (job.target === "capture" ? "Upstream release and update check" : "Portable build"), title: job.target === "capture" ? "Update check" : "Build", result: job.status}));
+  state.jobs.filter(job => !job.activity_hidden).forEach((job) => {
+    const outcome = checkOutcome(job);
+    const message = job.error || job.message || (outcome === "unchanged" ? `No new release or download changes were found${job.version ? `; latest is ${job.version}` : ""}.` : job.target === "capture" ? "Upstream release and update check" : "Portable build");
+    const category = activityCategory(job);
+    const title = { checks: "Update check", drafts: "Model draft", uploads: "Upload to RomM", builds: "Build" }[category];
+    const fallback = { drafts: "Packaging instructions draft", uploads: "Package upload to RomM" }[category];
+    events.push({...job, kind: "build", activity_type: category, capture_check: captureCheck(job), check_outcome: outcome, message: job.error || job.message || fallback || message, title, result: job.status});
+  });
+  const uploadJobs = new Set(state.jobs.filter(job => job.kind === "publish").map(job => job.artifact_id));
+  state.artifacts.forEach(artifact => {
+    const upload = artifact.romm || {}, sourceJob = state.jobs.find(job => job.kind !== "publish" && job.artifact_id === artifact.id);
+    const created = upload.uploaded_at || upload.queued_at || upload.failed_at || upload.indexed_at || (upload.status === "failed" ? sourceJob?.finished_at || sourceJob?.created_at : null);
+    if (!created || !upload.status || uploadJobs.has(artifact.id)) return;
+    const statuses = { uploading: "publishing", awaiting_scan: "watching", in_romm: "ready", failed: "failed" };
+    if (!Object.hasOwn(statuses, upload.status)) return;
+    const details = { uploading: "Uploading the package to RomM.", awaiting_scan: "The package was uploaded; RomM has not indexed it yet.", in_romm: "The uploaded package is available in RomM.", failed: upload.error || "Package upload failed." };
+    events.push({id: `upload-${artifact.id}`, kind: "upload", activity_type: "uploads", project_id: artifact.project_id, target: artifact.target, version: artifact.version, title: "Upload to RomM", result: statuses[upload.status], status: statuses[upload.status], upload_status: upload.status, message: details[upload.status], package_name: artifact.filename, created_at: created, finished_at: upload.uploaded_at || upload.failed_at || (upload.status === "failed" ? sourceJob?.finished_at : null), source_job_id: sourceJob?.id});
+  });
   state.artifacts.forEach((artifact) => (artifact.validation_history || []).filter((test) => !test.evidence?.manual_check).forEach((test, index) => events.push({id:`setup-${artifact.id}-${index}`, kind:"test", project_id:artifact.project_id, target:artifact.target, title:"Previous setup check", result:{launch_checked:"starts",user_confirmed_playable:"played",failed:"failed"}[test.level] || "untested", created_at:test.recorded_at, notes:test.notes, origin:"setup_check", package_name:artifact.filename})));
   const cutoffs = state.activity_cutoffs || {};
-  return newestFirst(events.filter(event => {
+  return newestFirst(events.map(event => ({...event, activity_type: event.activity_type || activityCategory(event)})).filter(event => {
     const cutoff = [cutoffs.all, cutoffs.projects?.[event.project_id]].filter(Boolean).sort().at(-1);
     return !cutoff || jobActive(event) || (event.finished_at || event.created_at || "") > cutoff;
   }));
 }
+function activityCategory(event) {
+  if (event.kind === "draft") return "drafts";
+  if (["publish", "upload"].includes(event.kind)) return "uploads";
+  if (event.kind === "test") return "tests";
+  if (event.kind === "import") return "imports";
+  return captureCheck(event) ? "checks" : "builds";
+}
 function activityEvent(event) {
   const project = projectById(event.project_id);
   const title = event.kind === "import" ? "Found in RomM" : event.kind === "test" ? (event.origin === "setup_check" ? "Setup test result" : "Manual test result") : event.title;
-  const result = event.kind === "test" ? el("span", `validation-label ${event.result === "failed" ? "failed" : event.result === "played" ? "confirmed" : ""}`, testResultLabels[event.result] + (event.environment === "wine_proton" ? " under Wine/Proton" : "")) : event.kind === "import" ? statusBadge("published", "In RomM") : statusBadge(event.result);
+  const jobResultLabel = event.capture_check ? checkOutcomeLabels[event.check_outcome] : event.upload_status ? { uploading: "Uploading to RomM", awaiting_scan: "Uploaded · waiting for RomM", in_romm: "In RomM", failed: "Needs attention" }[event.upload_status] : event.result === "ready" ? { drafts: "Draft ready", uploads: "Uploaded" }[event.activity_type] : undefined;
+  const result = event.kind === "test" ? el("span", `validation-label ${event.result === "failed" ? "failed" : event.result === "played" ? "confirmed" : ""}`, testResultLabels[event.result] + (event.environment === "wine_proton" ? " under Wine/Proton" : "")) : event.kind === "import" ? statusBadge("published", "In RomM") : statusBadge(event.capture_check && event.check_outcome === "needs_review" ? "unsupported_version" : event.result, jobResultLabel);
   const header = el("div", "activity-event-heading", [el("h3", "", title), result]);
-  const body = el("div", "activity-event-body", [header, el("p", "activity-event-game", [project?.name || event.project_name || "Game", " · ", targetLabels[event.target] || "Update check"]), el("p", "field-help", event.notes || event.message || ""), el("span", "activity-event-date", `${event.device ? event.device + " · " : ""}${dateLabel(event.created_at)}`)]);
+  const context = event.capture_check ? "Upstream release" : event.activity_type === "drafts" ? "Build instructions" : targetLabels[event.target] || "Game";
+  const body = el("div", "activity-event-body", [header, el("p", "activity-event-game", [project?.name || event.project_name || "Game", " · ", context]), el("p", "field-help", event.notes || event.message || ""), el("span", "activity-event-date", `${event.device ? event.device + " · " : ""}${dateLabel(event.created_at)}`)]);
   if (event.package_name) body.append(el("p", "activity-package-name", event.package_name));
   const actions = el("div", "inline-actions", button("Open game", "text-button", () => navigateProject(event.project_id)));
   if (event.kind === "build" && !jobActive(event)) actions.append(button("Clear this entry & log", "text-button", () => maintenance("clear_activity", event.project_id, event.id)));
-  if (event.kind === "build") actions.append(button("Build details", "text-button", () => navigateProject(event.project_id, "activity", event.id)));
+  if (event.kind === "build") actions.append(button({ checks: "Check details", drafts: "Draft details", uploads: "Upload details" }[event.activity_type] || "Build details", "text-button", () => navigateProject(event.project_id, "activity", event.id)));
+  if (event.kind === "upload") actions.append(button(event.source_job_id ? "Upload details" : "View package", "text-button", () => navigateProject(event.project_id, "activity", event.source_job_id || null)));
   return el("article", "activity-event", [body, actions]);
 }
 function renderProjectActivity(project, content) {
@@ -2169,7 +2213,7 @@ $("proposal-apply").addEventListener("click", applyProposal);
 document.querySelectorAll('[name="assistant-provider"]').forEach((node) => node.addEventListener("change", () => { assistantProviderDirty = true; $("assistant-result").textContent = ""; syncAssistantFields(); }));
 $("assistant-test").addEventListener("click", testAssistant);
 $("assistant-cloud-models-refresh").addEventListener("click", loadCloudModels);
-[ ["jobs-tab", "jobs"], ["packages-tab", "packages"], ["notifications-tab", "notifications"] ].forEach(([id, view]) => $(id).addEventListener("click", () => { activityView = view; renderActivity(); }));
+document.querySelectorAll("[data-activity-view]").forEach(node => node.addEventListener("click", () => { activityView = node.dataset.activityView; renderActivity(); }));
 document.querySelectorAll("[data-settings-tab]").forEach((node) => node.addEventListener("click", () => { settingsView = node.dataset.settingsTab; renderSettingsTabs(); }));
 document.querySelectorAll("[data-project-tab]").forEach((node) => node.addEventListener("click", () => navigateProject(route.projectId, node.dataset.projectTab)));
 $("apply-template").addEventListener("click", () => {
