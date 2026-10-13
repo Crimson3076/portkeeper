@@ -51,6 +51,16 @@ class DraftingTests(unittest.TestCase):
         self.assertNotIn("<", user.split("<project_material>")[1].split("</project_material>")[0])
         self.assertLess(user.index("Prefer Linux"), user.index("PROJECT MATERIAL"))
 
+    def test_compact_prompt_excludes_catalog_recipes_and_enforces_budget(self):
+        context = drafting.build_context(PROJECT, self.capture, [], {}, {}, 20_000)
+        system, user = drafting.prompt_parts(context, {'banjo-recompiled': definition(id='banjo-recompiled')})
+        self.assertLessEqual(len(system) + len(user), 24000)
+        self.assertNotIn('Examples of approved definitions', user)
+        self.assertNotIn('Starter definition prepared by Portkeeper', user)
+        context['release']['assets'] = [{'name': 'x' * 30000}]
+        with self.assertRaisesRegex(Invalid, 'compact prompt limit'):
+            drafting.prompt_parts(context, {})
+
     def test_changed_source_is_refused(self):
         self.capture["source"]["sha256"] = "0" * 64
         with self.assertRaisesRegex(Invalid, "changed"):
@@ -77,8 +87,8 @@ class DraftingTests(unittest.TestCase):
         drafting.check_preparation_choice(prepared, context)
         self.assertIn({'op': 'include_tree', 'from': '$shared/game', 'as': 'game'}, prepared['operations'])
         system, user = drafting.prompt_parts(context, packaging.bundled())
-        self.assertIn('base PKG precedes the matching update PKG', user)
-        self.assertIn('wire the launcher', user.lower())
+        self.assertNotIn('base PKG precedes the matching update PKG', user)
+        self.assertIn('Infer the packaging workflow', user)
         self.assertEqual(drafting.unsupported_hashes(prepared, json.dumps(context['material'])), [])
         invented = copy.deepcopy(prepared);invented['operations'][0]['accepted_eboot_sha256'] = ['f' * 64]
         self.assertEqual(drafting.unsupported_hashes(invented, json.dumps(context['material'])), ['f' * 64])
@@ -252,8 +262,9 @@ class DraftingTests(unittest.TestCase):
         data = drafting.workspace_zip("PROMPT", context, {"banjo-recompiled": definition(id="banjo-recompiled")})
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             names = archive.namelist()
-        for name in ("INSTRUCTIONS.md", "PROMPT.md", "FORMAT.md", "material/README.md", "material/source-excerpts.md", "examples/banjo-recompiled.json"):
+        for name in ("INSTRUCTIONS.md", "PROMPT.md", "FORMAT.md", "material/README.md", "material/source-excerpts.md"):
             self.assertIn(name, names)
+        self.assertFalse(any(name.startswith("examples/") for name in names))
 
 
 class Server:

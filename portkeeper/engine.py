@@ -1403,7 +1403,7 @@ class Engine:
         project = self.store.get("projects", project_id)
         if not isinstance(prepare_game_files, bool):
             raise Invalid('Choose whether game files should be prepared during packaging')
-        _, context = self._draft_material(project, 150_000)
+        _, context = self._draft_material(project, 20_000)
         context['game_file_preparation']['enabled'] = prepare_game_files
         return {"prompt": drafting.prompt_text(context, self.catalog.definitions(), instruction),
                 "context": {key: value for key, value in context.items() if key != "archive_evidence"}}
@@ -1413,10 +1413,12 @@ class Engine:
         result = self.draft_prompt(project_id, instruction, prepare_game_files=prepare_game_files)
         return drafting.workspace_zip(result["prompt"], result["context"], self.catalog.definitions())
 
-    def queue_draft(self, project_id, instruction="", targets=None, prepare_game_files=True):
+    def queue_draft(self, project_id, instruction="", targets=None, prepare_game_files=True, review_model=False):
         project = self.store.get("projects", project_id)
         if not self.assistant.connected():
             raise Invalid("No model is connected. Use the prepared prompt with your own chat, or connect a model in Settings.")
+        if not isinstance(review_model, bool):
+            raise Invalid('Choose whether a separate model review should run')
         if not isinstance(instruction, str) or len(instruction) > 4000:
             raise Invalid("Keep the extra instructions under 4000 characters")
         if not isinstance(prepare_game_files, bool):
@@ -1424,7 +1426,7 @@ class Engine:
         if targets is not None and (not isinstance(targets, list) or not targets or any(t not in TARGETS for t in targets) or len(set(targets)) != len(targets) or not set(project["targets"]).issubset(targets)):
             raise Invalid("Draft platforms must include current platforms and supported target IDs")
         job = self.job(project, "capture", project.get("latest_version"))
-        job = self.store.update("jobs", job["id"], kind="draft", stage="drafting", status="running", requested_targets=targets, instruction=instruction, prepare_game_files=prepare_game_files)
+        job = self.store.update("jobs", job["id"], kind="draft", stage="drafting", status="running", requested_targets=targets, instruction=instruction, prepare_game_files=prepare_game_files, review_model=review_model)
         self.executor.submit(self._draft, project_id, job["id"], instruction)
         return {"job": job}
 
@@ -1442,7 +1444,7 @@ class Engine:
             config = self.assistant.public_config(model_config)
             # JSON paths and source snippets tokenize more densely than prose.
             # Keep room for both reasoning and the final definition/corrections.
-            budget = max(8000, (config["context_tokens"] - 8000) * 2) if config["provider"] == "ollama" else 300_000
+            budget = max(8000, (config["context_tokens"] - 8000) * 2) if config["provider"] == "ollama" else 20_000
             self.stage(job_id, "drafting", "Reading the release, README and source")
             capture, context = self._draft_material(project, budget)
             context.setdefault('game_file_preparation', {})['enabled'] = self.store.get('jobs', job_id).get('prepare_game_files', True)
@@ -1483,20 +1485,22 @@ class Engine:
                 log(f"Test build {trial['status']}")
                 self.stage(job_id, "drafting", "Waiting for the model's draft")
                 return self.model_tools.trial_feedback(trial)
-            definition, explanation = self.assistant.draft_definition(system, user, read, log, record=remember, config=model_config,
+            definition, explanation = self.assistant.draft_definition(system, user, read, log, attempts=self.get_setting("draft_max_calls", 1), test_rounds=self.get_setting("draft_test_rounds", 1), record=remember, config=model_config,
                                                                       test=test if self.get_setting("draft_test_builds", True) else None)
             record['automatic_checks'] = {'schema': 'passed', 'release_assets': 'checked',
                                           'archive_inspections': context['release'].get('archive_layouts', {})}
-            self.stage(job_id, 'drafting', 'Reviewing first-launch instructions and source claims')
-            log('Starting a fresh model review; this does not run a build or the game')
-            review_system, review_user = drafting.review_prompt(definition, context)
-            record['review_prompt'] = {'system': review_system, 'user': review_user}
-            try:
-                review = self.assistant.review_definition(definition, context, record=remember, config=model_config)
-            except Invalid as error:
-                review = {'status': 'unavailable', 'summary': str(error), 'findings': [],
-                          'note': 'The draft passed automatic checks, but the model review could not be completed. Inspect it manually. Build and gameplay are untested.'}
-                log('Model review unavailable: ' + str(error))
+            review = {'status': 'not_requested', 'summary': 'Automatic model review is off. Inspect the draft and deterministic checks before approval.', 'findings': [], 'note': 'No extra model call was made.'}
+            if self.store.get('jobs', job_id).get('review_model') or self.get_setting('draft_model_review', False):
+                self.stage(job_id, 'drafting', 'Reviewing first-launch instructions and source claims')
+                log('Starting a fresh model review; this does not run a build or the game')
+                review_system, review_user = drafting.review_prompt(definition, context)
+                record['review_prompt'] = {'system': review_system, 'user': review_user}
+                try:
+                    review = self.assistant.review_definition(definition, context, record=remember, config=model_config)
+                except Invalid as error:
+                    review = {'status': 'unavailable', 'summary': str(error), 'findings': [],
+                              'note': 'The draft passed automatic checks, but the model review could not be completed. Inspect it manually. Build and gameplay are untested.'}
+                    log('Model review unavailable: ' + str(error))
             record.update(status='ready', finished_at=now(), model_review=review, accepted_definition=definition)
             self.save_draft_record(job_id, record)
             details = {'model_review': review, 'starter': starter, 'automatic_checks': record['automatic_checks'], 'draft_job_id': job_id}

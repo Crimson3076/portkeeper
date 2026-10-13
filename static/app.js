@@ -29,6 +29,7 @@ let recipeProjectId = null;
 let editorOriginal = null, editorView = "settings", editorDirty = false;
 const automationDrafts = new Map();
 const inputDrafts = new Map();
+const draftModelReviews = new Map();
 const gameFileChoices = new Map(), gameFileChoiceLoading = new Set(), draftGameFileChoices = new Map(), inputChoiceDrafts = new Map();
 const projectDisclosures = new Map();
 const platformDetections = new Map();
@@ -883,7 +884,7 @@ function inputsSection(project) {
   const firstRun = definition.first_run || project.packaging_view?.first_run;
   const runtime = firstRun?.mode === "asks_user" ? [el("p", "first-run-note warn", [el("strong", "", "When you play: "), firstRun.summary || firstRun.text || "Complete the launcher's setup on the device where you play."])] : [];
   if (definition.runner === "profile") return [...runtime, el("p", "field-help", "Chosen and verified in the worker wizard: " + (project.rom_source?.member || project.rom_source?.filename || project.rom_source?.path || "not selected"))];
-  if (!(definition.inputs || []).length) return [...runtime, el("p", "field-help", definition.runner === "recipe" ? "Files used during packaging are listed in the saved recipe's inputs." : definition.runner === "capture" ? "This game preserves releases; files for packaging have not been configured." : "No game files need to be uploaded to Portkeeper for packaging.")];
+  if (!(definition.inputs || []).length) return [...runtime, el("p", "field-help", definition.runner === "recipe" ? "Files used during packaging are listed in the saved recipe's inputs." : definition.runner === "capture" ? "This game preserves releases; files for packaging have not been configured." : "Runtime-only recipe: no server inputs are configured. Check the first-launch requirements for game data you must supply on your PC.")];
   return [...runtime, el("p", "field-help", "The files below are used by Portkeeper while building the package."), ...definition.inputs.map((item) => {
     const binding = bindings[item.id], key = `input-${project.id}`;
     const requiredForBase = item.required === false && missingGameFiles(project).some(missing => missing.id === item.id);
@@ -1682,7 +1683,7 @@ function renderGamePicker(content, actions) {
   const grid = el("div", "game-pick-grid");
   addGame.games.forEach((game) => {
     const card = el("button", `game-pick${addGame.pick?.id === game.id ? " selected" : ""}`); card.type = "button";
-    const needs = game.needs.length ? "Packaging needs your " + game.needs.map((need) => need.label.replace(/^Your /, "")).join(" and ") : game.runner === "profile" ? "Packaging needs your ROM, chosen from RomM" : "No game files needed for packaging";
+    const needs = game.needs.length ? "Packaging needs your " + game.needs.map((need) => need.label.replace(/^Your /, "")).join(" and ") : game.runner === "profile" ? "Packaging needs your ROM, chosen from RomM" : "Runtime only — check game requirements";
     card.append(el("strong", "", game.name), el("span", "field-help", needs), el("span", "game-pick-tags", [...[...new Set((game.variants || [game]).flatMap(item => item.targets))].map((target) => el("span", "status-badge", targetLabels[target] || target)), ...(game.in_library ? [statusBadge("ready", "In your library")] : [])]));
     if (game.first_run) card.append(el("span", "field-help", game.first_run.mode === "asks_user" ? "When you play: " + (game.first_run.text || "Complete setup in the launcher.") : "No setup on first launch"));
     card.addEventListener("click", () => {
@@ -1917,7 +1918,10 @@ function draftCard(project) {
   field(card, "Notes for the model", prompt);
   const prepare = input(`draft-game-files-${id}`, "checkbox"); prepare.checked = draftGameFileChoices.get(id) ?? drafting?.prepare_game_files ?? true;
   prepare.addEventListener("change", () => { draftGameFileChoices.set(id, prepare.checked); render(); });
-  card.append(el("label", "check-label", [prepare, "Prepare and include my game files when supported"]), el("p", "field-help", "For supported PS4 ports, use base/update PKGs and the pinned extractor. Packages can be large. Turn this off for a runtime-only package that asks for an already prepared game folder when you play."));
+  card.append(el("label", "check-label", [prepare, "Prepare and include my game files when supported"]), el("p", "field-help", "Uses this project’s supported preparation tools. Otherwise the draft must explain which game data you need on your PC."));
+  const review = input(`draft-model-review-${id}`, "checkbox"); review.checked = draftModelReviews.get(id) ?? false;
+  review.addEventListener("change", () => draftModelReviews.set(id, review.checked));
+  card.append(el("label", "check-label", [review, "Add a separate model review (one extra API call)"]), el("p", "field-help", "Default: one drafting call, no automatic model corrections. The prompt is capped at 24,000 characters. File and schema checks run locally."));
   const noRelease = !project.capture_id;
   if (noRelease) card.append(el("p", "field-help", "Check upstream first, so there is a release to read."));
   const actions = el("div", "inline-actions");
@@ -1982,7 +1986,7 @@ async function approveDraft(proposal, project) {
   if (result) navigateProject(project.id, "overview");
 }
 function prepareDraftGameFiles(id) { return draftGameFileChoices.get(id) ?? projectJobs(id).find(job => job.kind === "draft")?.prepare_game_files ?? true; }
-function queueDraft(id) { return runAction(`draft-${id}`, `/api/projects/${encodeURIComponent(id)}/draft`, { instruction: (assistantPromptDrafts.get(id) || "").trim(), prepare_game_files:prepareDraftGameFiles(id) }, "Drafting started. The draft appears here when it's ready."); }
+function queueDraft(id) { return runAction(`draft-${id}`, `/api/projects/${encodeURIComponent(id)}/draft`, { instruction: (assistantPromptDrafts.get(id) || "").trim(), prepare_game_files:prepareDraftGameFiles(id), review_model:draftModelReviews.get(id) ?? false }, "Drafting started. The draft appears here when it's ready."); }
 async function copyDraftPrompt(id) {
   const result = await runAction(`prompt-${id}`, `/api/projects/${encodeURIComponent(id)}/draft-prompt`, { instruction: (assistantPromptDrafts.get(id) || "").trim(), prepare_game_files:prepareDraftGameFiles(id) }, "");
   if (!result) return;
