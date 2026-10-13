@@ -1,0 +1,222 @@
+{
+  "schema": 2,
+  "id": "starship",
+  "revision": 1,
+  "name": "Starship (Star Fox 64)",
+  "game": "Star Fox 64",
+  "summary": "Starship packaged with game assets generated from your verified owned ROM.",
+  "package_prefix": "Starship",
+  "runner": "operations",
+  "runner_version": 1,
+  "upstream": {
+    "repository": "HarbourMasters/Starship",
+    "documentation": [
+      "https://github.com/HarbourMasters/Starship",
+      "https://github.com/HarbourMasters/Starship/releases",
+      "https://github.com/HarbourMasters/Starship/blob/main/docs/BUILDING.md"
+    ],
+    "release_rules": {
+      "stable_only": true,
+      "tag_pattern": "^v2\\.0\\.0$",
+      "notes": "Packaging layout inspected for v2.0.0, commit cb19785b51698185a688e17ba1a34c7889195bdb. Release archives use Starship-Barnard-Alfa-Linux.zip and Starship-Barnard-Alfa-Windows.zip. Future releases must preserve the expected archive members. The documented ROM-selection workflow must be checked again if upstream changes its asset-generation process."
+    }
+  },
+  "targets": [
+    "linux",
+    "windows"
+  ],
+  "first_run": {
+    "mode": "generated",
+    "summary": "Portkeeper generates and includes sf64.o2r before download. Run the launcher; no ROM selection is needed. Native Windows startup and gameplay are untested."
+  },
+  "downloads": {
+    "linux": {
+      "asset_pattern": "^Starship-Barnard-Alfa-Linux\\.zip$",
+      "platform": "linux",
+      "format": "zip",
+      "required_members": [
+        "starship.appimage",
+        "config.yml",
+        "gamecontrollerdb.txt",
+        "readme.txt",
+        "assets/yaml/us/rev0/ast_andross.yaml"
+      ],
+      "description": "Official upstream project release archive for Linux v2.0.0. Contains the AppImage runtime, configuration, controller database, documentation, and asset-processing support files."
+    },
+    "windows": {
+      "asset_pattern": "^Starship-Barnard-Alfa-Windows\\.zip$",
+      "platform": "windows",
+      "format": "zip",
+      "required_members": [
+        "Starship.exe",
+        "starship.o2r",
+        "config.yml",
+        "gamecontrollerdb.txt",
+        "readme.txt",
+        "assets/yaml/us/rev0/ast_andross.yaml"
+      ],
+      "description": "Official upstream project release archive for Windows v2.0.0. Contains the Windows executable, bundled O2R file, configuration, controller database, documentation, and asset-processing support files. The bundled O2R is not assumed to replace the required owned ROM."
+    }
+  },
+  "inputs": [
+    {
+      "id": "game_rom",
+      "label": "Star Fox 64 USA ROM (1.0 or 1.1)",
+      "kind": "file",
+      "platform_hint": "n64",
+      "name_hint": "(?i)\\.(z64|v64|n64)$",
+      "normalize": "n64_big_endian",
+      "verify": "hash",
+      "max_bytes": 33554432,
+      "accepted": [
+        {
+          "label": "USA 1.0",
+          "sha1": "d8b1088520f7c5f81433292a9258c1184afa1457"
+        },
+        {
+          "label": "USA 1.1",
+          "sha1": "09f0d105f476b00efa5303a3ebc42e60a7753b7a"
+        }
+      ]
+    }
+  ],
+  "source_checks": [
+    {
+      "description": "Upstream still supports headless Torch extraction",
+      "path": "CMakeLists.txt",
+      "contains": "COMMAND ${TORCH_EXECUTABLE} o2r baserom.z64"
+    },
+    {
+      "description": "The runtime still looks for the prepared game archive",
+      "path": "src/port/Engine.cpp",
+      "contains": "GetPathRelativeToAppDirectory(\"sf64.o2r\")"
+    },
+    {
+      "description": "The configured USA revision hash remains supported",
+      "path": "config.yml",
+      "contains": "09f0d105f476b00efa5303a3ebc42e60a7753b7a"
+    }
+  ],
+  "operations": [
+    {
+      "op": "stage_input",
+      "input": "game_rom",
+      "to": "$shared/baserom.z64"
+    },
+    {
+      "op": "tool",
+      "tool": "torch_o2r",
+      "download": "linux",
+      "rom": "$shared/baserom.z64",
+      "output": "sf64.o2r",
+      "to": "$shared/sf64.o2r",
+      "min_entries": 10000,
+      "timeout_minutes": 60
+    },
+    {
+      "op": "unpack_download",
+      "download": "linux",
+      "to": "$package",
+      "targets": [
+        "linux"
+      ]
+    },
+    {
+      "op": "unpack_download",
+      "download": "windows",
+      "to": "$package",
+      "targets": [
+        "windows"
+      ]
+    },
+    {
+      "op": "copy",
+      "from": "$shared/sf64.o2r",
+      "to": "$package/sf64.o2r"
+    },
+    {
+      "op": "launcher",
+      "targets": [
+        "linux"
+      ],
+      "path": "Launch.sh",
+      "template": "posix",
+      "exec": "starship.appimage",
+      "args": [],
+      "chmod_exec": true,
+      "env": {
+        "APPIMAGE_EXTRACT_AND_RUN": "1",
+        "SHIP_HOME": "$PWD"
+      }
+    },
+    {
+      "op": "launcher",
+      "targets": [
+        "windows"
+      ],
+      "path": "Launch.cmd",
+      "template": "windows_cmd",
+      "exec": "Starship.exe",
+      "args": []
+    }
+  ],
+  "outputs": {
+    "linux": {
+      "expected_files": [
+        "starship.appimage",
+        "Launch.sh",
+        "config.yml",
+        "gamecontrollerdb.txt",
+        "readme.txt",
+        "assets/",
+        "assets/yaml/us/rev0/ast_andross.yaml",
+        "sf64.o2r"
+      ],
+      "compression": "deflate"
+    },
+    "windows": {
+      "expected_files": [
+        "Starship.exe",
+        "starship.o2r",
+        "Launch.cmd",
+        "config.yml",
+        "gamecontrollerdb.txt",
+        "readme.txt",
+        "assets/",
+        "assets/yaml/us/rev0/ast_andross.yaml",
+        "sf64.o2r"
+      ],
+      "compression": "deflate"
+    }
+  },
+  "launch": {
+    "linux": {
+      "command": "Launch.sh",
+      "instructions": "Extract the entire ZIP and run Launch.sh. The generated sf64.o2r is included; keep it with the runtime. Startup and gameplay must be tested for this package."
+    },
+    "windows": {
+      "command": "Launch.cmd",
+      "instructions": "Extract the entire ZIP and run Launch.cmd. The generated sf64.o2r is included; keep it with the runtime. Startup and gameplay must be tested for this package."
+    }
+  },
+  "saves": "Settings and save locations require source and native runtime checks; gameplay and full portability are not yet verified.",
+  "dependencies": {
+    "linux": [
+      "Linux system capable of executing the upstream Starship AppImage.",
+      "Compatible graphics drivers and OpenGL support.",
+      "Writable package directory for configuration and saves."
+    ],
+    "windows": [
+      "Windows system compatible with the upstream Starship.exe release.",
+      "Compatible graphics drivers supporting the selected rendering backend. The README documents DirectX 11 as the Windows default and OpenGL as an alternative.",
+      "Writable package directory for configuration and saves."
+    ]
+  },
+  "limitations": [
+    "Requires your supported owned USA ROM. Portkeeper generates sf64.o2r with its pinned Torch CLI and the release configuration.",
+    "New releases must pass source and archive compatibility checks; new game data starts untested.",
+    "Windows startup and gameplay have not been tested."
+  ],
+  "history": [],
+  "verified_releases": []
+}

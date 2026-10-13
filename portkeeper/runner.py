@@ -26,6 +26,10 @@ from . import ps4
 
 HELPERS = Path(__file__).resolve().parent / "helpers"
 CHUNK = 8 * 1024 * 1024
+TORCH_COMMIT = "f75facb20883570ed091e8ae733ec0539f606e57"
+TORCH_SOURCE_SHA256 = "25330fff4058ba084dfe0d73b3bb7e5205064fb2658d0d4ef07c9e3cb1b13c3d"
+TORCH_XML_COMMIT = "321ea883b7190d4e85cae5512a12e5eaa8f8731f"
+
 COMPAT_SSL = os.environ.get("PORTKEEPER_COMPAT_SSL_DIR", "/opt/portkeeper/compat-ssl")
 
 
@@ -518,6 +522,8 @@ class OperationRunner:
         destination = ctx.path(op["to"])
         if destination.exists():
             raise Invalid(f"{op['to']} already exists")
+        if name == "torch_o2r":
+            return self._torch_o2r(ctx, op, destination, timeout)
         if name == "ship_o2r_headless":
             return self._ship_o2r(ctx, op, destination, timeout)
         if name == "opengoal_extract":
@@ -636,6 +642,81 @@ class OperationRunner:
         ctx.provenance["tools"].append({"tool": "wwhd_extract", "title": info["selected"], "rpx_sha256": digest})
         ctx.log(f"Extracted and verified {info['selected']} (code/cking.rpx {digest[:16]}…)")
         shutil.rmtree(run, ignore_errors=True)
+
+    def torch_binary(self, ctx, timeout):
+        """Build one pinned Torch revision; recipes cannot choose source or shell commands."""
+        cache = self.cache / ('torch-v1-' + TORCH_SOURCE_SHA256)
+        binary, manifest = cache / 'torch', cache / 'build.json'
+        with self.lock:
+            if binary.is_file() and manifest.is_file():
+                record = json.loads(manifest.read_text())
+                if record.get('source_sha256') == TORCH_SOURCE_SHA256 and record.get('tinyxml_commit') == TORCH_XML_COMMIT and record.get('binary_sha256') == checksum(binary):
+                    return binary
+            cache.mkdir(parents=True, exist_ok=True)
+            archive = cache / 'source.zip'
+            if not archive.is_file() or checksum(archive) != TORCH_SOURCE_SHA256:
+                self.engine.github.download('https://codeload.github.com/HarbourMasters/Torch/zip/' + TORCH_COMMIT, archive)
+            if checksum(archive) != TORCH_SOURCE_SHA256:
+                raise Invalid('Torch source does not match its pinned SHA-256; it was not built')
+            work = ctx.workspace / ('torch-build-' + identifier())
+            safe_extract(archive, work / 'source', max_expanded=128 * 1024 * 1024)
+            source = work / 'source' / ('Torch-' + TORCH_COMMIT)
+            cmake = source / 'CMakeLists.txt'
+            cmake.write_text(cmake.read_text().replace('GIT_TAG 10.0.0', 'GIT_TAG ' + TORCH_XML_COMMIT))
+            home = work / 'home';home.mkdir()
+            log = ctx.workspace / 'torch-build.log'
+            ctx.stage('building_extractor', 'Building the pinned Torch asset extractor; later builds reuse it')
+            env = {'HOME': str(home)}
+            try:
+                self.run(['cmake', '-S', str(source), '-B', str(work / 'build'), '-DUSE_STANDALONE=ON', '-DBUILD_STORMLIB=OFF', '-DCMAKE_BUILD_TYPE=Release'], work, env, log, min(timeout, 1800))
+                self.keep_log(ctx, 'torch-configure', log)
+                self.run(['cmake', '--build', str(work / 'build'), '-j', '2'], work, env, log, min(timeout, 1800))
+                built = work / 'build/torch'
+                if not built.is_file():
+                    raise Invalid('Torch build did not produce its CLI executable')
+                shutil.copyfile(built, binary);binary.chmod(0o755)
+                manifest.write_text(json.dumps({'source_commit': TORCH_COMMIT, 'source_sha256': TORCH_SOURCE_SHA256, 'tinyxml_commit': TORCH_XML_COMMIT, 'binary_sha256': checksum(binary)}, indent=2))
+            finally:
+                self.keep_log(ctx, 'torch-build', log)
+                shutil.rmtree(work, ignore_errors=True)
+            return binary
+
+    def _torch_o2r(self, ctx, op, destination, timeout):
+        binary = self.torch_binary(ctx, timeout)
+        work = ctx.workspace / ('torch-extract-' + identifier())
+        self.unpack(ctx, op['download'], work)
+        if not (work / 'config.yml').is_file() or not (work / 'assets').is_dir():
+            raise Invalid('Torch requires the release configuration and assets/ extraction metadata')
+        rom = ctx.path(op['rom'])
+        if not rom.is_file():
+            raise Invalid('Stage a verified ROM before generating its asset archive')
+        private = work / 'baserom.z64';shutil.copyfile(rom, private)
+        home = work / 'home';home.mkdir()
+        log = ctx.workspace / 'torch-extract.log'
+        ctx.stage('extracting', 'Generating ' + op['output'] + ' with the pinned Torch CLI')
+        try:
+            self.run([str(binary), 'o2r', str(private)], work, {'HOME': str(home)}, log, timeout)
+            output = confined(work, op['output'], must_exist=True)
+            if output.stat().st_size > packaging.GIB:
+                raise Invalid('Torch output exceeds its size limit')
+            try:
+                with zipfile.ZipFile(output) as archive:
+                    names = archive.namelist()
+                    if len(names) > 100000 or sum(entry.file_size for entry in archive.infolist()) > packaging.GIB:
+                        raise Invalid('Torch archive exceeds its expansion limits')
+                    for name in names:
+                        relative(name.rstrip('/'))
+                    if len(names) < op.get('min_entries', 1) or archive.testzip() is not None:
+                        raise Invalid('Torch did not generate a complete asset archive')
+            except zipfile.BadZipFile:
+                raise Invalid('Torch output is not a readable O2R ZIP archive') from None
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(output), destination)
+            ctx.provenance['tools'].append({'tool': 'torch_o2r', 'source_commit': TORCH_COMMIT, 'source_sha256': TORCH_SOURCE_SHA256, 'binary_sha256': checksum(binary), 'output': op['output'], 'entries': len(names), 'sha256': checksum(destination)})
+            ctx.log(f"Generated {op['output']} with {len(names)} checked entries")
+        finally:
+            self.keep_log(ctx, 'torch-extract', log)
+            shutil.rmtree(work, ignore_errors=True)
 
     def _ship_o2r(self, ctx, op, destination, timeout):
         if not shutil.which("xvfb-run"):
