@@ -320,6 +320,29 @@
         }
       ],
       "notes": "Experimental PKG preparation and Windows packaging candidate. Requires your owned CUSA01623 base game and matching 01.02 update. Existing local definitions are changed only after you review and save the catalog steps."
+    },
+    {
+      "id": "zelda-wind-waker-hd",
+      "name": "The Wind Waker HD",
+      "repository": "ZeldaWWHDRecomp/ZeldaWWHDRecomp",
+      "procedure_kind": "automatic_definition",
+      "build_profile_available": false,
+      "definition": "catalog/definitions/zelda-wind-waker-hd.json",
+      "verification_scopes": [
+        {
+          "release": "v0.2.13",
+          "package_revision": 3,
+          "platform": "linux",
+          "status": "candidate",
+          "checks": {
+            "packaging": "Release layout, extractor and setup code inspected. Extraction tested only with a synthetic stand-in; your own archive is untested.",
+            "startup": "not tested",
+            "gameplay": "not tested"
+          },
+          "approval": null
+        }
+      ],
+      "notes": "Experimental. Needs your Cemu archive (.wua) of the USA or European game, version 0."
     }
   ]
 }

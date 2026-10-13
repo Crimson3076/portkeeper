@@ -22,7 +22,7 @@ SCHEMA = 2
 RUNNER_VERSION = 1
 RUNNERS = ("operations", "profile", "recipe", "capture")
 OPERATIONS = ("unpack_download", "stage_input", "tool", "copy", "include_tree", "launcher", "helper", "write_text", "touch")
-TOOLS = ("ship_o2r_headless", "opengoal_extract", "ps4_pkg_extract")
+TOOLS = ("ship_o2r_headless", "opengoal_extract", "ps4_pkg_extract", "wwhd_extract")
 HELPERS = ("bbport_portable_paths", "bbport_nvidia_libraries")
 NORMALIZERS = ("n64_big_endian",)
 # How a package handles what the game would otherwise ask for on its first launch.
@@ -152,7 +152,7 @@ def _check_operation(op, definition, index):
         split_root(op.get("from"), f"{where} source", roots=("shared",))
         _path(op.get("as"), f"{where} as")
     elif kind == "launcher":
-        allowed |= {"path", "template", "exec", "args", "env", "mkdir", "run_python", "chmod_exec"}
+        allowed |= {"path", "template", "exec", "args", "env", "mkdir", "run_python", "chmod_exec", "prepare_once"}
         _path(op.get("path"), f"{where} path")
         if op.get("template") not in ("posix", "windows_cmd"):
             raise Invalid(f"{where} launcher template must be posix or windows_cmd")
@@ -170,6 +170,15 @@ def _check_operation(op, definition, index):
                 raise Invalid(f"{where} may only run Python helper scripts in the package folder")
         if "chmod_exec" in op and not isinstance(op["chmod_exec"], bool):
             raise Invalid(f"{where} chmod_exec must be true or false")
+        prepare = op.get("prepare_once")
+        if prepare is not None:
+            if not isinstance(prepare, dict) or set(prepare) - {"exec", "args", "unless_exists"} or not prepare.get("exec") or not prepare.get("unless_exists"):
+                raise Invalid(f"{where} prepare_once needs exec, unless_exists and optional args")
+            _path(prepare["exec"], f"{where} prepare_once.exec")
+            _literal_path(prepare["unless_exists"], f"{where} prepare_once.unless_exists")
+            for arg in _list(prepare.get("args"), f"{where} prepare_once.args", 32):
+                if not _safe_value(arg, op["template"]):
+                    raise Invalid(f"{where} prepare_once arguments may contain only letters, digits and path characters")
     elif kind == "helper":
         allowed |= {"name", "to"}
         if op.get("name") not in HELPERS:
@@ -224,6 +233,19 @@ def _check_tool(op, definition, inputs, downloads, where):
         for path in collect:
             _path(path, f"{where} collect")
         return {"tool", "download", "game", "iso", "collect", "to", "timeout_minutes"}
+    if tool == "wwhd_extract":
+        if op.get("download") not in downloads:
+            raise Invalid(f"{where} refers to an unknown download")
+        _path(op.get("extractor"), f"{where} extractor")
+        if op.get("archive") not in inputs or inputs[op["archive"]]["kind"] != "file":
+            raise Invalid(f"{where} archive must be a declared file input (the person's .wua)")
+        titles = _list(op.get("titles"), f"{where} titles", 8)
+        if not titles or any(not isinstance(t, str) or not re.fullmatch(r"[0-9a-f]{16}", t) for t in titles):
+            raise Invalid(f"{where} titles must be 16-digit lowercase Wii U title IDs")
+        accepted = _list(op.get("accepted_rpx_sha256"), f"{where} accepted_rpx_sha256", 16)
+        if not accepted or any(not isinstance(v, str) or not _SHA256.fullmatch(v) for v in accepted):
+            raise Invalid(f"{where} needs at least one accepted code/cking.rpx SHA-256")
+        return {"tool", "download", "extractor", "archive", "titles", "accepted_rpx_sha256", "to", "timeout_minutes"}
     # ps4_pkg_extract
     if op.get("tool_download") not in downloads or not downloads[op["tool_download"]].get("sha256"):
         raise Invalid(f"{where} must use a pinned PkgTool download")
@@ -669,7 +691,9 @@ def describe_operation(op, definition):
     if kind == "launcher":
         args = " ".join(op.get("args", []))
         env = ", ".join(f"{k}={v}" for k, v in op.get("env", {}).items())
-        return lead + f"Write the {op['path']} launcher, which runs {op['exec']}" + (f" {args}" if args else "") + (f" with {env}" if env else "") + targets + "."
+        prepare = op.get("prepare_once")
+        first = f"; on a start where {prepare['unless_exists']} is missing it first runs {prepare['exec']} " + " ".join(prepare.get("args", [])) if prepare else ""
+        return lead + f"Write the {op['path']} launcher, which runs {op['exec']}" + (f" {args}" if args else "") + (f" with {env}" if env else "") + first.rstrip() + targets + "."
     if kind == "helper":
         return lead + f"Add the reviewed {op['name']} helper as {_where(op['to'])}{targets}."
     if kind == "write_text":
@@ -681,6 +705,8 @@ def describe_operation(op, definition):
         return lead + f"Run the official {op['appimage']} once under a virtual display with your ROM to generate {op['output']}; stop it after the archive is complete and contains at least {op.get('min_entries', 1)} entries."
     if tool == "opengoal_extract":
         return lead + f"Run the release's OpenGOAL extractor on your {inputs[op['iso']]['label']} to extract, validate, decompile and compile {op['game']}, then keep " + ", ".join(op["collect"]) + "."
+    if tool == "wwhd_extract":
+        return lead + f"Run the release's {op['extractor']} on your {inputs[op['archive']]['label']} to extract title " + " or ".join(op["titles"]) + " (version 0 only), and require an accepted code/cking.rpx SHA-256. Your archive stays unchanged."
     return lead + "Check and copy the PS4 packages to a private work folder, then extract the base game first and overlay its updates in order with the pinned PkgTool (" + " → ".join(inputs[p]["label"] for p in op["packages"]) + f"). Originals stay unchanged. Require title {op['title_id']}, version {op['app_version']} and an accepted eboot.bin SHA-256. Reuse a validated earlier extraction when available."
 
 

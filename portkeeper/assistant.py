@@ -453,30 +453,51 @@ class RecipeAssistant:
         _atomic_json(self.path, {**config, 'last_test': {**result, 'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}})
         return result
 
-    def draft_definition(self, system, user, read, log, attempts=3, record=None, config=None):
-        """Ask the model, then let it fix what Portkeeper rejected. read(text) validates or raises Invalid."""
+    def draft_definition(self, system, user, read, log, attempts=3, record=None, config=None, test=None, test_rounds=2):
+        """Ask the model, then let it fix what Portkeeper rejected. read(text) validates or raises Invalid.
+
+        test(definition) optionally test-builds an accepted draft and returns feedback for the
+        model, or None when nothing needs fixing. Each failed test costs one test round."""
         config = config or self._config()
         if not self.connected(config):
             raise Invalid('No model is connected. Use the prepared prompt with your own chat, or connect a model in Settings.')
         messages = [{'role': 'user', 'content': user}]
-        for attempt in range(1, attempts + 1):
-            log(f'Asking {self.public_config(config)["drafting_model"]} for a draft (attempt {attempt} of {attempts})')
+        rejected, tested, last = 0, 0, None
+        while True:
+            log(f'Asking {self.public_config(config)["drafting_model"]} for a draft (attempt {rejected + tested + 1})')
             text = self.chat(system, messages, config)
             try:
                 result = read(text)
             except Invalid as error:
+                rejected += 1
                 if record:
-                    record({'kind': 'draft', 'attempt': attempt, 'messages': copy.deepcopy(messages), 'response': text, 'result': 'rejected', 'error': str(error)})
+                    record({'kind': 'draft', 'attempt': rejected + tested, 'messages': copy.deepcopy(messages), 'response': text, 'result': 'rejected', 'error': str(error)})
                 log(f'Portkeeper rejected the draft: {error}')
-                if attempt == attempts:
+                if rejected >= attempts:
+                    if last is not None:
+                        log('Keeping the last draft that passed the automatic checks')
+                        return last
                     raise Invalid(f'The model could not produce a valid definition: {error}') from None
                 messages += [{'role': 'assistant', 'content': text[:60000]},
                              {'role': 'user', 'content': f'Portkeeper rejected that definition: {error}\nCorrect the named field while keeping valid parts of the definition. Use forward-slash relative paths; omit optional empty path fields. expected_files and required_members are literal paths, never wildcards. required_members must be a JSON array of at most 50 items; choose 2-10 essential files instead of copying the archive listing. All files are unpacked regardless. expected_files has at most 100 items. strip_prefix removes the ZIP folder; required_members must not repeat it. Match the launcher executable to its final unpacked path. stage_input accepts declared file inputs only, never directories. If the player chooses a game folder on their PC, remove that input, use first_run.mode asks_user and explain how to select it. Do not invent hashes, release assets, tools or operations. Return the corrected JSON object only.'}]
-            else:
-                if record:
-                    record({'kind': 'draft', 'attempt': attempt, 'messages': copy.deepcopy(messages), 'response': text, 'result': 'accepted'})
+                continue
+            if record:
+                record({'kind': 'draft', 'attempt': rejected + tested + 1, 'messages': copy.deepcopy(messages), 'response': text, 'result': 'accepted'})
+            if test is None or tested >= test_rounds:
                 return result
-        raise Invalid('No draft was produced')
+            last = result
+            feedback = test(result[0])
+            if feedback is None:
+                return result
+            tested += 1
+            if record:
+                record({'kind': 'test_build', 'round': tested, 'feedback': feedback})
+            if tested >= test_rounds:
+                log('Test-build rounds used up; the last draft goes to review with its test result')
+                return result
+            log('Sending the test-build result back to the model')
+            messages += [{'role': 'assistant', 'content': text[:60000]},
+                         {'role': 'user', 'content': feedback + '\nFix the definition so this test build passes. Keep correct parts unchanged. Do not invent release files or tools. Return the corrected JSON object only, in the same {"explanation", "definition"} shape.'}]
 
     def review_definition(self, definition, context, record=None, config=None):
         from . import drafting

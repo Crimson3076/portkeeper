@@ -94,6 +94,9 @@ class Handler(BaseHTTPRequestHandler):
                                          "address with --allowed-host / PORTKEEPER_ALLOWED_HOSTS"})
                 return
             path = urllib.parse.urlsplit(self.path).path
+            if path == "/mcp":
+                self.mcp(method)
+                return
             if method == "GET" and path == "/api/state":
                 self.json(200, self.engine.state())
             elif method == "GET" and path == "/api/profiles":
@@ -130,6 +133,11 @@ class Handler(BaseHTTPRequestHandler):
                     self.json(200, self.engine.assistant.models(payload.get("endpoint")))
             elif method == "POST" and path == "/api/assistant/provider":
                 self.json(200, self.engine.assistant.configure_provider(self.body()))
+            elif method == "POST" and path == "/api/mcp/config":
+                self.json(200, self.engine.mcp.configure(self.body()))
+            elif method == "GET" and path == "/api/model-tests":
+                project = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("project", [""])[0]
+                self.json(200, {"tests": [{k: v for k, v in t.items() if k != "definition"} for t in self.engine.store.all("trials") if t["project_id"] == project][:20]})
             elif method == "POST" and path == "/api/assistant/test":
                 self.body()
                 self.json(200, self.engine.assistant.test())
@@ -302,6 +310,21 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as error:
             print(f"Request failed: {type(error).__name__}: {error}", flush=True)
             self.json(500, {"error": "Operation failed; see the local server log"})
+
+    def mcp(self, method):
+        if method != "POST":
+            self.respond_headers(405, "text/plain", 0, extra_headers={"Allow": "POST"})
+            return
+        if not self.engine.mcp.authorized(self.headers.get("Authorization")):
+            body = json.dumps({"error": "Turn on the model connection in Portkeeper Settings and use its token"}).encode()
+            self.respond_headers(401, "application/json", len(body), extra_headers={"WWW-Authenticate": 'Bearer realm="portkeeper"'})
+            self.wfile.write(body)
+            return
+        reply = self.engine.mcp.handle(self.body())
+        if reply is None:
+            self.respond_headers(202, "application/json", 0)
+            return
+        self.json(200, reply)
 
     def image(self, content_type, body):
         self.respond_headers(200, content_type, len(body), cache_control="private, max-age=60")

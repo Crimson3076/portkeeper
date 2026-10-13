@@ -1,0 +1,226 @@
+{
+  "schema": 2,
+  "id": "zeldawwhdrecomp",
+  "revision": 3,
+  "name": "The Wind Waker HD (native port)",
+  "game": "The Legend of Zelda: The Wind Waker HD",
+  "summary": "Native Linux and Windows port of The Wind Waker HD. Portkeeper extracts your Cemu archive into the package; the first start builds the game code on your PC without asking for files.",
+  "package_prefix": "WindWakerHD",
+  "runner": "operations",
+  "runner_version": 1,
+  "upstream": {
+    "repository": "ZeldaWWHDRecomp/ZeldaWWHDRecomp",
+    "documentation": [
+      "https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp#readme",
+      "https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/blob/main/tools/installer/README.md"
+    ],
+    "release_rules": {
+      "stable_only": true,
+      "tag_pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "notes": "Asset names and the enclosing ZIP folder include the version, so each release needs a reviewed definition revision."
+    }
+  },
+  "targets": [
+    "linux",
+    "windows"
+  ],
+  "first_run": {
+    "mode": "generated",
+    "summary": "The first start runs the release's setup once without questions: it uses the game files Portkeeper included in data/game, downloads the pinned compiler (internet needed) and builds the game code in about two minutes. Later starts launch the game directly."
+  },
+  "downloads": {
+    "linux": {
+      "asset_pattern": "^WindWakerHD-v0\\.2\\.13-linux-x86_64\\.zip$",
+      "platform": "linux",
+      "format": "zip",
+      "strip_prefix": "WindWakerHD-v0.2.13-linux-x86_64",
+      "required_members": [
+        "wind-waker-hd",
+        "portable.txt",
+        "tools/bin/wwhd-extract",
+        "tools/setup-in-terminal.sh",
+        "tools/installer/setup.py"
+      ]
+    },
+    "windows": {
+      "asset_pattern": "^WindWakerHD-v0\\.2\\.13-windows-x86_64\\.zip$",
+      "platform": "windows",
+      "format": "zip",
+      "strip_prefix": "WindWakerHD-v0.2.13-windows-x86_64",
+      "required_members": [
+        "Wind Waker HD.exe",
+        "portable.txt",
+        "tools/installer/setup.py",
+        "tools/python/python.exe"
+      ]
+    }
+  },
+  "inputs": [
+    {
+      "id": "game_wua",
+      "label": "The Wind Waker HD Cemu archive (.wua)",
+      "kind": "file",
+      "platform_hint": "wiiu",
+      "name_hint": "(?i)\\.wua$",
+      "verify": "downstream",
+      "max_bytes": 17179869184,
+      "notes": "A Cemu archive of the USA (00050000-10143500) or European (00050000-10143600) game, version 0. An archive that also holds the update is fine; the update is left out. Disc images (.wux/.wud) need keys and are not supported here; convert them in Cemu with \"Convert to compressed Wii U archive (.wua)\"."
+    }
+  ],
+  "source_checks": [
+    {
+      "description": "The USA game code hash the port is built for",
+      "path": "tools/recomp/builds.py",
+      "contains": "c4f0ab300542e0bfc462696850534e71db2ad02288a7eb55e5a4cd4062f16153"
+    },
+    {
+      "description": "The European game code hash",
+      "path": "tools/recomp/builds/eu.json",
+      "contains": "f9f461738949a09481dc1a31c01ad27db813c4c6058fdd7d015624a4146bbf0b"
+    },
+    {
+      "description": "Setup still builds non-interactively from an existing game folder",
+      "path": "tools/installer/setup.py",
+      "contains": "elif valid_game_folder(game_dir) and not ui.interactive:"
+    }
+  ],
+  "operations": [
+    {
+      "op": "unpack_download",
+      "download": "linux",
+      "to": "$package",
+      "targets": [
+        "linux"
+      ]
+    },
+    {
+      "op": "unpack_download",
+      "download": "windows",
+      "to": "$package",
+      "targets": [
+        "windows"
+      ]
+    },
+    {
+      "op": "tool",
+      "tool": "wwhd_extract",
+      "download": "linux",
+      "extractor": "tools/bin/wwhd-extract",
+      "archive": "game_wua",
+      "titles": [
+        "0005000010143500",
+        "0005000010143600"
+      ],
+      "accepted_rpx_sha256": [
+        "c4f0ab300542e0bfc462696850534e71db2ad02288a7eb55e5a4cd4062f16153",
+        "f9f461738949a09481dc1a31c01ad27db813c4c6058fdd7d015624a4146bbf0b"
+      ],
+      "to": "$shared/game",
+      "timeout_minutes": 60,
+      "description": "Extract the base game from your archive"
+    },
+    {
+      "op": "include_tree",
+      "from": "$shared/game",
+      "as": "data/game"
+    },
+    {
+      "op": "launcher",
+      "targets": [
+        "linux"
+      ],
+      "path": "Launch.sh",
+      "template": "posix",
+      "chmod_exec": true,
+      "exec": "wind-waker-hd",
+      "prepare_once": {
+        "exec": "tools/setup-in-terminal.sh",
+        "args": [
+          "--yes",
+          "--no-launch"
+        ],
+        "unless_exists": "data/install.json"
+      }
+    },
+    {
+      "op": "launcher",
+      "targets": [
+        "windows"
+      ],
+      "path": "Launch.cmd",
+      "template": "windows_cmd",
+      "exec": "Wind Waker HD.exe",
+      "prepare_once": {
+        "exec": "Wind Waker HD.exe",
+        "args": [
+          "--console-setup",
+          "--yes",
+          "--no-launch"
+        ],
+        "unless_exists": "data/install.json"
+      }
+    }
+  ],
+  "outputs": {
+    "linux": {
+      "expected_files": [
+        "wind-waker-hd",
+        "portable.txt",
+        "Launch.sh",
+        "tools/setup-in-terminal.sh",
+        "tools/installer/setup.py",
+        "data/game/code/cking.rpx",
+        "data/game/meta/meta.xml",
+        "data/game/content/"
+      ],
+      "compression": "stored",
+      "max_bytes": 17179869184
+    },
+    "windows": {
+      "expected_files": [
+        "Wind Waker HD.exe",
+        "portable.txt",
+        "Launch.cmd",
+        "tools/installer/setup.py",
+        "tools/python/python.exe",
+        "data/game/code/cking.rpx",
+        "data/game/meta/meta.xml",
+        "data/game/content/"
+      ],
+      "compression": "stored",
+      "max_bytes": 17179869184
+    }
+  },
+  "launch": {
+    "linux": {
+      "command": "Launch.sh",
+      "instructions": "Extract the whole ZIP to a writable folder and run Launch.sh. The first start builds the game (internet needed, about two minutes); later starts open the game."
+    },
+    "windows": {
+      "command": "Launch.cmd",
+      "instructions": "Extract the whole ZIP to a writable folder and run Launch.cmd. The first start builds the game in a console window (internet needed, about two minutes); later starts open the game. If SmartScreen warns, choose More info, then Run anyway."
+    }
+  },
+  "saves": "portable.txt keeps saves (data/save), settings and shader caches (data/user) in the package folder.",
+  "dependencies": {
+    "linux": [
+      "x86-64 Linux with Vulkan 1.3 drivers",
+      "Python 3.8+ (setup downloads a pinned copy if missing)",
+      "Internet on first start for the pinned compiler"
+    ],
+    "windows": [
+      "Windows x64 with Vulkan 1.3 drivers",
+      "Internet on first start for the pinned compiler"
+    ]
+  },
+  "limitations": [
+    "Only Cemu archives (.wua) are prepared. Disc images need keys; convert them in Cemu first.",
+    "The first start still compiles the game code on the player's PC; Portkeeper cannot ship compiled game code.",
+    "The package contains your extracted game files (about 2-3 GB); keep it private.",
+    "Not yet launched on a real PC by Portkeeper."
+  ],
+  "history": [
+    "Catalog revision 3: extract the player's Cemu archive with the release's own extractor and run the release's setup non-interactively on first start, so the game no longer asks for files."
+  ],
+  "verified_releases": []
+}

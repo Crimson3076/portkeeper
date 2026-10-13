@@ -77,4 +77,4 @@
 button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:3px solid var(--cyan);outline-offset:3px}
 @media(max-width:760px){.recipe-dialog{padding:20px}.tabs{flex-wrap:wrap;gap:12px}.tabs>button{font-size:14px}.field-help,.detail-note,.compact-note{font-size:14px}}
 
-.json-viewer>.inline-actions{margin:12px 0}.clipboard-buffer{position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0}
+.json-viewer>.inline-actions{margin:12px 0}.clipboard-buffer{position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0}.command-snippet{display:block;white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace;color:#c4d5dc;background:#11191e;border:1px solid var(--border);border-radius:7px;padding:10px 12px;margin:4px 0 10px}#mcp-token{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
