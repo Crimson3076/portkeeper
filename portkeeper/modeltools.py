@@ -249,18 +249,19 @@ class ModelTools:
     # Test builds
 
     def start_trial(self, game_id, definition, targets=None, source="model", background=True):
-        project = self._project(game_id)
-        capture = self._capture(project)
-        if not capture.get("complete", True):
-            raise Invalid("The preserved release is incomplete; the person must check upstream again")
-        checked = self.check(project, definition, capture)
-        chosen = targets or checked["targets"]
-        if not isinstance(chosen, list) or not chosen or any(t not in checked["targets"] for t in chosen):
-            raise Invalid("targets must be platforms in the definition")
-        if any(t["project_id"] == game_id and t["status"] in ("queued", "running") for t in self.store.all("trials")):
-            raise Invalid("A test build for this game is already running; poll get_test_build")
-        trial = self.store.put("trials", {"id": identifier(), "project_id": game_id, "status": "queued", "targets": chosen, "source": str(source)[:80],
-                                          "definition_sha256": _sha(checked), "definition": checked, "started_at": now(), "logs": []})
+        with self.engine.lock:
+            project = self._project(game_id)
+            capture = self._capture(project)
+            if not capture.get("complete", True):
+                raise Invalid("The preserved release is incomplete; the person must check upstream again")
+            checked = self.check(project, definition, capture)
+            chosen = targets or checked["targets"]
+            if not isinstance(chosen, list) or not chosen or any(t not in checked["targets"] for t in chosen):
+                raise Invalid("targets must be platforms in the definition")
+            if any(t["project_id"] == game_id and t["status"] in ("queued", "running") for t in self.store.all("trials")):
+                raise Invalid("A test build for this game is already running; poll get_test_build")
+            trial = self.store.put("trials", {"id": identifier(), "project_id": game_id, "status": "queued", "targets": chosen, "source": str(source)[:80],
+                                              "definition_sha256": _sha(checked), "definition": checked, "started_at": now(), "logs": []})
         if not background:
             return self.run_trial(trial["id"])
         self.engine.executor.submit(self.run_trial, trial["id"])

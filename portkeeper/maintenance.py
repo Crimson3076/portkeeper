@@ -3,12 +3,18 @@ import json
 import re
 import shutil
 import sqlite3
+from contextlib import closing
 from . import packaging
 from .safety import Invalid
 from .storage import identifier, now
 
 
 def manage(engine, payload):
+    with engine.lock:
+        return _manage(engine, payload)
+
+
+def _manage(engine, payload):
     action = payload.get('action')
     if action not in ('clear_activity', 'clear_revisions', 'reset_instructions', 'remove_game'):
         raise Invalid('Choose a supported cleanup action')
@@ -27,6 +33,8 @@ def manage(engine, payload):
         if project_id and jobs[0].get('project_id') != project_id:
             raise Invalid('This job belongs to another game')
     active = lambda j: not j.get('finished_at') and j.get('status') not in ('ready', 'failed', 'cancelled', 'complete', 'completed')
+    if action != 'clear_activity' and project_id in getattr(engine, 'busy', set()):
+        raise Invalid('Wait for this game’s running work to finish before changing or removing it')
     if action != 'clear_activity' and (any(active(j) for j in jobs) or any(t.get('project_id') == project_id and t.get('status') in ('running', 'queued') for t in engine.store.all('trials'))):
         raise Invalid('Wait for this game’s running work to finish before changing or removing it')
     if job_id and active(jobs[0]):
@@ -35,9 +43,9 @@ def manage(engine, payload):
         root = engine.data / 'maintenance-backups' / identifier()
         root.mkdir(parents=True, mode=0o700)
         # SQLite backup includes a consistent snapshot of WAL transactions.
-        with engine.store.connect() as source, sqlite3.connect(root / 'portkeeper.sqlite3') as target:
+        with engine.store.connect() as source, closing(sqlite3.connect(root / 'portkeeper.sqlite3')) as target:
             source.backup(target)
-        result = {'action': action, 'backup': str(root), 'jobs_cleared': 0, 'files_deleted': 0}
+        result = {'action': action, 'backup': str(root), 'jobs_cleared': 0, 'trials_cleared': 0, 'files_deleted': 0}
         if action == 'clear_activity':
             for job in jobs:
                 if active(job):
@@ -48,6 +56,10 @@ def manage(engine, payload):
                 engine.store.update('jobs', job['id'], logs=[], checkpoints=[], activity_hidden=True, draft_record_available=False)
                 result['jobs_cleared'] += 1
             if not job_id:
+                for trial in engine.store.all('trials'):
+                    if (not project_id or trial.get('project_id') == project_id) and trial.get('status') not in ('queued', 'running'):
+                        engine.store.update('trials', trial['id'], logs=[])
+                        result['trials_cleared'] += 1
                 cutoffs = engine.get_setting('activity_cutoffs', {'projects': {}})
                 cutoffs.setdefault('projects', {})
                 if project_id:

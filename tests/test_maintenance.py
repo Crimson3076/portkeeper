@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from portkeeper.maintenance import manage
+from portkeeper.engine import Engine, Busy
 from portkeeper.storage import Store
 from portkeeper.safety import Invalid
 
@@ -50,6 +51,32 @@ class MaintenanceTests(unittest.TestCase):
         result = manage(self.engine, {'action': 'clear_activity'})
         self.assertEqual(result['jobs_cleared'], 0)
         self.assertEqual(self.engine.store.get('jobs', 'b'*32)['logs'], ['private log'])
+
+    def test_claimed_work_blocks_removal_before_a_job_exists(self):
+        self.engine.busy = {self.project['id']}
+        with self.assertRaises(Invalid):
+            manage(self.engine, {'action': 'remove_game', 'project_id': self.project['id']})
+        self.assertTrue(self.engine.store.get('projects', self.project['id']))
+        self.assertFalse((self.root / 'maintenance-backups').exists())
+
+    def test_claim_rejects_deleted_or_changed_instructions(self):
+        self.engine.busy = set()
+        self.engine.store.update('projects', self.project['id'], packaging={'revision': 2})
+        with self.assertRaises(Busy):
+            Engine.claim(self.engine, self.project['id'], expected_project=self.project)
+        self.engine.store.delete('projects', self.project['id'])
+        with self.assertRaises(KeyError):
+            Engine.claim(self.engine, self.project['id'])
+        self.assertFalse(self.engine.busy)
+
+    def test_trial_logs_clear_without_changing_results_or_running_work(self):
+        self.engine.store.put('trials', {'id': 'd'*32, 'project_id': self.project['id'], 'status': 'passed', 'logs': ['diagnostic'], 'result': {'status': 'passed'}})
+        self.engine.store.put('trials', {'id': 'e'*32, 'project_id': self.project['id'], 'status': 'running', 'logs': ['active']})
+        result = manage(self.engine, {'action': 'clear_activity'})
+        self.assertEqual(result['trials_cleared'], 1)
+        self.assertEqual(self.engine.store.get('trials', 'd'*32)['result'], {'status': 'passed'})
+        self.assertEqual(self.engine.store.get('trials', 'd'*32)['logs'], [])
+        self.assertEqual(self.engine.store.get('trials', 'e'*32)['logs'], ['active'])
 
     def test_reset_instructions_preserves_prior_definition_and_download(self):
         manage(self.engine, {'action': 'reset_instructions', 'project_id': self.project['id']})

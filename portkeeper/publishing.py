@@ -16,20 +16,21 @@ class Publisher:
         self.store = engine.store
 
     def queue(self, artifact_id):
-        artifact = self.store.get("artifacts", artifact_id)
-        if artifact.get("demo"):
-            raise Invalid("Synthetic demo packages are not published to RomM")
-        state = (artifact.get("romm") or {}).get("status")
-        if state == "uploading":
-            raise Invalid("This package is already being uploaded to RomM")
-        if state == "in_romm":
-            raise Invalid("This package is already in RomM")
-        if not self.engine.romm.public_config().get("configured"):
-            raise Invalid("Connect RomM in Settings before publishing")
-        project = self.store.get("projects", artifact["project_id"])
-        job = self.engine.job(project, artifact["target"], artifact["version"])
-        job = self.store.update("jobs", job["id"], kind="publish", artifact_id=artifact_id, stage="publishing")
-        self.store.update("artifacts", artifact_id, romm={"status": "uploading", "queued_at": now()})
+        with self.engine.lock:
+            artifact = self.store.get("artifacts", artifact_id)
+            if artifact.get("demo"):
+                raise Invalid("Synthetic demo packages are not published to RomM")
+            state = (artifact.get("romm") or {}).get("status")
+            if state == "uploading":
+                raise Invalid("This package is already being uploaded to RomM")
+            if state == "in_romm":
+                raise Invalid("This package is already in RomM")
+            if not self.engine.romm.public_config().get("configured"):
+                raise Invalid("Connect RomM in Settings before publishing")
+            project = self.store.get("projects", artifact["project_id"])
+            job = self.engine.job(project, artifact["target"], artifact["version"])
+            job = self.store.update("jobs", job["id"], kind="publish", artifact_id=artifact_id, stage="publishing")
+            self.store.update("artifacts", artifact_id, romm={"status": "uploading", "queued_at": now()})
         self.engine.executor.submit(self.run_job, job["id"], artifact_id)
         return {"job": job}
 

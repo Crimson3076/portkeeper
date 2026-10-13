@@ -642,8 +642,11 @@ class Engine:
         with self.match_lock:
             return ImportIdentities(self.romm, self.data, self.store).sync()
 
-    def claim(self, project_id):
+    def claim(self, project_id, expected_project=None):
         with self.lock:
+            current = self.store.get("projects", project_id)
+            if expected_project is not None and any(current.get(key) != expected_project.get(key) for key in ("packaging", "recipe", "targets")):
+                raise Busy("This game's instructions changed while the request was being prepared; try again")
             if project_id in self.busy:
                 raise Busy("A job is already running for this project")
             self.busy.add(project_id)
@@ -680,7 +683,7 @@ class Engine:
             if not project.get("profile"):
                 raise Invalid("Explicit release capture is available for verified profiles")
             ensure_release(project["profile"], release_version)
-        self.claim(project_id)
+        self.claim(project_id, expected_project=project)
         job = self.job(project, "capture")
         job = self.store.update("jobs", job["id"], build_after=build_after, release_version=release_version,
                                 publish_after=publish_after, draft_after=draft_after)
@@ -971,7 +974,7 @@ class Engine:
             self.publish_existing(skipped)
         if not planned:
             return {"jobs": [], "skipped": skipped, "message": message}
-        self.claim(project_id)
+        self.claim(project_id, expected_project=project)
         jobs = self.queue_jobs(project, capture, planned, publish)
         self.executor.submit(self._run_group, project, capture, jobs)
         return {"jobs": jobs, "skipped": skipped, "message": message}
@@ -1414,21 +1417,22 @@ class Engine:
         return drafting.workspace_zip(result["prompt"], result["context"], self.catalog.definitions())
 
     def queue_draft(self, project_id, instruction="", targets=None, prepare_game_files=True, review_model=False):
-        project = self.store.get("projects", project_id)
-        if not self.assistant.connected():
-            raise Invalid("No model is connected. Use the prepared prompt with your own chat, or connect a model in Settings.")
-        if not isinstance(review_model, bool):
-            raise Invalid('Choose whether a separate model review should run')
-        if not isinstance(instruction, str) or len(instruction) > 4000:
-            raise Invalid("Keep the extra instructions under 4000 characters")
-        if not isinstance(prepare_game_files, bool):
-            raise Invalid('Choose whether game files should be prepared during packaging')
-        if targets is not None and (not isinstance(targets, list) or not targets or any(t not in TARGETS for t in targets) or len(set(targets)) != len(targets) or not set(project["targets"]).issubset(targets)):
-            raise Invalid("Draft platforms must include current platforms and supported target IDs")
-        job = self.job(project, "capture", project.get("latest_version"))
-        job = self.store.update("jobs", job["id"], kind="draft", stage="drafting", status="running", requested_targets=targets, instruction=instruction, prepare_game_files=prepare_game_files, review_model=review_model)
-        self.executor.submit(self._draft, project_id, job["id"], instruction)
-        return {"job": job}
+        with self.lock:
+            project = self.store.get("projects", project_id)
+            if not self.assistant.connected():
+                raise Invalid("No model is connected. Use the prepared prompt with your own chat, or connect a model in Settings.")
+            if not isinstance(review_model, bool):
+                raise Invalid('Choose whether a separate model review should run')
+            if not isinstance(instruction, str) or len(instruction) > 4000:
+                raise Invalid("Keep the extra instructions under 4000 characters")
+            if not isinstance(prepare_game_files, bool):
+                raise Invalid('Choose whether game files should be prepared during packaging')
+            if targets is not None and (not isinstance(targets, list) or not targets or any(t not in TARGETS for t in targets) or len(set(targets)) != len(targets) or not set(project["targets"]).issubset(targets)):
+                raise Invalid("Draft platforms must include current platforms and supported target IDs")
+            job = self.job(project, "capture", project.get("latest_version"))
+            job = self.store.update("jobs", job["id"], kind="draft", stage="drafting", status="running", requested_targets=targets, instruction=instruction, prepare_game_files=prepare_game_files, review_model=review_model)
+            self.executor.submit(self._draft, project_id, job["id"], instruction)
+            return {"job": job}
 
     def _draft(self, project_id, job_id, instruction):
         from . import drafting
