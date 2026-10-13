@@ -60,8 +60,8 @@ Example on the dedicated rootless host, from the checked-out Portkeeper reposito
 
 ```bash
 docker info --format '{{json .SecurityOptions}}'
-docker pull ghcr.io/crimson3076/portkeeper-worker:latest
-PORTKEEPER_WORKER_IMAGE_ID=$(docker image inspect --format '{{.Id}}' ghcr.io/crimson3076/portkeeper-worker:latest)
+docker pull ghcr.io/crimson3076/portkeeper:worker-latest
+PORTKEEPER_WORKER_IMAGE_ID=$(docker image inspect --format '{{.Id}}' ghcr.io/crimson3076/portkeeper:worker-latest)
 
 export PORTKEEPER_BROKER_DIRECTORY="$PWD/.worker"
 export PORTKEEPER_OWNED_DIRECTORY="/srv/owned-game-files"
@@ -162,11 +162,12 @@ downloads are local, not automatically published as public recipes.
 
 ## Enforced bounds and current limits
 
-- Default: 20 model requests/job, 100 across a rolling day, one setup job at a time,
+- Default: 20 controller model calls/job, 100 across a rolling day, one setup job at a time,
   three repeated failures before stopping, 120 elapsed minutes and 120 worker minutes.
   Reservations are persisted before dispatch. Rejected actions count. This mode
   disables the API transport’s hidden retry/fallback. Native CLI token usage may be
-  unavailable; request/time counts do not claim a hard dollar cap.
+  unavailable; native clients may retry internally. Request/time counts do not claim
+  an exact upstream request count or hard dollar cap.
 - Every worker has no network, a read-only root and seed/input mounts, dropped
   capabilities, seccomp/no-new-privileges, 4 CPUs, 8 GiB memory with no additional
   swap, 256 PIDs, 2 GiB `/work` tmpfs and 256 MiB `/tmp`. The broker checks actual
