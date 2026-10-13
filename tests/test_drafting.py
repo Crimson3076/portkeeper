@@ -74,6 +74,16 @@ class DraftingTests(unittest.TestCase):
         self.assertIn('hexadecimal hashes in lowercase', user)
         self.assertLessEqual(len(drafting.SYSTEM) + len(user), 24000)
 
+    def test_small_context_keeps_runtime_evidence_when_readme_is_long(self):
+        source = self.root / 'large-source.zip'
+        with zipfile.ZipFile(source, 'w') as archive:
+            archive.writestr('port/README.md', 'Documentation ' * 3000)
+            archive.writestr('port/docs/BUILDING.md', 'Build details ' * 3000)
+            archive.writestr('port/src/runtime.cpp', 'GetPathRelativeToAppDirectory("game.otr");')
+        bundle = drafting.source_bundle(source, 8000)
+        self.assertLessEqual(len(json.dumps(bundle)), 8000)
+        self.assertTrue(any(item['path'] == 'src/runtime.cpp' for item in bundle['source_excerpts']))
+
     def test_changed_source_is_refused(self):
         self.capture["source"]["sha256"] = "0" * 64
         with self.assertRaisesRegex(Invalid, "changed"):
