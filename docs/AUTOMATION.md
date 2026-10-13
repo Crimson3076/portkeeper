@@ -50,7 +50,9 @@ account’s accessible exchange directory. Only this trusted broker controls mou
 image and resource flags; model requests cannot choose host paths or Docker flags.
 
 Use a Linux machine/VM with **cgroup v2 delegation**, rootless Docker, Python 3.11+
-and enough disk/RAM. A dedicated Linux VM on Unraid is a suitable deployment option:
+and enough disk/RAM. On Debian/Ubuntu, rootless cgroup control also needs
+`dbus-user-session`, the user's running systemd manager and its session bus.
+A dedicated Linux VM on Unraid is a suitable deployment option:
 run the app and broker in that VM and mount the NAS game collection read-only.
 The standard Unraid Docker daemon is rootful and is refused. Rootless/cgroup behavior
 on a particular Unraid host has not been validated here; do not replace the boundary

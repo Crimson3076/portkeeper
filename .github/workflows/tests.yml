@@ -26,12 +26,20 @@ jobs:
           python-version: '3.13'
       - name: Delegate resource controllers to the ephemeral runner account
         run: |
+          # runc must detect/connect to the user's bus, not the privileged system
+          # manager (which asks for interactive authentication in rootless mode).
+          sudo apt-get update
+          sudo apt-get install -y dbus-user-session uidmap
           sudo mkdir -p /etc/systemd/system/user@.service.d
           printf '[Service]\nDelegate=cpu cpuset io memory pids\n' | sudo tee /etc/systemd/system/user@.service.d/portkeeper-delegate.conf >/dev/null
           sudo systemctl daemon-reload
           sudo loginctl enable-linger "$(id -un)"
           sudo systemctl start "user@$(id -u).service"
           printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$(id -u)" "$(id -u)" >> "$GITHUB_ENV"
+      - name: Verify the unprivileged session bus
+        run: |
+          systemctl --user start dbus.socket
+          test -S "/run/user/$(id -u)/bus"
       - uses: docker/setup-docker-action@e43656e248c0bd0647d3f5c195d116aacf6fcaf4 # v4
         with:
           rootless: true
