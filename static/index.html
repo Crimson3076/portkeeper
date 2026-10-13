@@ -31,8 +31,19 @@
       </section>
       <section id="activity-page" class="page-view" aria-labelledby="activity-heading" hidden>
         <div class="page-heading"><div><div class="eyebrow">WHAT’S HAPPENING</div><h1 id="activity-heading">Activity<span>.</span></h1><p>Follow a build, retry a failed step, or catch up on your inbox.</p></div></div>
-        <div class="tabs" role="tablist" aria-label="Activity views"><button class="selected" role="tab" id="jobs-tab" aria-controls="activity-content" aria-selected="true">All activity <span id="jobs-count">0</span></button><button role="tab" id="packages-tab" aria-controls="activity-content" aria-selected="false">Build archives <span id="artifacts-count">0</span></button><button role="tab" id="notifications-tab" aria-controls="activity-content" aria-selected="false">Inbox <span id="notifications-count">0</span></button></div>
-        <div id="activity-filters" class="activity-filters"><label for="activity-game-filter">Game<select id="activity-game-filter"><option value="">All games</option></select></label><label for="activity-type-filter">Show<select id="activity-type-filter"><option value="">All activity</option><option value="build">Builds & update checks</option><option value="import">RomM imports</option><option value="test">Test results</option></select></label></div>
+        <div class="tabs activity-tabs" role="tablist" aria-label="Activity views">
+          <button class="selected" role="tab" id="jobs-tab" data-activity-view="jobs" aria-controls="activity-content" aria-selected="true">All activity <span id="jobs-count">0</span></button>
+          <button role="tab" id="builds-tab" data-activity-view="builds" aria-controls="activity-content" aria-selected="false" tabindex="-1">Builds <span id="builds-count">0</span></button>
+          <button role="tab" id="checks-tab" data-activity-view="checks" aria-controls="activity-content" aria-selected="false" tabindex="-1">Update checks <span id="checks-count">0</span></button>
+          <button role="tab" id="drafts-tab" data-activity-view="drafts" aria-controls="activity-content" aria-selected="false" tabindex="-1">Model drafts <span id="drafts-count">0</span></button>
+          <button role="tab" id="uploads-tab" data-activity-view="uploads" aria-controls="activity-content" aria-selected="false" tabindex="-1">Uploads <span id="uploads-count">0</span></button>
+          <button role="tab" id="tests-tab" data-activity-view="tests" aria-controls="activity-content" aria-selected="false" tabindex="-1">Test results <span id="tests-count">0</span></button>
+          <button role="tab" id="imports-tab" data-activity-view="imports" aria-controls="activity-content" aria-selected="false" tabindex="-1">RomM imports <span id="imports-count">0</span></button>
+          <button role="tab" id="packages-tab" data-activity-view="packages" aria-controls="activity-content" aria-selected="false" tabindex="-1">Build archives <span id="artifacts-count">0</span></button>
+          <button role="tab" id="notifications-tab" data-activity-view="notifications" aria-controls="activity-content" aria-selected="false" tabindex="-1">Inbox <span id="notifications-count">0</span></button>
+        </div>
+        <div id="activity-filters" class="activity-filters"><label for="activity-game-filter">Game<select id="activity-game-filter"><option value="">All games</option></select></label><label id="activity-type-field" for="activity-type-filter">Show<select id="activity-type-filter"><option value="">All activity</option><option value="builds">Builds</option><option value="checks">Update checks</option><option value="drafts">Model drafts</option><option value="uploads">Uploads</option><option value="tests">Test results</option><option value="imports">RomM imports</option></select></label></div>
+        <p id="activity-view-note" class="field-help activity-view-note">Update checks, builds and uploads are recorded separately.</p>
         <div id="activity-content" class="activity-panel" role="tabpanel" aria-labelledby="jobs-tab"></div>
       </section>
       <section id="settings-page" class="page-view" aria-labelledby="settings-heading" hidden>

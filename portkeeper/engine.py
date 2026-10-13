@@ -787,7 +787,12 @@ class Engine:
             if release_version is None or not project.get("capture_id"):
                 fields.update(latest_version=capture["version"], capture_id=capture["id"])
             self.store.update("projects", project["id"], **fields)
-            self.store.update("jobs", jid, version=capture["version"], status="archived", finished_at=now())
+            check_message = (f"Upstream changes saved for {capture['version']}." if changed
+                             else f"No new release or download changes; latest is {capture['version']}.")
+            if changed and not build_after and not project['auto_build']:
+                check_message += " Automatic builds are off."
+            self.store.update("jobs", jid, version=capture["version"], status="archived", finished_at=now(),
+                              upstream_changed=changed, check_outcome="changed" if changed else "unchanged", message=check_message)
             if project.get("profile"):
                 from .profiles import ensure_release
                 ensure_release(project["profile"], capture["version"], capture["commit"])
@@ -797,8 +802,9 @@ class Engine:
             if definition:
                 review = self.review_release(project, definition, capture, log)
             self.watch_platform_releases(project, release, log)
-            self.stage(jid, "complete", "Release preservation finished")
+            self.stage(jid, "complete", check_message)
             if review and review["status"] == "needs_review":
+                self.store.update("jobs", jid, check_outcome="needs_review", message=f"{capture['version']} was preserved but needs instruction review before building.")
                 if build_after or project["auto_build"]:
                     log("Not packaged: this release needs review first")
                 return
@@ -811,7 +817,10 @@ class Engine:
                     log(message)
                 if job.get("publish_after"):
                     self.publish_existing(skipped, log)
+                if not planned and skipped:
+                    self.store.update("jobs", jid, check_outcome="packages_current", message=f"Existing packages already match {capture['version']} and the current instructions and inputs; no rebuild needed.")
                 if planned:
+                    self.store.update("jobs", jid, check_outcome="builds_queued", message=f"Builds queued for {capture['version']}: " + ", ".join(target for target, _key in planned))
                     jobs = self.queue_jobs(project, capture, planned, bool(job.get("publish_after")))
                     if job.get("publication_override") is not None:
                         jobs = [self.store.update("jobs", item["id"], publication_override=job["publication_override"]) for item in jobs]
