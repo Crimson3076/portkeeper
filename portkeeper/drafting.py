@@ -222,7 +222,11 @@ def source_bundle(source_zip, budget, targets=()):
             if hits:
                 snippet = "\n".join(f"{i + 1}: {lines[i][:240]}" for i in sorted({j for h in hits for j in range(max(0, h - 2), min(len(lines), h + 3))}))
                 excerpts.append({"path": name, "lines": snippet})
-    bundle = {"readme": readme, "documentation": docs, "file_tree": tree, "source_excerpts": excerpts}
+    # Apply the same compact bounds before trimming, so a long README cannot
+    # evict all runtime evidence from smaller (including pasted/cloud) contexts.
+    bundle = {"readme": readme[:8000],
+              "documentation": [{**doc, "text": doc["text"][:1000]} for doc in docs[:2]],
+              "file_tree": tree[:150], "source_excerpts": relevant_excerpts(excerpts)[:8]}
     return trim(bundle, budget)
 
 
@@ -230,7 +234,11 @@ def trim(bundle, budget):
     """Fit the bundle into a character budget, dropping the least useful material first."""
     def size():
         return len(json.dumps(bundle))
-    order = [("source_excerpts", 8), ("documentation", 2), ("file_tree", 150), ("source_excerpts", 0), ("documentation", 0)]
+    # Retain the best excerpts while discarding ancillary lists and long prose.
+    if size() > budget:
+        bundle["file_tree"] = []
+        bundle["documentation"] = bundle["documentation"][:1]
+    order = [("documentation", 0), ("source_excerpts", 2), ("file_tree", 0)]
     for key, keep in order:
         while size() > budget and len(bundle[key]) > keep:
             bundle[key] = bundle[key][:-1] if key != "file_tree" else bundle[key][: max(keep, len(bundle[key]) // 2)]
