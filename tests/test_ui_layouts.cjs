@@ -193,12 +193,15 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
     model_review:{status:'needs_attention',summary:'Inspect the settings location.',note:'Model review is advisory. Build and gameplay are untested.',findings:[
       {severity:'issue',field:'saves',message:'Settings use APPDATA.',evidence_status:'quote_found',evidence:{path:'launcher.py',quote:'CONFIG_DIR = APPDATA'}},
       {severity:'uncertain',field:'dependencies',message:'Cannot establish this dependency.',evidence_status:'unconfirmed',evidence:{path:'README.md',quote:'Unmatched quote'}}]}}];
+  reviewed.jobs=[{id:id(26),project_id:id(2),status:'ready',target:'capture',kind:'draft',created_at:'2026-10-11T12:00:00Z',finished_at:'2026-10-11T12:01:00Z',logs:[],draft_record_available:true}];
   dom=await create(null,false,reviewed);w=dom.window;d=w.document;
   [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();d.getElementById('project-advanced-tab').click();await tick();
   const reviewText=d.getElementById('project-content').textContent;
   assert(reviewText.includes('Quote found in supplied material'));assert(reviewText.includes('Evidence could not be matched'));assert(reviewText.includes('Uncertain · dependencies'));
   assert(reviewText.includes('Build and gameplay have not been tested'));assert(reviewText.includes('View starter JSON'));
   assert(d.querySelector(`a[href="/api/jobs/${id(26)}/draft-record"]`).hasAttribute('download'));
+  reviewed.jobs[0].draft_record_available=false;w.pollRefresh();await tick();await tick();
+  assert(!d.querySelector(`a[href="/api/jobs/${id(26)}/draft-record"]`),'Cleared drafting records do not keep a broken download link');
   const reviewDisclosure=[...d.querySelectorAll('details')].find(node=>node.textContent.includes('View review JSON'));reviewDisclosure.open=true;
   let reviewCopied='';w.navigator.clipboard={writeText:async text=>{reviewCopied=text;}};
   [...reviewDisclosure.querySelectorAll('button')].find(node=>node.textContent==='Copy JSON').click();await tick();

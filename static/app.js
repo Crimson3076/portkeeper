@@ -2008,7 +2008,7 @@ function renderProposalReview(card, project, proposal) {
     card.append(disclosure(`model-review:${proposal.id}`, "diagnostics-list", [el("summary", "table-action", "View review JSON"), jsonViewer(`review:${proposal.id}`, review, "proposal-json")]));
   } else card.append(el("p", "quiet-note", "No fresh model review was recorded for this draft. Inspect the instructions yourself before approving."));
   if (proposal.starter) card.append(disclosure(`starter:${proposal.id}`, "diagnostics-list", [el("summary", "table-action", "View starter JSON and unresolved choices"), jsonViewer(`starter:${proposal.id}`, proposal.starter, "proposal-json")]));
-  if (proposal.draft_job_id) card.append(draftingRecordLink(proposal.draft_job_id));
+  if (proposal.draft_job_id && state.jobs.some(job => job.id === proposal.draft_job_id && job.draft_record_available)) card.append(draftingRecordLink(proposal.draft_job_id));
   card.append(disclosure(`draft-definition:${proposal.id}`, "diagnostics-list", [el("summary", "table-action", "View definition JSON"), jsonViewer(`proposal:${proposal.id}`, definition, "proposal-json")]));
   card.append(el("div", "inline-actions", [button(busy.has(`approve-${proposal.id}`) ? "Approving…" : "Approve", "button primary small", () => approveDraft(proposal, project), busy.has(`approve-${proposal.id}`)), button("Discard", "button secondary small", () => runAction(`discard-${proposal.id}`, `/api/proposals/${encodeURIComponent(proposal.id)}/discard`, {}, "Draft discarded."))]));
   card.append(el("p", "quiet-note", "After approving, use Build packages to run a test build. A failed build changes nothing else."));
