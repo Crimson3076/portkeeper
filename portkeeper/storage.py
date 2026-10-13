@@ -18,7 +18,7 @@ def identifier():
 class Store:
     """Small serialized store; each operation uses an independent connection."""
 
-    tables = {"projects", "captures", "jobs", "artifacts", "notifications", "preservations", "settings", "proposals", "imports", "playtests"}
+    tables = {"projects", "captures", "jobs", "artifacts", "notifications", "preservations", "settings", "proposals", "imports", "playtests", "trials"}
 
     def __init__(self, path):
         self.path = Path(path)

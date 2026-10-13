@@ -68,13 +68,16 @@ Top-level fields:
   - copy: {from, to}
   - include_tree: {from: "$shared/...", as: "folder in package"}
   - launcher: {path: "Launch.sh" or "Launch.cmd", template: "posix" | "windows_cmd", exec: "relative
-    executable", args: [...], env: {NAME: value}, mkdir: [...], chmod_exec: true}. $PWD (posix) and
-    %~dp0 or %CD% (windows_cmd) refer to the package folder.
+    executable", args: [...], env: {NAME: value}, mkdir: [...], chmod_exec: true, prepare_once: {exec,
+    args, unless_exists}}. $PWD (posix) and %~dp0 or %CD% (windows_cmd) refer to the package folder.
+    prepare_once runs a release-provided setup command (for example a non-interactive first-run setup)
+    before exec, only while the file unless_exists is missing, so later starts skip it.
   - write_text: {path, text}  text may use {version} {target} {name} {repository} {launch_command}.
   - touch: {path}  create an empty marker file such as portable.txt.
   - tool: fixed tools only. ship_o2r_headless {download, appimage, rom, output, to, min_entries},
     opengoal_extract {download, game, iso, collect, to}, ps4_pkg_extract {tool_download, packages,
-    title_id, app_version, accepted_eboot_sha256, to}. Use a tool only when the project clearly needs it.
+    title_id, app_version, accepted_eboot_sha256, to}, wwhd_extract {download, extractor, archive, titles,
+    accepted_rpx_sha256, to}. Use a tool only when the project clearly needs it.
     ps4_pkg_extract details: packages is an ordered array of input IDs: BASE FIRST, UPDATE SECOND.
     Each PKG input is kind file, verify downstream, platform_hint ps4, name_hint "(?i)\\.pkg$",
     max_bytes up to 68719476736. Metadata distinguishes base/update; do not rely on filenames.

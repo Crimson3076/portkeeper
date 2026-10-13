@@ -253,5 +253,32 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual((status, headers["Content-Type"], body), (200, "image/png", b"\x89PNG"))
 
 
+    def test_mcp_needs_a_token_and_lists_and_calls_model_tools(self):
+        def rpc(payload, token=None):
+            headers = {"Authorization": "Bearer " + token} if token else {}
+            status, _, body = self.request("POST", "/mcp", payload, headers)
+            return status, json.loads(body) if body else None
+        self.assertEqual(rpc({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})[0], 401)
+        status, _, body = self.request("POST", "/api/mcp/config", {"enabled": True})
+        token = json.loads(body)["token"]
+        self.assertEqual(rpc({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, "wrong")[0], 401)
+        status, reply = rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}}, token)
+        self.assertEqual(reply["result"]["serverInfo"]["name"], "portkeeper")
+        self.assertEqual(rpc({"jsonrpc": "2.0", "method": "notifications/initialized"}, token)[0], 202)
+        names = [tool["name"] for tool in rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, token)[1]["result"]["tools"]]
+        self.assertIn("test_build_draft", names)
+        self.assertNotIn("approve_draft", names)
+        listed = rpc({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "list_games", "arguments": {}}}, token)[1]["result"]
+        self.assertFalse(listed["isError"])
+        self.assertEqual(listed["structuredContent"], {"games": []})
+        failed = rpc({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "read_game", "arguments": {"game_id": "0" * 32}}}, token)[1]["result"]
+        self.assertTrue(failed["isError"])
+        state = json.loads(self.request("GET", "/api/state")[2])
+        self.assertTrue(state["mcp"]["enabled"])
+        self.assertNotIn(token, json.dumps(state))
+        self.request("POST", "/api/mcp/config", {"enabled": False})
+        self.assertEqual(rpc({"jsonrpc": "2.0", "id": 5, "method": "tools/list"}, token)[0], 401)
+
+
 if __name__ == "__main__":
     unittest.main()

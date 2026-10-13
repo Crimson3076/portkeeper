@@ -137,7 +137,8 @@ class OperationRunner:
                 "compat_ssl": (ssl / "libssl.so.1.1").is_file() and (ssl / "libcrypto.so.1.1").is_file(),
                 "tools": {"ship_o2r_headless": "needs xvfb-run and Mesa (included in the container image)",
                           "opengoal_extract": "runs the release's Linux extractor",
-                          "ps4_pkg_extract": "needs the pinned PkgTool and OpenSSL 1.1 libraries (included in the container image)"}}
+                          "ps4_pkg_extract": "needs the pinned PkgTool and OpenSSL 1.1 libraries (included in the container image)",
+                          "wwhd_extract": "runs the release's Linux Wii U extractor on a Cemu archive"}}
 
     # Inputs -----------------------------------------------------------------
     def locate(self, _project, definition, input_id):
@@ -511,7 +512,64 @@ class OperationRunner:
             return self._ship_o2r(ctx, op, destination, timeout)
         if name == "opengoal_extract":
             return self._opengoal(ctx, op, destination, timeout)
+        if name == "wwhd_extract":
+            return self._wwhd(ctx, op, destination, timeout)
         return self._ps4(ctx, op, destination, timeout)
+
+    def _wwhd(self, ctx, op, destination, timeout):
+        """Extract one title folder (code/, content/, meta/) from the person's Cemu archive (.wua)
+        with the extractor the release ships, then check the game code against accepted hashes."""
+        ctx.stage("extracting", "Extracting your Wii U game with the release's extractor")
+        archive = self.resolve_input(ctx, op["archive"])
+        run = ctx.workspace / ("wwhd-" + identifier())
+        self.unpack(ctx, op["download"], run)
+        extractor = confined(run, op["extractor"], must_exist=True)
+        extractor.chmod(0o755)
+        (run / "home").mkdir()
+        env = {"HOME": str(run / "home")}
+        info, found = {}, []
+        for title in op["titles"]:
+            log_path = ctx.workspace / "wwhd-info.log"
+            try:
+                self.run([str(extractor), "--title", title, "info", str(archive["path"])], run, env, log_path, 600)
+                ok = True
+            except Invalid:
+                ok = False
+            info = {}
+            for line in Path(log_path).read_text("utf-8", "replace").splitlines():
+                key, _, value = line.partition(" ")
+                if key == "title":
+                    found.append(value.split(" ")[0])
+                elif key in ("selected", "version", "format", "error:"):
+                    info[key] = value.strip()
+            if ok and info.get("selected"):
+                break
+            if info.get("format") != "wua":
+                raise Invalid(f"{archive['path'].name} is not a readable Cemu Wii U archive: {info.get('error:') or self.tail(log_path, 300)}")
+            info = {}
+        if not info.get("selected"):
+            raise Invalid(f"{archive['path'].name} does not contain title " + " or ".join(op["titles"]) + (f" (it contains {', '.join(sorted(set(found)))})" if found else "") + ". Make the Cemu archive with the base game included.")
+        if info.get("version") not in ("0", "00"):
+            raise Invalid(f"The game in this archive is version {info.get('version')}; only version 0 (without the update merged in) is supported.")
+        ctx.log(f"Using {info['selected']} from {archive['path'].name}")
+        output = run / "game"
+        log_path = ctx.workspace / "wwhd-extract.log"
+        try:
+            self.run([str(extractor), "--title", info["selected"], "extract", str(archive["path"]), str(output)], run, env, log_path, timeout)
+        finally:
+            self.keep_log(ctx, "wwhd-extract", log_path)
+        rpx = output / "code" / "cking.rpx"
+        if not rpx.is_file() or not (output / "content").is_dir() or not (output / "meta" / "meta.xml").is_file():
+            raise Invalid("The extractor did not produce code/cking.rpx, content/ and meta/meta.xml")
+        digest = checksum(rpx)
+        if digest not in op["accepted_rpx_sha256"]:
+            raise Invalid(f"code/cking.rpx has SHA-256 {digest[:16]}…, which is not an accepted version 0 build. Nothing was packaged.")
+        self.check_tree(output, 64 * packaging.GIB)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(output), str(destination))
+        ctx.provenance["tools"].append({"tool": "wwhd_extract", "title": info["selected"], "rpx_sha256": digest})
+        ctx.log(f"Extracted and verified {info['selected']} (code/cking.rpx {digest[:16]}…)")
+        shutil.rmtree(run, ignore_errors=True)
 
     def _ship_o2r(self, ctx, op, destination, timeout):
         if not shutil.which("xvfb-run"):
@@ -823,11 +881,18 @@ class OperationRunner:
             lines += [f"python3 ./{script}" for script in op.get("run_python", [])]
             if op.get("chmod_exec"):
                 lines.append(f'chmod +x "./{op["exec"]}"')
+            prepare = op.get("prepare_once")
+            if prepare:
+                lines.append(f'if [ ! -e "./{prepare["unless_exists"]}" ]; then "./{prepare["exec"]}"' + "".join(f' "{arg}"' for arg in prepare.get("args", [])) + "; fi")
             lines.append(f'exec "./{op["exec"]}"' + "".join(f' "{arg}"' for arg in args) + ' "$@"')
             return ("\n".join(lines) + "\n").encode(), 0o755
         lines = ["@echo off", "setlocal", 'cd /d "%~dp0"']
         lines += [f'if not exist "{path}" mkdir "{path}"' for path in (p.replace("/", "\\") for p in op.get("mkdir", []))]
         lines += [f'set "{key}={value}"' for key, value in env.items()]
+        prepare = op.get("prepare_once")
+        if prepare:
+            lines.append(f'if not exist "{prepare["unless_exists"].replace("/", chr(92))}" "%~dp0{prepare["exec"].replace("/", chr(92))}"' + "".join(f' "{arg}"' for arg in prepare.get("args", [])))
+            lines.append("if errorlevel 1 exit /b 1")
         lines.append(f'"%~dp0{op["exec"].replace("/", chr(92))}"' + "".join(f' "{arg}"' for arg in args) + " %*")
         return ("\r\n".join(lines) + "\r\n").encode(), 0o644
 
@@ -983,6 +1048,92 @@ class OperationRunner:
                     shutil.rmtree(group / ("package-" + target), ignore_errors=True)
         finally:
             shutil.rmtree(group, ignore_errors=True)
+
+    @staticmethod
+    def op_inputs(op):
+        """Game file inputs an operation cannot run without."""
+        if op["op"] == "stage_input":
+            return [op["input"]]
+        if op.get("tool") == "opengoal_extract":
+            return [op["iso"]]
+        if op.get("tool") == "ps4_pkg_extract":
+            return op["packages"][:1]
+        if op.get("tool") == "wwhd_extract":
+            return [op["archive"]]
+        return []
+
+    def trial(self, project, definition, capture, targets, log):
+        """Build a draft without archiving it. Steps that need unselected game files are skipped,
+        and checks that depend on them are reported as unverified instead of failed."""
+        bindings = project.get("input_bindings") or {}
+        group = self.engine.work_root / ("trial-" + identifier())
+        group.mkdir(parents=True)
+        skipped, skipped_paths, results = [], [], {}
+
+        def blocked(op):
+            missing = [i for i in self.op_inputs(op) if i not in bindings]
+            sources = [op.get(key) for key in ("from", "rom") if isinstance(op.get(key), str)]
+            if not missing and not any(s == p or s.startswith(p.rstrip("/") + "/") for s in sources for p in skipped_paths):
+                return False
+            skipped_paths.extend(op[key] for key in ("to", "path") if isinstance(op.get(key), str))
+            if op["op"] == "include_tree":
+                skipped_paths.append("$package/" + op["as"])
+            skipped.append({"op": op["op"], "tool": op.get("tool"), "needs": missing or ["output of a skipped step"]})
+            log(f"Skipped {op.get('tool') or op['op']}: " + (f"game file {', '.join(missing)} is not selected" if missing else "it uses the output of a skipped step"))
+            return True
+
+        def under_skipped(name):
+            path = "$package/" + name
+            return any(path == p or path.startswith(p.rstrip("/") + "/") for p in skipped_paths)
+
+        try:
+            ctx = Context(self, project, definition, capture, group, log, lambda _stage, message: log(message))
+            try:
+                if ctx.download_problems:
+                    raise Invalid("; ".join(ctx.download_problems))
+                for op in definition["operations"]:
+                    if self.shared_op(op) and not blocked(op):
+                        self.apply(ctx, op)
+            except Exception as error:
+                log(f"Shared steps failed: {error}")
+                return {"status": "failed", "stage": "shared steps", "error": str(error), "skipped": skipped, "targets": {}}
+            for target in targets:
+                ctx.includes = []
+                package = group / ("package-" + target)
+                package.mkdir()
+                result = {"status": "passed", "missing": [], "unverified": []}
+                try:
+                    for op in definition["operations"]:
+                        if self.shared_op(op) or (op.get("targets") and target not in op["targets"]):
+                            continue
+                        if not blocked(op):
+                            self.apply(ctx, op, package, target)
+                    for op in definition["operations"]:
+                        if op["op"] == "launcher" and (not op.get("targets") or target in op["targets"]):
+                            if not confined(package, op["exec"]).is_file():
+                                (result["unverified"] if under_skipped(op["exec"]) else result["missing"]).append(op["exec"])
+                    for name in definition["outputs"][target]["expected_files"]:
+                        include = next(((source, prefix) for source, prefix in ctx.includes if name.startswith(prefix + "/")), None)
+                        path = confined(include[0], name[len(include[1]) + 1:]) if include else confined(package, name)
+                        if not path.exists():
+                            (result["unverified"] if under_skipped(name) else result["missing"]).append(name)
+                    total, count = self.check_tree(package, definition["outputs"][target].get("max_bytes", 2 * packaging.GIB), ctx.includes)
+                    files = sorted(p.relative_to(package).as_posix() for p in package.rglob("*") if p.is_file())
+                    result.update(files=count, bytes=total, top_level=sorted({f.split("/", 1)[0] for f in files})[:40], sample_files=files[:200])
+                    if result["missing"]:
+                        result.update(status="failed", error="Expected files or launcher targets are missing: " + ", ".join(result["missing"][:20]))
+                    elif result["unverified"] or skipped:
+                        result["status"] = "partial"
+                except Exception as error:
+                    result.update(status="failed", error=str(error))
+                results[target] = result
+                log(f"{target}: {result['status']}" + (f": {result['error']}" if result.get("error") else ""))
+                shutil.rmtree(package, ignore_errors=True)
+        finally:
+            shutil.rmtree(group, ignore_errors=True)
+        statuses = {r["status"] for r in results.values()}
+        status = "failed" if "failed" in statuses else "partial" if "partial" in statuses else "passed"
+        return {"status": status, "skipped": skipped, "targets": results}
 
     def archive(self, ctx, package, target, job):
         output = ctx.definition["outputs"][target]

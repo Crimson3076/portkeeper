@@ -516,6 +516,7 @@ function renderSettings() {
     renderAssistantSettings();
     formConfigFingerprint = fingerprint;
   }
+  renderMcpSettings();
   const settings = state.settings || {};
   $("storage-grid").replaceChildren(...[["Original game files", settings.input_root], ["Preservation archive", settings.archive_root], ["Local library output", settings.library_root]].map(([label, path]) => el("div", "storage-item", [el("h3", "", label), el("code", "", path || "Not configured")])));
   const docker = state.runner?.docker_available && settings.docker_enabled;
@@ -1943,6 +1944,13 @@ function renderProposalReview(card, project, proposal) {
   card.append(el("p", "detail-note", `Drafted by ${proposal.source} · ${dateLabel(proposal.created_at)}. Nothing has run. Review it before approving.`));
   if (proposal.explanation) card.append(el("p", "review-notes", proposal.explanation));
   card.append(el("div", "detail-facts", [meta("Platforms", definition.targets.map((target) => targetLabels[target] || target).join(", ")), meta("Files for packaging", definition.inputs.filter((item) => item.required !== false).map((item) => item.label).join("; ") || "None"), meta("First launch", view.first_run?.text || definition.first_run?.summary || "Not stated", true)]));
+  const asks = definition.inputs.filter((item) => item.required !== false).map((item) => item.label);
+  card.append(el("p", "info-note", asks.length ? `Portkeeper will ask you for: ${asks.join("; ")}.` : definition.first_run?.mode === "asks_user" ? "Portkeeper will not ask you for any game files. The game asks for them when you play." : "Portkeeper will not ask you for any game files."));
+  if (proposal.model_tests?.length) {
+    const labels = { passed: "passed", partial: "passed except steps that need your game files", failed: "failed" };
+    const [latest, ...earlier] = proposal.model_tests;
+    card.append(el("p", "field-help", `Test build of this draft: ${labels[latest.status] || latest.status}.${earlier.length ? ` Earlier test builds: ${earlier.map(t => labels[t.status] || t.status).join(", ")}.` : ""} Test builds keep nothing; the game has not been launched.`));
+  }
   if (view.steps?.length) card.append(el("h3", "", "Build steps"), el("ol", "instruction-steps", view.steps.map((step) => el("li", "", step.text))));
   if (proposal.warnings?.length) card.append(el("h3", "", "Check before approving"), el("ul", "review-problems", proposal.warnings.map((warning) => el("li", "", warning))));
   if (proposal.automatic_checks) {
@@ -2001,6 +2009,34 @@ function syncAssistantFields() {
   $("assistant-api-key").placeholder = sameProvider ? "Saved key · leave blank to keep" : provider === "anthropic" ? "Paste a Claude API key" : "Paste an API key (optional for local servers)";
   $("assistant-clear-key-line").hidden = !sameProvider;
   $("assistant-cloud-model").placeholder = provider === "anthropic" ? "claude-opus-5-5" : "Model name";
+}
+let mcpToken = "", mcpFingerprint = "";
+function renderMcpSettings() {
+  const config = state.mcp || {}, url = `${location.origin}/mcp`;
+  const card = $("mcp-card"); if (!card) return;
+  const fingerprint = JSON.stringify([config, mcpToken, busy.has("mcp")]);
+  if (fingerprint === mcpFingerprint) return;
+  mcpFingerprint = fingerprint;
+  const nodes = [el("h2", "", "Connect an outside agent"),
+    el("p", "", "Lets Claude Code, Codex or another agent that supports MCP draft packaging for your games. It can read releases and source, test-build drafts in a throwaway folder and send drafts to your review. It cannot approve, publish, change settings or see your game files."),
+    el("p", "field-help", config.enabled ? `Connection on since ${dateLabel(config.created_at)}${config.last_used_at ? ` · last used ${dateLabel(config.last_used_at)}` : " · not used yet"}.` : "Off. Turning it on creates a token for your agent.")];
+  if (mcpToken) {
+    const token = el("input"); token.readOnly = true; token.value = mcpToken; token.id = "mcp-token"; token.setAttribute("aria-label", "Agent token");
+    nodes.push(el("p", "form-result", "Copy this token now. It is shown only once."), token,
+      el("p", "field-help", "Claude Code:"), el("code", "command-snippet", `claude mcp add --transport http portkeeper ${url} --header "Authorization: Bearer ${mcpToken}"`),
+      el("p", "field-help", "Codex (~/.codex/config.toml), with the token in the PORTKEEPER_TOKEN environment variable:"), el("code", "command-snippet", `[mcp_servers.portkeeper]\nurl = "${url}"\nbearer_token_env_var = "PORTKEEPER_TOKEN"`),
+      el("p", "field-help", `Other agents: streamable HTTP at ${url} with the header Authorization: Bearer <token>.`));
+  }
+  const actions = el("div", "inline-actions", [button(busy.has("mcp") ? "Working…" : config.enabled ? "Create a new token" : "Turn on", "button secondary", () => setMcp(true), busy.has("mcp")),
+    ...(config.enabled ? [button("Turn off", "text-button", () => setMcp(false), busy.has("mcp"))] : [])]);
+  nodes.push(actions);
+  if (config.enabled && !mcpToken) nodes.push(el("p", "field-help", "A new token replaces the old one; agents using the old token stop working."));
+  card.replaceChildren(...nodes);
+}
+async function setMcp(enabled) {
+  const result = await runAction("mcp", "/api/mcp/config", { enabled }, enabled ? "Agent connection on. Copy the token below." : "Agent connection off.");
+  mcpToken = enabled && result?.token ? result.token : "";
+  render();
 }
 function renderAssistantSettings() {
   const saved = assistantSettings();

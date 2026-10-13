@@ -139,6 +139,10 @@ class Engine:
         from .publishing import Publisher
         from .catalog import Catalog
         self.packager = OperationRunner(self)
+        from .modeltools import ModelTools
+        self.model_tools = ModelTools(self)
+        from .mcp import MCP
+        self.mcp = MCP(self)
         self.publisher = Publisher(self)
         self.catalog = Catalog(self)
         self.enable_docker = enable_docker
@@ -158,6 +162,9 @@ class Engine:
         for job in self.store.all("jobs"):
             if job["status"] in ("queued", "running", "building", "checking"):
                 self.store.update("jobs", job["id"], status="failed", error="Service restarted during this job. Retry explicitly.", finished_at=now())
+        for trial in self.store.all("trials"):
+            if trial["status"] in ("queued", "running"):
+                self.store.update("trials", trial["id"], status="failed", error="Service restarted during this test build.", finished_at=now())
         for project in self.store.all("projects"):
             if project["status"] in ("checking", "building"):
                 self.store.update("projects", project["id"], status="needs_attention", last_error="Previous job was interrupted. Retry explicitly.")
@@ -241,7 +248,7 @@ class Engine:
                            "packaging_runner": {**self.packager.availability(), "runner_version": packaging.RUNNER_VERSION}},
                 "catalog": self.catalog.status(),
                 "romm": public_romm, "profiles": catalog(), "notifications": self.lifecycle.notifications(),
-                "assistant": assistant,
+                "assistant": assistant, "mcp": self.mcp.public_config(),
                 "summary": {"projects": len(projects), "artifacts": len(artifacts),
                             "needs_attention": sum(p["status"] == "needs_attention" for p in projects)}}
 
@@ -1456,7 +1463,22 @@ class Engine:
                     raise Invalid("These accepted hashes do not appear in the project material: " + ", ".join(invented)
                                   + ". Use only hashes quoted in the project material. File inputs can use verify \"downstream\" when a supported tool validates them; PS4 extraction still requires a sourced executable hash.")
                 return checked
-            definition, explanation = self.assistant.draft_definition(system, user, read, log, record=remember, config=model_config)
+            trials = []
+            def test(definition):
+                self.stage(job_id, "drafting", "Test-building the draft (nothing is kept)")
+                log("Test-building the draft against the preserved release; nothing is archived")
+                try:
+                    trial = self.model_tools.start_trial(project_id, definition, [t for t in definition["targets"] if t in project["targets"]] or None,
+                                                         source=config["drafting_model"], background=False)
+                except Invalid as error:
+                    log(f"Test build could not start: {error}")
+                    return f"Portkeeper could not test-build your definition: {error}"
+                trials.append({"id": trial["id"], "status": trial["status"], "finished_at": trial.get("finished_at")})
+                log(f"Test build {trial['status']}")
+                self.stage(job_id, "drafting", "Waiting for the model's draft")
+                return self.model_tools.trial_feedback(trial)
+            definition, explanation = self.assistant.draft_definition(system, user, read, log, record=remember, config=model_config,
+                                                                      test=test if self.get_setting("draft_test_builds", True) else None)
             record['automatic_checks'] = {'schema': 'passed', 'release_assets': 'checked',
                                           'archive_inspections': context['release'].get('archive_layouts', {})}
             self.stage(job_id, 'drafting', 'Reviewing first-launch instructions and source claims')
@@ -1472,6 +1494,9 @@ class Engine:
             record.update(status='ready', finished_at=now(), model_review=review, accepted_definition=definition)
             self.save_draft_record(job_id, record)
             details = {'model_review': review, 'starter': starter, 'automatic_checks': record['automatic_checks'], 'draft_job_id': job_id}
+            if trials:
+                details['model_tests'] = trials[::-1]
+                record['build_test'] = trials[-1]['status']
             if requested_targets:
                 details.update(requested_targets=requested_targets, base_targets=original_targets)
             proposal = self.save_definition_proposal(project, definition, explanation, f"{config['provider_label']} · {config['drafting_model']}", capture, draft_details=details)

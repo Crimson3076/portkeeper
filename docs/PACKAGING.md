@@ -77,7 +77,7 @@ run once before the platform packages.
 | `stage_input` | Copy a verified input, normalizing N64 byte order when declared, and check the copy again. |
 | `copy` | Copy a file or folder, for example a generated archive from `$shared` into the package. |
 | `include_tree` | Add a large `$shared` folder to the ZIP under a name without copying it. |
-| `launcher` | Write a `posix` or `windows_cmd` launcher from structured fields: `exec`, `args`, `env`, `mkdir`, `run_python`, `chmod_exec`. |
+| `launcher` | Write a `posix` or `windows_cmd` launcher from structured fields: `exec`, `args`, `env`, `mkdir`, `run_python`, `chmod_exec`, `prepare_once`. `prepare_once: {exec, args, unless_exists}` runs a release-provided setup command before `exec` only while `unless_exists` is missing, and stops the launcher if it fails. |
 | `helper` | Add a reviewed helper script shipped with Portkeeper (`bbport_portable_paths`, `bbport_nvidia_libraries`). |
 | `write_text`, `touch` | Write a README or configuration file, or an empty marker such as `portable.txt`. `{version}`, `{target}`, `{name}`, `{repository}` and `{launch_command}` are replaced. |
 | `tool` | Run one of the tools below. |
@@ -92,6 +92,8 @@ bounded time and bounded logs, inside the Portkeeper container.
 | `ship_o2r_headless` | Runs an official Ship/2Ship AppImage once with your ROM under a virtual display and stops it after the `.o2r` archive is complete and has at least `min_entries` entries. | Xvfb and Mesa |
 | `opengoal_extract` | Runs the release's OpenGOAL `extractor` with `-e -v -d -c` (extract, validate, decompile, compile) on your ISO and keeps the listed output folders. | — |
 | `ps4_pkg_extract` | Copies PS4 PKGs privately and extracts them in base/update order with pinned LibOrbisPkg. Uses `pkg_makegp4` for supported package types, or `pkg_extract` plus fixed named-header extraction for complete DP updates. Checks extracted title, version and accepted `eboot.bin` hash before overlaying and caching. Reuses a validated earlier extraction or `prepared/` folder. | OpenSSL 1.1 libraries for PkgTool |
+
+| `wwhd_extract` | Runs the release's `wwhd-extract` on your Cemu archive (`.wua`): asks for each listed title ID in order, requires version 0, extracts `code/`, `content/` and `meta/`, and requires an accepted `code/cking.rpx` SHA-256. Disc images need keys and are not supported. | — |
 
 ## New releases
 
@@ -192,6 +194,25 @@ public material, source/archive checksums, model name/settings, prompts, origina
 validation errors and findings. They exclude application credentials and private game-file
 locations. Failed attempts can also be downloaded. Model tags can change over time; a recorded
 model name alone does not guarantee the same weights on a later run.
+
+### Test builds and the correction loop
+
+After a connected draft passes the automatic checks, Portkeeper test-builds it against the preserved
+release in a throwaway folder (nothing is archived or published). A failed test build is sent back to the
+model with the error, the produced top-level entries and file listing, for up to two rounds. Steps that need
+game files you have not selected are skipped; files they would produce are reported as unverified, not
+missing. The review card shows the test results. Turn this off with the `draft_test_builds` setting.
+
+### Outside agents (MCP)
+
+Settings → **Drafting assistant** → **Connect an outside agent** creates a token for Portkeeper's MCP endpoint
+(streamable HTTP at `/mcp`, `Authorization: Bearer <token>`). Only the token's SHA-256 is stored; creating a
+new token replaces the old one, and turning the connection off removes it. Agents get the same tools as the
+built-in assistant: `packaging_format`, `list_games`, `read_game`, `read_material`, `read_source`,
+`list_release_archive`, `validate_definition`, `test_build_draft`, `get_test_build` and `submit_draft`.
+They cannot approve, publish, choose game files, change settings or delete anything, and `read_game`
+reports only whether a game file is selected, never where it is. Submitted drafts land in the normal review
+queue with the agent's name and their test results.
 
 Draft quality, a successful package build and recorded launch/gameplay tests remain separate.
 Neither a clean automatic check nor a model review marks a package as gameplay tested.

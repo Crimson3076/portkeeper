@@ -18,6 +18,7 @@ class GuidedDraftTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.engine = Engine(Path(self.temp.name) / 'data', github=Releases())
         self.addCleanup(self.engine.close)
+        self.engine.save_setting('draft_test_builds', False)  # This fixture preserves no release assets.
         self.project = self.engine.create_project({'name': 'Example', 'repo': 'example/port', 'targets': ['windows']})
         root = self.engine.data / 'fixture-source'
         root.mkdir()
