@@ -52,6 +52,10 @@ image and resource flags; model requests cannot choose host paths or Docker flag
 Use a Linux machine/VM with **cgroup v2 delegation**, rootless Docker, Python 3.11+
 and enough disk/RAM. On Debian/Ubuntu, rootless cgroup control also needs
 `dbus-user-session`, the user's running systemd manager and its session bus.
+Run the rootless daemon as that user's delegated service (the official rootless
+installer supports this), rather than a detached process under a system service.
+The latter can make runc ask the privileged system manager for interactive
+authentication instead of controlling the user's own groups.
 A dedicated Linux VM on Unraid is a suitable deployment option:
 run the app and broker in that VM and mount the NAS game collection read-only.
 The standard Unraid Docker daemon is rootful and is refused. Rootless/cgroup behavior
@@ -201,8 +205,11 @@ Standard tests use controlled model/broker replies for protocol, budgets, privac
 editing, non-identical replay and rejected evidence. Opt-in `test_real_workers.py`
 uses actual offline containers, the real Unix broker, synthetic owned inputs and
 controlled model replies to compile a C program, stage data, check read-only input
-mounts, replay, test operation idempotency and cancellation. The rootful **test-only**
-switch is rejected by the production app; CI tests are not rootless deployment proof.
+mounts, replay, test operation idempotency and cancellation. A second case assembles
+the checksummed public OpenLara Windows runtime with synthetic level data; it does
+not test gameplay. CI runs these cases against a real rootless daemon under a
+delegated user service. The rootful **test-only** switch is rejected by the production
+app. This validates the Ubuntu CI deployment profile, not an arbitrary Unraid host.
 
 No authenticated live provider/Unraid deployment or native Windows/gameplay check
 was performed in the cloud implementation session. See the broader acceptance
