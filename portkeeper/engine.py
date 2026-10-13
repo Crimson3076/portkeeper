@@ -1429,7 +1429,9 @@ class Engine:
                 project = {**project, "targets": requested_targets}
             model_config = self.assistant._config()
             config = self.assistant.public_config(model_config)
-            budget = max(20_000, (config["context_tokens"] - 8000) * 3) if config["provider"] == "ollama" else 300_000
+            # JSON paths and source snippets tokenize more densely than prose.
+            # Keep room for both reasoning and the final definition/corrections.
+            budget = max(8000, (config["context_tokens"] - 8000) * 2) if config["provider"] == "ollama" else 300_000
             self.stage(job_id, "drafting", "Reading the release, README and source")
             capture, context = self._draft_material(project, budget)
             context.setdefault('game_file_preparation', {})['enabled'] = self.store.get('jobs', job_id).get('prepare_game_files', True)
