@@ -304,7 +304,7 @@ function gameAvailability(project) {
   if (rommImports.get(importKey(project))?.error) return "RomM check unavailable";
   return project.recipe?.mode === "capture" ? "Needs packaging steps" : "No downloads yet";
 }
-function projectJobs(id) { return newestFirst(state.jobs.filter((job) => String(job.project_id) === String(id))); }
+function projectJobs(id) { return newestFirst(state.jobs.filter((job) => String(job.project_id) === String(id) && !job.activity_hidden)); }
 function jobActive(job) { return activeStatuses.has(job.status) && !job.finished_at; }
 function projectActiveJob(project) { const jobs = projectJobs(project.id).filter(jobActive); return jobs.find((job) => job.status !== "queued") || jobs[0]; }
 function jobStage(job) { return job.status === "failed" ? "failed" : job.stage || job.status; }
@@ -465,6 +465,9 @@ function renderActivity() {
   $("jobs-count").textContent = unifiedActivity().length; $("artifacts-count").textContent = state.artifacts.length; $("notifications-count").textContent = state.notifications.filter(notificationUnread).length;
   const content = $("activity-content"); content.setAttribute("aria-labelledby", tabs[activityView].id);
   $("activity-filters").hidden = activityView !== "jobs";
+  let cleanup = $("activity-cleanup");
+  if (!cleanup) { cleanup = button("Clear activity & logs", "button secondary small", () => maintenance("clear_activity")); cleanup.id = "activity-cleanup"; $("activity-content").before(cleanup); }
+  cleanup.hidden = activityView !== "jobs";
   const filter = $("activity-game-filter"); filter.replaceChildren(el("option", "", "All games")); filter.firstChild.value = "";
   libraryGames().forEach((game) => { const option = el("option", "", game.name); option.value = game.id; filter.append(option); }); filter.value = activityGameFilter;
   if (activityView === "jobs") {
@@ -811,9 +814,13 @@ function renderVersions(project, content) {
 }
 function unifiedActivity() {
   const events = [...(state.activity || [])];
-  state.jobs.forEach((job) => events.push({...job, kind: "build", message: job.error || job.message || (job.target === "capture" ? "Upstream release and update check" : "Portable build"), title: job.target === "capture" ? "Update check" : "Build", result: job.status}));
+  state.jobs.filter(job => !job.activity_hidden).forEach((job) => events.push({...job, kind: "build", message: job.error || job.message || (job.target === "capture" ? "Upstream release and update check" : "Portable build"), title: job.target === "capture" ? "Update check" : "Build", result: job.status}));
   state.artifacts.forEach((artifact) => (artifact.validation_history || []).filter((test) => !test.evidence?.manual_check).forEach((test, index) => events.push({id:`setup-${artifact.id}-${index}`, kind:"test", project_id:artifact.project_id, target:artifact.target, title:"Previous setup check", result:{launch_checked:"starts",user_confirmed_playable:"played",failed:"failed"}[test.level] || "untested", created_at:test.recorded_at, notes:test.notes, origin:"setup_check", package_name:artifact.filename})));
-  return newestFirst(events);
+  const cutoffs = state.activity_cutoffs || {};
+  return newestFirst(events.filter(event => {
+    const cutoff = [cutoffs.all, cutoffs.projects?.[event.project_id]].filter(Boolean).sort().at(-1);
+    return !cutoff || jobActive(event) || (event.finished_at || event.created_at || "") > cutoff;
+  }));
 }
 function activityEvent(event) {
   const project = projectById(event.project_id);
@@ -823,6 +830,7 @@ function activityEvent(event) {
   const body = el("div", "activity-event-body", [header, el("p", "activity-event-game", [project?.name || event.project_name || "Game", " · ", targetLabels[event.target] || "Update check"]), el("p", "field-help", event.notes || event.message || ""), el("span", "activity-event-date", `${event.device ? event.device + " · " : ""}${dateLabel(event.created_at)}`)]);
   if (event.package_name) body.append(el("p", "activity-package-name", event.package_name));
   const actions = el("div", "inline-actions", button("Open game", "text-button", () => navigateProject(event.project_id)));
+  if (event.kind === "build" && !jobActive(event)) actions.append(button("Clear this entry & log", "text-button", () => maintenance("clear_activity", event.project_id, event.id)));
   if (event.kind === "build") actions.append(button("Build details", "text-button", () => navigateProject(event.project_id, "activity", event.id)));
   return el("article", "activity-event", [body, actions]);
 }
@@ -1116,6 +1124,22 @@ async function saveProjectPlatforms(id) {
   finally { busy.delete(key); render(); }
 }
 
+async function maintenance(action, projectId = null, jobId = null) {
+  const descriptions = {
+    clear_activity: "Clear completed activity and diagnostic logs? Packages, testing results and current instructions will be retained. A local backup is saved first.",
+    clear_revisions: "Clear previous instruction revisions? Current instructions remain. A local backup is saved first.",
+    reset_instructions: "Clear this game's build instructions and disable automatic builds? Existing downloads remain and the previous instructions are saved for restoration.",
+    remove_game: "Remove this game and its history from Portkeeper? Files on disk, owned inputs and RomM entries will be retained. A local backup is saved first."
+  };
+  if (!window.confirm(descriptions[action])) return;
+  try {
+    const result = await api("/api/maintenance", {method: "POST", body: {action, project_id: projectId, job_id: jobId}});
+    if (action === "remove_game") location.hash = "library";
+    selectedJobId = null; lastRender = null;
+    toast(`Cleanup complete. Backup: ${result.backup}`); await refresh();
+  } catch (error) { toast(error.message, true); }
+}
+
 function renderAdvanced(project, content, openJobs) {
   const stack = el("div", "advanced-stack");
   const preparation = ps4PreparationCard(project); if (preparation) stack.prepend(preparation);
@@ -1127,12 +1151,24 @@ function renderAdvanced(project, content, openJobs) {
   if (project.packaging) {
     const source = project.definition_source;
     configuration.append(el("p", "field-help", source ? `Based on ${source.kind} revision ${source.revision}. Current revision ${project.packaging.revision}. Edits apply to this game only.` : "This game's own definition. Edits apply to this game only."));
-    const history = disclosure("configuration-history", "diagnostics-list", el("summary", "table-action", "Saved revisions (last 20)"));
-    (project.definition_history || []).slice().reverse().forEach(record => history.append(el("div", "inline-actions", [el("span", "field-help", `Revision ${record.definition.revision} · ${dateLabel(record.saved_at)}`), button("Review & restore", "button secondary small", () => { openRecipe(project.id); $("recipe-json").value = JSON.stringify(record.definition, null, 2); editorDirty = true; switchEditor("changes"); })])));
-    if (!(project.definition_history || []).length) history.append(el("p", "field-help", "Your previous definition is saved here when you edit it. Restoring creates a new revision; existing packages are unchanged."));
-    configuration.append(history);
+    const revisions = (project.definition_history || []).slice().reverse();
+    configuration.append(el("p", "field-help", `Current revision ${project.packaging.revision} · ${revisions.length} previous revisions saved.`));
+    if (!revisions.length) configuration.append(el("p", "field-help", "No previous revisions yet. Editing and saving these instructions creates a restorable copy of the previous version."));
+    else {
+      const history = disclosure(`configuration-history-${project.id}`, "diagnostics-list", el("summary", "table-action", `Previous instructions (${revisions.length})`));
+      revisions.forEach(record => {
+        const definition = record.definition;
+        const entry = disclosure(`revision-${project.id}-${definition.revision}-${record.saved_at}`, "detail-card", el("summary", "table-action", `Revision ${definition.revision} · ${dateLabel(record.saved_at)} · ${runnerLabels[definition.runner] || definition.runner}`));
+        entry.append(el("p", "field-help", definition.summary || definition.notes || "Saved build instructions"), el("p", "field-help", `${(definition.targets || []).join(", ")} · ${(definition.inputs || []).length} game inputs · ${(definition.operations || []).length} packaging steps`), jsonViewer(`revision-json-${project.id}-${definition.revision}`, definition));
+        entry.append(button("Review & restore this revision", "button secondary small", () => { openRecipe(project.id); $("recipe-json").value = JSON.stringify(definition, null, 2); editorDirty = true; switchEditor("changes"); }));
+        history.append(entry);
+      });
+      configuration.append(history, button("Clear previous revisions", "text-button", () => maintenance("clear_revisions", project.id)));
+    }
   }
+  configuration.append(button("Clear build instructions", "text-button", () => maintenance("reset_instructions", project.id)));
   stack.append(projectPlatformsCard(project), configuration);
+  stack.append(el("section", "detail-card", [el("h2", "", "Cleanup"), el("p", "field-help", "Clear completed activity and logs, or remove this game from Portkeeper. Local backups are saved before changes. Download files, owned game files and RomM entries are retained."), button("Clear this game’s activity & logs", "button secondary small", () => maintenance("clear_activity", project.id)), button("Remove game from Portkeeper", "text-button", () => maintenance("remove_game", project.id))]));
   if (project.packaging && !project.demo && !["recipe", "profile"].includes(project.packaging.runner)) stack.append(draftCard(project));
   stack.append(packagingInstructions(project));
   stack.append(retentionCard(project), preservationCard(project));

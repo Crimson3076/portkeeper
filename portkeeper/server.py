@@ -99,6 +99,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and path == "/api/state":
                 self.json(200, self.engine.state())
+            elif method == "POST" and path == "/api/maintenance":
+                from .maintenance import manage
+                self.json(200, manage(self.engine, self.body()))
             elif method == "GET" and path == "/api/profiles":
                 from .profiles import catalog
                 self.json(200, {"profiles": catalog()})
