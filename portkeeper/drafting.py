@@ -48,7 +48,7 @@ Top-level fields:
   folder such as n64, ps2, ps4, gc", name_hint: "regex for the file name", normalize: "n64_big_endian"
   (N64 ROMs only), accepted: [{label, sha1 or sha256}], verify: "hash" | "downstream", max_bytes, notes,
   required}]. A file with verify "hash" needs accepted hashes. Use hashes only when they appear in the
-  material you were given; otherwise use verify "downstream" and say so in limitations.
+  material you were given; write hexadecimal hashes in lowercase. Do not guess max_bytes; omit it unless the evidence establishes a sufficient limit. Otherwise use verify "downstream" and say so in limitations.
   Inputs are needed on the Portkeeper server DURING PACKAGING, not files chosen later by the player.
   When game files remain external, use inputs: [], first_run.mode: "asks_user", and explain
   folder selection in first_run.summary and launch.instructions. When preparation is enabled
@@ -78,6 +78,7 @@ Top-level fields:
     opengoal_extract {download, game, iso, collect, to}, ps4_pkg_extract {tool_download, packages,
     title_id, app_version, accepted_eboot_sha256, to}, torch_o2r {download (release with config.yml and assets/), rom (staged shared ROM), output (.o2r), min_entries, to}, wwhd_extract {download, extractor, archive, prepared_input (optional validated directory), titles,
     accepted_rpx_sha256, to}. Use a tool only when the project clearly needs it.
+    All tool operations are shared, have NO targets, and write to $shared/a-file or $shared/a-folder, never $package. Copy the produced file into $package in a later copy operation. For torch_o2r, output must exactly match the extraction configuration's output.binary; to is a FILE path ending in that same name. A release's existing resource archive may differ from the game archive generated from the ROM.
     ps4_pkg_extract details: packages is an ordered array of input IDs: BASE FIRST, UPDATE SECOND.
     Each PKG input is kind file, verify downstream, platform_hint ps4, name_hint "(?i)\\.pkg$",
     max_bytes up to 68719476736. Metadata distinguishes base/update; do not rely on filenames.
@@ -404,6 +405,16 @@ def prompt_text(context, definitions, instruction=""):
     return system + "\n\n" + user
 
 
+def relevant_excerpts(excerpts):
+    """Prefer runtime asset paths and extraction contracts over incidental build/save mentions."""
+    def rank(item):
+        lines = item.get('lines', '')
+        score = 4 * len(re.findall(r'GetPathRelative|\b(?:binary|output)\s*:|\bCOMMAND\b.*(?:extract|o2r|otr)|\.(?:o2r|otr|rpx|pkg)\b', lines, re.I))
+        score += 2 * len(re.findall(r'game[_ ](?:dir|path)|rom[_ ]?path|select.*(?:rom|game)|SHIP_HOME', lines, re.I))
+        return -score
+    return sorted(excerpts, key=rank)
+
+
 def prompt_parts(context, definitions, instruction=""):
     """Compact, generic contract plus bounded public evidence; no prewritten game recipe."""
     project, release = context['project'], context['release']
@@ -412,7 +423,7 @@ def prompt_parts(context, definitions, instruction=""):
                 'archive_samples': {name: members[:20] for name, members in release.get('archive_contents', {}).items()},
                 'readme': source.get('readme', '')[:8000],
                 'documentation': [{**item, 'text': item.get('text', '')[:1000]} for item in source.get('documentation', [])[:2]],
-                'source_excerpts': [{**item, 'lines': item.get('lines', '')[:1000]} for item in source.get('source_excerpts', [])[:6]]}
+                'source_excerpts': [{**item, 'lines': item.get('lines', '')[:1000]} for item in relevant_excerpts(source.get('source_excerpts', []))[:6]]}
     preparation = context.get('game_file_preparation', {})
     candidate = preparation.get('catalog_candidate') or {}
     material['preparation_requested'] = preparation.get('enabled', True)
