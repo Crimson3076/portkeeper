@@ -11,6 +11,8 @@ archive/
 packages/
 outputs/
 work/
+agent-workspaces/
+**/node_modules/
 .env*
 *.sqlite
 *.sqlite3

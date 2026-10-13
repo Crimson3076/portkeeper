@@ -12,6 +12,8 @@ archive
 packages
 outputs
 work
+agent-workspaces
+**/node_modules
 .env*
 **/__pycache__
 **/*.py[cod]

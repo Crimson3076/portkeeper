@@ -136,6 +136,18 @@ class Handler(BaseHTTPRequestHandler):
                     self.json(200, self.engine.assistant.models(payload.get("endpoint")))
             elif method == "POST" and path == "/api/assistant/provider":
                 self.json(200, self.engine.assistant.configure_provider(self.body()))
+            elif method == "POST" and path == "/api/assistant/agent/login":
+                payload = self.body()
+                self.json(200, self.engine.assistant.agents.login(payload.get("provider")))
+            elif method == "GET" and path == "/api/assistant/agent/login":
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                self.json(200, self.engine.assistant.agents.login_status(query.get("provider", [""])[0]))
+            elif method == "POST" and path == "/api/assistant/agent/login/input":
+                payload = self.body()
+                self.json(200, self.engine.assistant.agents.login_input(payload.get("provider"), payload.get("value")))
+            elif method == "POST" and path == "/api/assistant/agent/logout":
+                payload = self.body()
+                self.json(200, self.engine.assistant.agents.logout(payload.get("provider")))
             elif method == "POST" and path == "/api/mcp/config":
                 self.json(200, self.engine.mcp.configure(self.body()))
             elif method == "GET" and path == "/api/model-tests":

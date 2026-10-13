@@ -4,6 +4,7 @@ import io
 import json
 import os
 import tempfile
+import threading
 import time
 import unittest
 import zipfile
@@ -13,6 +14,18 @@ from unittest.mock import patch
 from portkeeper.engine import Busy, Engine
 from portkeeper.safety import Invalid, TARGETS, checksum, validate_recipe
 from portkeeper.storage import Store, now
+
+
+class AgentShutdownTests(unittest.TestCase):
+    def test_shutdown_stops_agents_before_waiting_for_drafts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = Engine(Path(directory) / 'data')
+            stopped = threading.Event()
+            waiting = engine.executor.submit(stopped.wait, 1)
+            with patch.object(engine.assistant.agents, 'close', side_effect=stopped.set):
+                engine.close()
+            self.assertTrue(waiting.result(), 'Agent stop must unblock an active draft before executor shutdown')
+            engine.assistant.agents.close()
 
 
 def archive_bytes(files):

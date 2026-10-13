@@ -12,6 +12,35 @@ from portkeeper.safety import Invalid
 
 
 class AssistantTests(unittest.TestCase):
+    def test_subscription_provider_keeps_api_and_local_settings_separate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            assistant = RecipeAssistant(Path(directory))
+            with patch.object(assistant.agents, 'status', return_value={'installed': True, 'authenticated': True, 'billing': 'subscription'}):
+                assistant.configure_provider({'provider': 'openai', 'base_url': 'https://api.openai.com/v1', 'model': 'api-model', 'api_key': 'private-key'})
+                assistant.configure_provider({'provider': 'codex', 'model': 'codex-model'})
+                assistant.configure_provider({'provider': 'claude_code', 'model': 'sonnet'})
+                public = assistant.configure_provider({'provider': 'codex'})
+                self.assertTrue(public['configured'])
+                self.assertEqual(public['agent_models'], {'codex': '', 'claude_code': 'sonnet'})
+                self.assertEqual(public['cloud_model'], 'api-model')
+                self.assertNotIn('private-key', json.dumps(public))
+                with patch.object(assistant, '_post') as http, patch.object(assistant.agents, 'chat', return_value='{}') as chat:
+                    self.assertEqual(assistant.chat('system', [{'role': 'user', 'content': 'public material'}]), '{}')
+                    http.assert_not_called()
+                    self.assertEqual(chat.call_args.args[0], 'codex')
+                    self.assertNotIn('private-key', str(chat.call_args))
+
+    def test_subscription_provider_requires_native_sign_in_without_paid_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            assistant = RecipeAssistant(Path(directory))
+            with patch.object(assistant.agents, 'status', return_value={'installed': True, 'authenticated': False, 'billing': 'subscription'}):
+                public = assistant.configure_provider({'provider': 'claude_code', 'model': 'sonnet'})
+                self.assertFalse(public['configured'])
+                with patch.object(assistant, '_post') as http:
+                    with self.assertRaisesRegex(Invalid, 'Save a model connection'):
+                        assistant.test()
+                    http.assert_not_called()
+
     def test_ollama_limit_explains_empty_final_answer_without_using_reasoning(self):
         with tempfile.TemporaryDirectory() as directory:
             assistant = RecipeAssistant(Path(directory))

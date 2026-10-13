@@ -4,6 +4,7 @@ Three ways to use a model, all optional:
 - handoff: no connection. Portkeeper prepares a prompt or a folder for the person's own chat or agent,
   and the person pastes the answer back. Works with any subscription; no API key.
 - ollama: a local model on this machine or the LAN.
+- codex / claude_code / gemini: official CLIs using the person's own native sign-in.
 - anthropic / openai: a cloud model with an API key (openai covers any OpenAI-compatible server).
 """
 import copy
@@ -99,8 +100,11 @@ def _safe_recipe(recipe, mask_inputs=True):
     return result
 
 
-PROVIDERS = ('handoff', 'ollama', 'anthropic', 'openai')
+AGENT_PROVIDERS = ('codex', 'claude_code', 'gemini')
+PROVIDERS = (*AGENT_PROVIDERS, 'handoff', 'ollama', 'anthropic', 'openai')
 PROVIDER_LABELS = {'handoff': 'Your own chat or agent', 'ollama': 'Local model (Ollama)',
+                   'codex': 'Codex · ChatGPT subscription', 'claude_code': 'Claude Code · Pro/Max subscription',
+                   'gemini': 'Gemini CLI · free Google account',
                    'anthropic': 'Claude API', 'openai': 'OpenAI-compatible API'}
 ANTHROPIC_URL = 'https://api.anthropic.com/v1'
 ANTHROPIC_DEFAULT_MODEL = 'claude-opus-5-5'
@@ -136,6 +140,8 @@ def _cloud_url(value):
 class RecipeAssistant:
     def __init__(self, data_dir):
         self.path = Path(data_dir) / 'secrets' / 'assistant.json'
+        from .subscription_agents import SubscriptionAgents
+        self.agents = SubscriptionAgents(data_dir)
 
     def _config(self):
         if not self.path.exists():
@@ -153,6 +159,9 @@ class RecipeAssistant:
     def connected(self, config=None):
         config = config or self._config()
         provider = config['provider']
+        if provider in AGENT_PROVIDERS:
+            status = self.agents.status(provider)
+            return bool(status.get('installed') and status.get('authenticated') and status.get('drafting_supported', True))
         if provider == 'ollama':
             return bool(config.get('endpoint') and config.get('model'))
         if provider == 'anthropic':
@@ -166,10 +175,17 @@ class RecipeAssistant:
         provider = config['provider']
         model = {'ollama': config.get('model', ''), 'anthropic': config.get('cloud_model') or ANTHROPIC_DEFAULT_MODEL,
                  'openai': config.get('cloud_model', '')}.get(provider, '')
+        agents = {key: self.agents.status(key) for key in AGENT_PROVIDERS}
+        agent_models = config.get('agent_models', {})
+        if provider in AGENT_PROVIDERS:
+            model = agent_models.get(provider) or {'codex': 'Codex default', 'claude_code': 'Claude default', 'gemini': 'Gemini auto'}[provider]
         return {'provider': provider, 'provider_label': PROVIDER_LABELS[provider], 'endpoint': config.get('endpoint', ''),
                 'model': config.get('model', ''), 'context_tokens': config.get('context_tokens', 32768),
                 'cloud_model': config.get('cloud_model', ''), 'base_url': config.get('base_url', ''),
                 'has_api_key': bool(config.get('api_key')), 'drafting_model': model,
+                'agents': agents, 'agent_models': agent_models,
+                'agent_model': agent_models.get(provider, ''),
+                'billing': agents[provider].get('billing') if provider in AGENT_PROVIDERS else ('local' if provider in ('handoff', 'ollama') else 'api'),
                 # configured: can draft without the person copying anything.
                 'configured': self.connected(config), 'local_only': provider in ('handoff', 'ollama'),
                 'last_test': config.get('last_test')}
@@ -182,12 +198,17 @@ class RecipeAssistant:
 
     def configure_provider(self, payload):
         if not isinstance(payload, dict) or payload.get('provider') not in PROVIDERS:
-            raise Invalid('Choose how drafts are made: your own chat, a local model, or a cloud API')
+            raise Invalid('Choose a subscription agent, your own chat, a local model, or a cloud API')
         current = self._config()
         provider = payload['provider']
-        record = {key: current[key] for key in ('endpoint', 'model', 'context_tokens', 'base_url', 'cloud_model', 'api_key', 'api_key_provider') if current.get(key)}
+        record = {key: current[key] for key in ('endpoint', 'model', 'context_tokens', 'base_url', 'cloud_model', 'api_key', 'api_key_provider', 'agent_models') if current.get(key)}
         record['provider'] = provider
-        if provider == 'ollama':
+        if provider in AGENT_PROVIDERS:
+            model = payload.get('model', '')
+            if not isinstance(model, str) or (model and not _MODEL.fullmatch(model)):
+                raise Invalid('Choose a model offered by the subscription agent, or leave it on its default')
+            record['agent_models'] = {**record.get('agent_models', {}), provider: model}
+        elif provider == 'ollama':
             record['endpoint'] = _endpoint(payload.get('endpoint', ''))
             model = payload.get('model', '')
             if not isinstance(model, str) or not _MODEL.fullmatch(model):
@@ -377,6 +398,8 @@ class RecipeAssistant:
         """Models offered by the provider in the settings form (falls back to saved values)."""
         provider = payload.get('provider')
         config = self._config()
+        if provider in AGENT_PROVIDERS:
+            return self.agents.models(provider)
         if provider == 'ollama':
             return self.models(payload.get('endpoint'))
         if provider == 'openai':
@@ -397,7 +420,10 @@ class RecipeAssistant:
         """Send a conversation to the configured model and return its text reply."""
         config = config or self._config()
         provider = config['provider']
-        if provider == 'ollama':
+        if provider in AGENT_PROVIDERS:
+            return self.agents.chat(provider, system, messages, model=config.get('agent_models', {}).get(provider, ''),
+                                    timeout=timeout, response_schema=response_schema)
+        elif provider == 'ollama':
             body = {'model': config['model'], 'stream': False, 'format': 'json',
                     'messages': [{'role': 'system', 'content': system}, *messages],
                     'options': {'temperature': 0.1, 'num_ctx': config.get('context_tokens', 32768)}}

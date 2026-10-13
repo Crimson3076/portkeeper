@@ -30,6 +30,26 @@ class AllowedHostTests(unittest.TestCase):
 
 
 class HttpIntegrationTests(unittest.TestCase):
+    def test_native_agent_sign_in_routes_keep_mutation_origin_checks(self):
+        agent = self.engine.assistant.agents
+        safe = {'provider': 'codex', 'status': 'waiting', 'url': 'https://auth.openai.com/codex/device', 'code': 'EXAMPLE'}
+        with patch.object(agent, 'login', return_value=safe) as login:
+            status, _, body = self.request('POST', '/api/assistant/agent/login', {'provider': 'codex'})
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body), safe)
+            login.assert_called_once_with('codex')
+            self.assertEqual(self.request('POST', '/api/assistant/agent/login', {'provider': 'codex'}, {'Origin': 'https://other.test'})[0], 400)
+            self.assertEqual(login.call_count, 1)
+        with patch.object(agent, 'login_status', return_value=safe) as status:
+            self.assertEqual(self.request('GET', '/api/assistant/agent/login?provider=codex')[0], 200)
+            status.assert_called_once_with('codex')
+        with patch.object(agent, 'login_input', return_value=safe) as input_:
+            self.assertEqual(self.request('POST', '/api/assistant/agent/login/input', {'provider': 'claude_code', 'value': 'one-time-code'})[0], 200)
+            input_.assert_called_once_with('claude_code', 'one-time-code')
+        with patch.object(agent, 'logout', return_value={'provider': 'codex', 'status': 'not_started'}) as logout:
+            self.assertEqual(self.request('POST', '/api/assistant/agent/logout', {'provider': 'codex'})[0], 200)
+            logout.assert_called_once_with('codex')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
