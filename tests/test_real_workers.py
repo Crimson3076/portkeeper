@@ -27,8 +27,10 @@ from portkeeper.worker_broker import BrokerClient, WorkerBroker, make_server
 class RealWorkers(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='portkeeper-real-workers-')
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.engine = Engine(self.root / 'data', self.root / 'owned', self.root / 'library')
+        self.addCleanup(self.engine.close)
         self.broker = WorkerBroker(self.root / 'exchange', self.engine.input_root,
                                    os.environ['PORTKEEPER_TEST_WORKER_IMAGE'], allow_rootful_test=os.environ.get('PORTKEEPER_TEST_ROOTLESS') != '1')
         self.assertTrue(self.broker.ready, self.broker.error)

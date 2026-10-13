@@ -240,12 +240,15 @@ python3 -I -c "import json,platform,shutil; print(json.dumps({'architecture':pla
                 shutil.rmtree(probe_root, ignore_errors=True)
             self.ready = True
         except (Invalid, OSError, subprocess.SubprocessError, ValueError) as error:
-            self.error = str(error)[:500]
+            self.error = str(error)[-1000:]
 
     def docker(self, *arguments):
         result = subprocess.run(['docker', *arguments], capture_output=True, timeout=30, check=False)
         if result.returncode:
-            raise Invalid('Worker daemon operation failed: ' + result.stderr.decode(errors='replace')[:400])
+            detail = result.stderr.decode(errors='replace')
+            if len(detail) > 1000:
+                detail = detail[:200] + ' … ' + detail[-800:]
+            raise Invalid('Worker daemon operation failed: ' + detail)
         return result.stdout.decode(errors='replace')
 
     def health(self):
