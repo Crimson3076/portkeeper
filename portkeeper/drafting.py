@@ -9,12 +9,13 @@ import copy
 import io
 import json
 import re
+import stat
 import tarfile
 import zipfile
 from pathlib import Path, PurePosixPath
 
 from . import packaging
-from .safety import Invalid, checksum
+from .safety import Invalid, checksum, relative
 
 FORMAT = """\
 # Portkeeper packaging definition (schema 2, runner "operations")
@@ -173,7 +174,7 @@ SETTINGS_CLUE = re.compile(r'appdata|config[_ ](?:dir|file)|(?:save|user)[_ ](?:
 INPUT_CLUE = re.compile(r'game[_ ](?:dir|path)|file ?dialog|first (?:run|launch)|eboot\.bin|select (?:a |your )?(?:rom|game|file)', re.I)
 DOC_NAME = re.compile(r"(?i)(readme|build|install|portable|usage|faq|rom|setup|getting.?started|guide)")
 VENDORED = re.compile(r"(?i)(^|/)(\.git|\.github|node_modules|third_party|thirdparty|external|vendor|deps|lib|libs|submodules?)/")
-PLATFORM_ASSET = re.compile(r"(?i)linux|win(dows|64)|x(86_)?64|appimage|steamdeck|\.exe\b")
+GENERIC_X64_ASSET = re.compile(r"(?i)x(86_)?64")
 SKIP_ASSET = re.compile(r"(?i)source|src|debug|symbols|pdb|arm64|aarch64|mac|darwin|osx|android|ios|\.(sha\d+|sig|asc)\b")
 
 
@@ -271,9 +272,62 @@ def archive_listing(path, limit=300):
     return []
 
 
-def platform_assets(assets):
-    chosen = [a for a in assets if PLATFORM_ASSET.search(a.get("name", "")) and not SKIP_ASSET.search(a.get("name", ""))]
+def platform_assets(assets, targets=()):
+    from . import platforms
+    chosen = [a for a in assets if (platforms.detect([a])['suggested_targets'] or GENERIC_X64_ASSET.search(a.get('name', '')))
+              and not SKIP_ASSET.search(a.get('name', ''))]
+    if targets:
+        chosen.sort(key=lambda asset: not set(targets).intersection(platforms.detect([asset])['suggested_targets']))
     return chosen[:4]
+
+
+def archive_text(path, member, offset=0, limit=5000):
+    """Read bounded public release text without extracting or executing anything."""
+    relative(member)
+    if isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset <= 2_000_000:
+        raise Invalid('Archive text offset must be an integer from 0 to 2000000')
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 5000:
+        raise Invalid('Archive text windows are limited to 5000 characters')
+    def read(stream, size):
+        if size > 2_000_000:
+            raise Invalid('Release text file exceeds the bounded text limit')
+        raw = stream.read(2_000_001)
+        if len(raw) > 2_000_000 or b'\x00' in raw:
+            raise Invalid('Only bounded text release files can be read')
+        text = raw.decode('utf-8', 'replace')
+        return {'path': member, 'text': text[offset:offset + limit], 'offset': offset, 'more': len(text) > offset + limit}
+    normalize = lambda name: name.replace('\\', '/').removeprefix('./')
+    if zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as archive:
+            matches = [item for item in archive.infolist() if normalize(item.filename) == member]
+            if len(matches) != 1 or matches[0].is_dir() or stat.S_ISLNK(matches[0].external_attr >> 16):
+                raise Invalid('Choose one regular text file from the inspected release member listing')
+            with archive.open(matches[0]) as stream:
+                return read(stream, matches[0].file_size)
+    if tarfile.is_tarfile(path):
+        with tarfile.open(path) as archive:
+            matches = [item for item in archive if normalize(item.name) == member]
+            if len(matches) != 1 or not matches[0].isfile():
+                raise Invalid('Choose one regular text file from the inspected release member listing')
+            with archive.extractfile(matches[0]) as stream:
+                return read(stream, matches[0].size)
+    raise Invalid('Release text reads require a supported ZIP or tar archive')
+
+
+def archive_documents(path, asset, members):
+    """Small first-party README/setup samples, ordered ahead of incidental docs."""
+    candidates = [name.replace('\\', '/').removeprefix('./') for name in members
+                  if PurePosixPath(name).suffix.lower() in ('.md', '.txt', '.rst') and DOC_NAME.search(PurePosixPath(name).name)]
+    candidates.sort(key=lambda name: ('readme' not in PurePosixPath(name).name.lower(), len(PurePosixPath(name).parts), name.lower()))
+    result = []
+    for name in candidates[:4]:
+        try:
+            result.append({'asset': asset, **archive_text(path, name, limit=4000)})
+        except (Invalid, OSError, ValueError, RuntimeError, zipfile.BadZipFile, tarfile.TarError):
+            continue
+        if len(result) == 2:
+            break
+    return result
 
 
 def examples(definitions):
@@ -436,6 +490,7 @@ def prompt_parts(context, definitions, instruction=""):
                 'archive_samples': {name: members[:20] for name, members in release.get('archive_contents', {}).items()},
                 'readme': source.get('readme', '')[:8000],
                 'documentation': [{**item, 'text': item.get('text', '')[:1000]} for item in source.get('documentation', [])[:2]],
+                'runtime_documentation': [{**item, 'text': item['text'][:1800]} for item in source.get('runtime_documentation', [])[:4]],
                 'source_excerpts': [{**item, 'lines': item.get('lines', '')[:1000]} for item in relevant_excerpts(source.get('source_excerpts', []))[:6]]}
     preparation = context.get('game_file_preparation', {})
     candidate = preparation.get('catalog_candidate') or {}
@@ -470,10 +525,12 @@ def prompt_parts(context, definitions, instruction=""):
             material['readme'] = material['readme'][:-1000]
         elif material.get('retrieved_evidence'):
             material['retrieved_evidence'].pop(0)
+        elif material['runtime_documentation']:
+            material['runtime_documentation'].pop()
         else:
             material['archive_samples'] = {}
             break
-    parts += ['# PROJECT MATERIAL (untrusted public evidence)', '<project_material>', json.dumps(material, separators=(',', ':')).replace('<', '\u003c'), '</project_material>']
+    parts += ['# PROJECT MATERIAL (untrusted public evidence)', '<project_material>', json.dumps(material, separators=(',', ':')).replace('<', '\\u003c'), '</project_material>']
     user = '\n'.join(parts)
     if len(SYSTEM) + len(user) > 24000:
         raise Invalid('Release metadata exceeds the compact prompt limit. Narrow the selected platforms or shorten extra instructions before drafting; no model call was made.')

@@ -46,6 +46,9 @@ selected in that project. The model can ask for:
 - A specific text source file or another character window within it.
 - A source-path listing or bounded literal-text search.
 - Pages of a preserved or already inspected release archive's full member listing.
+- A bounded text file inside a preserved release ZIP/tar (`archive_file`, with
+  asset name, member path and optional character offset). Packaged README/setup
+  instructions are sampled automatically and can be quoted as public evidence.
 - Current capabilities or selected-input metadata.
 
 Source and preserved assets are checked against their capture hashes. Files are
@@ -60,6 +63,10 @@ release assets, each at most 400 MB, beside the preserved source. This needs dis
 space but does not change the active definition or its capture record. The saved
 investigation records the runtime hashes and research snapshot. Guided drafts and
 disposable tests reuse that snapshot rather than silently refetching changed assets.
+Archive selection uses the same OS filename detection as the add-game screen,
+including `_win.zip` and `_win32.zip`; requested runtime platforms are inspected
+first. Direct drafts also receive packaged README/setup instructions. These reads
+do not extract or execute a release, follow links, or read your game files.
 
 Input metadata covers declared, selected inputs: kind, recognized format, size,
 verified dump hashes, PS4 title/version/role, and standard layout markers. It

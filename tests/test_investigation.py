@@ -73,6 +73,57 @@ class InvestigationTests(unittest.TestCase):
         self.assertTrue(self.context['release']['archive_layouts']['game-windows.zip']['complete'])
         with self.assertRaises(Invalid):reader.request({'kind': 'archive', 'asset': 'http://localhost/private'})
 
+    def test_release_text_requests_are_pinned_bounded_and_do_not_read_other_paths(self):
+        runtime = self.root / 'game-windows.zip'
+        with zipfile.ZipFile(runtime, 'w') as archive:
+            archive.writestr('Game.exe', b'MZ\x00binary')
+            archive.writestr('readme.txt', 'Use your owned levels.\n' + 'x' * 6000)
+        self.capture['assets'][0]['sha256'] = checksum(runtime)
+        reader = self.reader()
+        text = reader.request({'kind': 'archive_file', 'asset': runtime.name, 'path': 'readme.txt'})
+        self.assertEqual(len(text['text']), 5000);self.assertTrue(text['more'])
+        for request in [{'kind': 'archive_file', 'asset': runtime.name, 'path': '../private'},
+                        {'kind': 'archive_file', 'asset': 'https://example.test/private', 'path': 'readme.txt'},
+                        {'kind': 'archive_file', 'asset': runtime.name, 'path': 'Game.exe'}]:
+            with self.subTest(request=request), self.assertRaises(Invalid):reader.request(request)
+        runtime.write_bytes(b'changed public asset')
+        with self.assertRaisesRegex(Invalid, 'changed'):
+            reader.request({'kind': 'archive_file', 'asset': runtime.name, 'path': 'readme.txt'})
+
+    def test_short_windows_zip_and_its_readme_reach_investigation_and_drafting(self):
+        source = self.root / 'source.zip'
+        with zipfile.ZipFile(source, 'w') as archive:archive.writestr('fixture/README.md', 'Classic game engine. See the standalone release for instructions.')
+        self.engine.store.update('captures', self.capture['id'], source={'file': source.name, 'sha256': checksum(source)}, assets=[])
+        runtime = self.root / 'OpenLara_win.zip'
+        instructions = 'Copy your owned game data into a folder. Copy OpenLara.exe into that folder and run it. No game data is included.'
+        with zipfile.ZipFile(runtime, 'w') as archive:
+            archive.writestr('OpenLara.exe', b'MZ\x00public runtime fixture');archive.writestr('readme.txt', instructions)
+        url = 'https://github.com/example/port/releases/download/v1/OpenLara_win.zip'
+        self.engine.github.current.update(commit=self.capture['commit'], assets=[{'name': runtime.name, 'size': runtime.stat().st_size, 'browser_download_url': url}])
+        self.engine.github.payloads[url] = runtime.read_bytes()
+        capture, context = self.engine._draft_material(self.project, 20_000, preserve_evidence=True)
+        self.assertEqual(context['archive_evidence'][runtime.name], ['OpenLara.exe', 'readme.txt'])
+        self.assertEqual(context['material']['runtime_documentation'][0]['text'], instructions)
+        context['game_file_preparation']['enabled'] = False
+        reader = investigation.Evidence(self.engine, self.project, capture, context)
+        doc = next(node for node in reader.nodes if node['kind'] == 'archive_file')
+        plan = copy.deepcopy(self.plan)
+        plan['targets'][0].update(asset=runtime.name, launch='OpenLara.exe')
+        plan['summary'] = 'Package the Windows runtime; the player supplies owned game data.'
+        plan['game_files'] = {'needed_to_play': True, 'needed_for_packaging': False, 'requirements': instructions}
+        plan['evidence'] = [{'source': doc['id'], 'quote': instructions, 'supports': 'Runtime setup and owned data requirements'}]
+        events = []
+        with patch.object(self.engine.assistant, 'chat', return_value=json.dumps({'action': 'plan', 'plan': plan})) as chat:
+            result, _, _ = investigation.run(self.engine, self.project, capture, context, {'drafting_model': 'fixture'}, 1, lambda _: None, events.append)
+        self.assertTrue(result['can_draft'], result)
+        request = json.loads(chat.call_args.args[1][0]['content'])
+        self.assertEqual(request['archive_samples'][runtime.name], ['OpenLara.exe', 'readme.txt'])
+        self.assertIn(instructions, json.dumps(request['evidence']))
+        _, prompt = drafting.prompt_parts(context, {})
+        self.assertIn(instructions, prompt)
+        self.assertIn('OpenLara.exe', prompt)
+        self.assertEqual(self.engine.store.get('captures', self.capture['id'])['assets'], [])
+
     def test_valid_plan_and_unmatched_quotes_unknown_tools_missing_platforms(self):
         reader = self.reader()
         self.assertTrue(investigation.check_plan(self.plan, self.project, self.capture, reader)['can_draft'])

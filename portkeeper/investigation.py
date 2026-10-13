@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import stat
+import tarfile
 import zipfile
 
 from . import drafting, packaging, ps4
@@ -32,6 +33,9 @@ Providers without that schema may use these equivalent natural JSON responses:
 {"action":"request_evidence","requests":[{"kind":"source","path":"README.md","offset":0}]}
 {"action":"request_evidence","requests":[{"kind":"search","query":"game_dir","path_prefix":"src/"}]}
 Other evidence kinds: source_tree (path_prefix), archive (asset, offset), capabilities, inputs.
+Read a text file inside a preserved release ZIP/tar with archive_file (asset, path, offset).
+Release README/setup files can establish launch and original game-data requirements even
+when the source README is sparse. Ask the host for missing evidence rather than the user.
 At most three requests per response. Source paths and assets must be from the supplied capture.
 {"action":"plan","plan":{"outcome":"ready","summary":"one paragraph",
  "targets":[{"target":"windows","method":"release",
@@ -141,6 +145,9 @@ class Evidence:
             self.add('source', item['path'], item.get('text', '')[:2000])
         for item in drafting.relevant_excerpts(material.get('source_excerpts', []))[:3]:
             self.add('source', item['path'], re.sub(r'(?m)^\d+:\s?', '', item.get('lines', ''))[:1500])
+        for item in material.get('runtime_documentation', [])[:4]:
+            self.add('archive_file', item['asset'] + '!/' + item['path'], item['text'][:4000],
+                     asset=item['asset'], path=item['path'], offset=item['offset'], more=item['more'])
 
     def add(self, kind, source, text, **metadata):
         text = text[:MAX_WINDOW]
@@ -176,8 +183,8 @@ class Evidence:
         if not isinstance(request, dict):
             raise Invalid('An evidence request must be an object')
         kind = request.get('kind')
-        if kind not in ('source', 'search', 'source_tree', 'archive', 'capabilities', 'inputs'):
-            raise Invalid('Evidence requests can only read source, search, source_tree, archive, capabilities or inputs')
+        if kind not in ('source', 'search', 'source_tree', 'archive', 'archive_file', 'capabilities', 'inputs'):
+            raise Invalid('Evidence requests can only read source, search, source_tree, archive, archive_file, capabilities or inputs')
         allowed = {'kind', 'path', 'offset', 'query', 'path_prefix', 'asset'}
         if set(request) - allowed:
             raise Invalid('Unknown evidence request field')
@@ -187,9 +194,18 @@ class Evidence:
         if kind in ('inputs', 'capabilities'):
             value = input_inventory(self.engine, self.project) if kind == 'inputs' else capabilities(self.engine)
             return self.add(kind, kind, json.dumps(value))
-        if kind == 'archive':
+        if kind in ('archive', 'archive_file'):
             asset = request.get('asset')
             entry = next((item for item in self.capture.get('assets', []) if item['name'] == asset), None)
+            if kind == 'archive_file':
+                if not entry:
+                    raise Invalid('Choose a preserved release asset for text reads; external URLs are not allowed')
+                path = confined(self.capture['root'], entry['file'], must_exist=True)
+                if checksum(path) != entry['sha256']:
+                    raise Invalid('Preserved release asset changed; check upstream again')
+                value = drafting.archive_text(path, request.get('path'), offset)
+                return self.add(kind, asset + '!/' + value['path'], value['text'], asset=asset,
+                                path=value['path'], offset=offset, more=value['more'])
             if not entry:
                 names = self.context.get('archive_evidence', {}).get(asset)
                 if not names or not isinstance(asset, str):
@@ -325,7 +341,7 @@ def check_plan(plan, project, capture, reader):
                 members = reader.context.get('archive_evidence', {}).get(asset, [])
                 if not any(path.rstrip('/') == launch or path.rstrip('/').endswith('/' + launch) for path in members):
                     problems.append(target['target'] + ': launch path is absent from the inspected archive')
-    if not any(item['matched'] and nodes[item['source']]['kind'] in ('source', 'search') for item in evidence):
+    if not any(item['matched'] and nodes[item['source']]['kind'] in ('source', 'search', 'archive_file') for item in evidence):
         problems.append('No matched source/documentation evidence establishes the runtime and setup')
     if plan['outcome'] == 'ready' and not steps:
         problems.append('No supported preparation/packaging steps were supplied')
@@ -350,8 +366,9 @@ def run(engine, project, capture, context, config, max_calls, log, remember, ins
     for index in range(max_calls):
         if engine.stop.is_set():
             raise Invalid('Investigation stopped during shutdown')
-        visible = reader.nodes[-8:]
-        payload = {'project': context['project'], 'release': {key: context['release'].get(key) for key in ('version', 'commit', 'assets')},
+        visible = reader.nodes[:2] + reader.nodes[2:][-6:]
+        payload = {'project': context['project'], 'release': {key: context['release'].get(key) for key in ('version', 'commit', 'assets', 'archive_layouts')},
+                   'archive_samples': {name: members[:20] for name, members in context.get('archive_evidence', {}).items()},
                    'source_paths': context.get('material', {}).get('file_tree', [])[:60],
                    'prepare_game_files': context.get('game_file_preparation', {}).get('enabled', True),
                    'capabilities': capabilities(engine), 'inputs': input_inventory(engine, project),
@@ -359,6 +376,8 @@ def run(engine, project, capture, context, config, max_calls, log, remember, ins
                    'calls_remaining_after_this': max_calls - index - 1}
         while len(SYSTEM) + len(json.dumps(payload)) > 24000 and payload['evidence']:
             payload['evidence'].pop(0)
+        while len(SYSTEM) + len(json.dumps(payload)) > 24000 and payload['archive_samples']:
+            payload['archive_samples'].pop(next(reversed(payload['archive_samples'])))
         if len(SYSTEM) + len(json.dumps(payload)) > 24000:
             raise Invalid('Investigation metadata exceeds the bounded prompt limit')
         log(f'Investigating with {config["drafting_model"]} (request {index + 1} of {max_calls})')
@@ -382,7 +401,7 @@ def run(engine, project, capture, context, config, max_calls, log, remember, ins
                     node = reader.request(request)
                     results.append({'id': node['id'], 'source': node['source']})
                     log('Read investigation evidence: ' + node['source'])
-                except (Invalid, OSError, ValueError, zipfile.BadZipFile) as error:
+                except (Invalid, OSError, ValueError, RuntimeError, zipfile.BadZipFile, tarfile.TarError) as error:
                     results.append({'error': engine._draft_feedback(project, str(error))})
             feedback = json.dumps({'requested_evidence': results})
             event.update(result='evidence_requested', evidence_results=results);remember(event)

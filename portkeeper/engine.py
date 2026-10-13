@@ -1392,10 +1392,11 @@ class Engine:
         assets = [a for a in release.get("assets", []) if isinstance(a.get("name"), str)]
         listings = {}
         archive_checksums = {}
+        runtime_documents = []
         work = self.work_root / ("draft-" + identifier())
         work.mkdir(parents=True)
         try:
-            for asset in drafting.platform_assets(assets):
+            for asset in drafting.platform_assets(assets, project['targets']):
                 if (asset.get("size") or 0) > 400 * 1024 * 1024:
                     listings[asset["name"]] = ["(too large to list)"]
                     continue
@@ -1412,6 +1413,7 @@ class Engine:
                         saved = self.github.download(asset["browser_download_url"], target)
                     archive_checksums[asset['name']] = saved['sha256']
                     listings[asset["name"]] = drafting.archive_listing(target, limit=30_001)
+                    runtime_documents.extend(drafting.archive_documents(target, asset['name'], listings[asset['name']]))
                     if preserve_evidence and not existing:
                         filename = 'investigation-' + saved['sha256'] + '-' + slug(asset['name'])
                         path = confined(capture['root'], filename)
@@ -1430,6 +1432,7 @@ class Engine:
         finally:
             shutil.rmtree(work, ignore_errors=True)
         context = drafting.build_context(project, capture, assets, listings, self.catalog.definitions(), budget)
+        context['material']['runtime_documentation'] = runtime_documents
         context['release']['archive_sha256'] = archive_checksums
         context['release']['source_sha256'] = capture['source']['sha256']
         return capture, context
