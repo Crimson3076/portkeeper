@@ -76,7 +76,7 @@ Top-level fields:
   - touch: {path}  create an empty marker file such as portable.txt.
   - tool: fixed tools only. ship_o2r_headless {download, appimage, rom, output, to, min_entries},
     opengoal_extract {download, game, iso, collect, to}, ps4_pkg_extract {tool_download, packages,
-    title_id, app_version, accepted_eboot_sha256, to}, wwhd_extract {download, extractor, archive, prepared_input (optional validated directory), titles,
+    title_id, app_version, accepted_eboot_sha256, to}, torch_o2r {download (release with config.yml and assets/), rom (staged shared ROM), output (.o2r), min_entries, to}, wwhd_extract {download, extractor, archive, prepared_input (optional validated directory), titles,
     accepted_rpx_sha256, to}. Use a tool only when the project clearly needs it.
     ps4_pkg_extract details: packages is an ordered array of input IDs: BASE FIRST, UPDATE SECOND.
     Each PKG input is kind file, verify downstream, platform_hint ps4, name_hint "(?i)\\.pkg$",

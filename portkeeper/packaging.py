@@ -22,7 +22,7 @@ SCHEMA = 2
 RUNNER_VERSION = 1
 RUNNERS = ("operations", "profile", "recipe", "capture")
 OPERATIONS = ("unpack_download", "stage_input", "tool", "copy", "include_tree", "launcher", "helper", "write_text", "touch")
-TOOLS = ("ship_o2r_headless", "opengoal_extract", "ps4_pkg_extract", "wwhd_extract")
+TOOLS = ("ship_o2r_headless", "opengoal_extract", "ps4_pkg_extract", "wwhd_extract", "torch_o2r")
 HELPERS = ("bbport_portable_paths", "bbport_nvidia_libraries")
 NORMALIZERS = ("n64_big_endian",)
 # How a package handles what the game would otherwise ask for on its first launch.
@@ -208,6 +208,17 @@ def _check_tool(op, definition, inputs, downloads, where):
         raise Invalid(f"{where} timeout_minutes must be 1–240")
     if split_root(op.get("to"), f"{where} destination")[0] != "shared":
         raise Invalid(f"{where} tools write to $shared")
+    if tool == "torch_o2r":
+        if op.get("download") not in downloads:
+            raise Invalid(f"{where} refers to an unknown configuration download")
+        if split_root(op.get("rom"), f"{where} ROM")[0] != "shared":
+            raise Invalid(f"{where} ROM must be staged under $shared")
+        if not isinstance(op.get("output"), str) or not re.fullmatch(r"[a-z0-9_]+\.o2r", op["output"]):
+            raise Invalid(f"{where} output must be an .o2r archive name")
+        entries = op.get("min_entries", 1)
+        if isinstance(entries, bool) or not isinstance(entries, int) or entries < 1:
+            raise Invalid(f"{where} min_entries must be positive")
+        return {"tool", "download", "rom", "output", "to", "min_entries", "timeout_minutes"}
     if tool == "ship_o2r_headless":
         if op.get("download") not in downloads:
             raise Invalid(f"{where} refers to an unknown download")
@@ -704,6 +715,8 @@ def describe_operation(op, definition):
     if kind == "touch":
         return lead + f"Create the empty marker file {_named(op['path'])}{targets}."
     tool = op["tool"]
+    if tool == "torch_o2r":
+        return lead + f"Generate {op['output']} from your checked ROM with Portkeeper's pinned Torch CLI and the release's extraction configuration. Validate the resulting archive before including it; originals stay unchanged."
     if tool == "ship_o2r_headless":
         return lead + f"Run the official {op['appimage']} once under a virtual display with your ROM to generate {op['output']}; stop it after the archive is complete and contains at least {op.get('min_entries', 1)} entries."
     if tool == "opengoal_extract":
