@@ -115,6 +115,18 @@ class HttpIntegrationTests(unittest.TestCase):
             self.assertEqual(self.request('POST', route, {'prepare_game_files': 'false'})[0], 400)
             material.assert_not_called()
 
+    def test_draft_endpoint_preserves_opt_in_corrections_and_rejects_invalid_limits(self):
+        project = self.engine.create_project({'name': 'Fixture', 'repo': 'example/game', 'targets': ['windows']})
+        route = f'/api/projects/{project["id"]}/draft'
+        with patch.object(self.engine.assistant, 'connected', return_value=True), patch.object(self.engine.executor, 'submit'):
+            status, _, body = self.request('POST', route, {'max_calls': 3, 'review_model': True})
+            self.assertEqual(status, 202)
+            job = json.loads(body)['job']
+            self.assertEqual(job['draft_max_calls'], 3)
+            self.assertTrue(job['review_model'])
+            for value in [True, 0, 4, '3']:
+                self.assertEqual(self.request('POST', route, {'max_calls': value})[0], 400)
+
     def test_import_download_streams_full_file_ranges_and_checks_game(self):
         project_id = 'a' * 32
         self.engine.store.put('projects', {'id': project_id, 'name': 'Example', 'metadata': {'filename_prefix': 'Example', 'igdb_id': 1}})

@@ -334,7 +334,7 @@ class Engine:
         if job.get("kind") == "publish":
             return self.publisher.queue(job["artifact_id"])
         if job.get("kind") == "draft":
-            return self.queue_draft(job["project_id"], job.get("instruction", ""), targets=job.get("requested_targets"), prepare_game_files=job.get('prepare_game_files', True))
+            return self.queue_draft(job["project_id"], job.get("instruction", ""), targets=job.get("requested_targets"), prepare_game_files=job.get('prepare_game_files', True), review_model=job.get('review_model', False), max_calls=job.get('draft_max_calls'))
         project = self.store.get("projects", job["project_id"])
         if job["target"] == "capture":
             return self.check(project["id"], build_after=job.get("build_after", False), release_version=job.get("release_version"))
@@ -1452,13 +1452,15 @@ class Engine:
             text = text.replace(original, replacement)
         return redact_text(text)
 
-    def queue_draft(self, project_id, instruction="", targets=None, prepare_game_files=True, review_model=False):
+    def queue_draft(self, project_id, instruction="", targets=None, prepare_game_files=True, review_model=False, max_calls=None):
         with self.lock:
             project = self.store.get("projects", project_id)
             if not self.assistant.connected():
                 raise Invalid("No model is connected. Use the prepared prompt with your own chat, or connect a model in Settings.")
             if not isinstance(review_model, bool):
                 raise Invalid('Choose whether a separate model review should run')
+            if max_calls is not None and (isinstance(max_calls, bool) or not isinstance(max_calls, int) or not 1 <= max_calls <= 3):
+                raise Invalid('Draft correction limit must be an integer from 1 to 3 model calls')
             if not isinstance(instruction, str) or len(instruction) > 4000:
                 raise Invalid("Keep the extra instructions under 4000 characters")
             if not isinstance(prepare_game_files, bool):
@@ -1467,6 +1469,8 @@ class Engine:
                 raise Invalid("Draft platforms must include current platforms and supported target IDs")
             job = self.job(project, "capture", project.get("latest_version"))
             job = self.store.update("jobs", job["id"], kind="draft", stage="drafting", status="running", requested_targets=targets, instruction=instruction, prepare_game_files=prepare_game_files, review_model=review_model)
+            if max_calls is not None:
+                job = self.store.update('jobs', job['id'], draft_max_calls=max_calls)
             self.executor.submit(self._draft, project_id, job["id"], instruction)
             return {"job": job}
 
@@ -1525,7 +1529,9 @@ class Engine:
                 log(f"Test build {trial['status']}")
                 self.stage(job_id, "drafting", "Waiting for the model's draft")
                 return self._draft_feedback(project, self.model_tools.trial_feedback(trial))
-            definition, explanation = self.assistant.draft_definition(system, user, read, log, attempts=self.get_setting("draft_max_calls", 1), test_rounds=self.get_setting("draft_test_rounds", 1), record=remember, config=model_config,
+            max_calls = self.store.get('jobs', job_id).get('draft_max_calls', self.get_setting('draft_max_calls', 1))
+            log(f'Draft correction limit: {max_calls} model call(s); separate review is an independent choice')
+            definition, explanation = self.assistant.draft_definition(system, user, read, log, attempts=max_calls, test_rounds=self.get_setting("draft_test_rounds", 1), record=remember, config=model_config,
                                                                       test=test if self.get_setting("draft_test_builds", True) else None)
             record['automatic_checks'] = {'schema': 'passed', 'release_assets': 'checked',
                                           'archive_inspections': context['release'].get('archive_layouts', {})}

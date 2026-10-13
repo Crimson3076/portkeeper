@@ -97,6 +97,13 @@ class Releases:
 
 
 class DefinitionTests(unittest.TestCase):
+    def test_targets_errors_distinguish_array_type_duplicates_and_invalid_values(self):
+        for targets, message in [('windows', 'JSON array'), (['windows', 'windows'], 'repeated: windows'),
+                                 (['ps4'], 'unsupported values'), ([{'platform': 'windows'}], 'unsupported values')]:
+            with self.subTest(targets=targets):
+                with self.assertRaisesRegex(Invalid, message):
+                    packaging.validate_definition(definition(targets=targets))
+
     def test_bundled_definitions_validate_and_render_steps(self):
         bundled = packaging.bundled()
         self.assertTrue({"2ship2harkinian", "banjo-recompiled", "opengoal-jak1", "bloodborne-bbport-linux", "bloodborne-bbport-windows", "shipwright", "dusklight"} <= set(bundled))

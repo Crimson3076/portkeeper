@@ -62,6 +62,8 @@ async function create(saved, storageBlocked=false, source=fixture) {
     }
     else if(endpoint.startsWith('/api/catalog/definitions/'))payload=source.catalog_definition||{};
     else if(endpoint.endsWith('/draft-prompt')){requests.push({endpoint,body:JSON.parse(options.body)});payload={prompt:'Fixture prompt'};}
+    else if(endpoint.endsWith('/draft-record'))payload=source.draft_record||{attempts:[]};
+    else if(endpoint.endsWith('/draft') && options.method==='POST'){requests.push({endpoint,body:JSON.parse(options.body)});payload={job:{}};}
     else if(options.method==='PATCH'){const body=JSON.parse(options.body);requests.push({endpoint,body});const game=source.projects.find(p=>endpoint.includes(p.id));Object.assign(game,body);payload=game;}
     else if(endpoint==='/api/setup'){requests.push({endpoint,body:JSON.parse(options.body)});payload={project:source.projects[1],job:{}};}
     return {ok:true,status:200,json:async()=>JSON.parse(JSON.stringify(payload))};
@@ -383,6 +385,25 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   const pickAfterRefresh=value=>{const node=d.querySelector(`[name="assistant-provider"][value="${value}"]`);node.checked=true;node.dispatchEvent(new w.Event('change',{bubbles:true}));};pickAfterRefresh('ollama');pickAfterRefresh('codex');await tick();assert.equal(requests.length,beforeResume+1,'A recovered session is not repeatedly checked just by switching provider fields');
   const storedPreferences=JSON.stringify(Array.from({length:w.localStorage.length},(_,n)=>{const key=w.localStorage.key(n);return [key,w.localStorage.getItem(key)];}));assert(!storedPreferences.includes('RESUMED-ONE-TIME-CODE') && !storedPreferences.includes('https://auth.example.test/resume'),'Native URLs and one-time codes are never saved in browser storage');
   resumed.agent_logins.codex={provider:'codex',status:'connected',message:'Native sign-in complete',terminal_command:nativeCommand};d.getElementById('assistant-agent-login-check').click();await tick();await tick();assert(d.getElementById('assistant-agent-terminal-help').hidden);assert.equal(d.getElementById('assistant-agent-terminal-command').textContent,'');assert.equal(d.getElementById('assistant-agent-login-code').textContent,'','One-time sign-in details are cleared after connection');dom.window.close();
+  const failedDraft=JSON.parse(JSON.stringify(editable));failedDraft.projects[1].capture_id=id(88);
+  failedDraft.assistant={provider:'claude_code',drafting_model:'Claude default',configured:true};
+  failedDraft.jobs=[{id:id(89),project_id:id(2),kind:'draft',status:'failed',target:'capture',error:'Operation 2 path must start with $package or $shared',draft_record_available:true,draft_max_calls:1,logs:[],created_at:'2026-10-13T14:00:00Z',finished_at:'2026-10-13T14:01:00Z'}];
+  const rawResponse=JSON.stringify({explanation:'A raw model response',definition:{targets:['windows'],operations:[{op:'write_text',path:'README.txt',text:'<script>window.untrustedExecuted=true</script>'}]}},null,2);
+  failedDraft.draft_record={attempts:[{kind:'draft',attempt:1,result:'rejected',response:'{"targets":["ps4"]}',error:'Unsupported target ps4'},{kind:'draft',attempt:2,result:'rejected',response:rawResponse,error:failedDraft.jobs[0].error}]};
+  dom=await create(null,false,failedDraft);w=dom.window;d=w.document;
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();d.getElementById('project-advanced-tab').click();await tick();
+  assert(!d.getElementById('draft-corrections-'+id(2)).checked,'Extra model calls are opt-in');
+  [...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='View model responses').click();await tick();await tick();
+  const responseDetails=[...d.querySelectorAll('.model-responses details')];assert.equal(responseDetails.length,2);
+  assert(responseDetails[0].textContent.includes('Unsupported target ps4'));assert(responseDetails[1].open);
+  const rawPreview=responseDetails[1].querySelector('pre');assert.equal(rawPreview.textContent,rawResponse);assert(!w.untrustedExecuted);
+  let rawCopied='';w.navigator.clipboard={writeText:async text=>rawCopied=text};responseDetails[1].querySelector('button').click();await tick();assert.equal(rawCopied,rawResponse);
+  rawPreview.scrollTop=42;const selection=d.createRange();selection.setStart(rawPreview.firstChild,5);selection.setEnd(rawPreview.firstChild,25);w.getSelection().removeAllRanges();w.getSelection().addRange(selection);const selectedRaw=w.getSelection().toString();
+  failedDraft.jobs[0].logs.push('New log');w.pollRefresh();await tick();await tick();assert.equal(w.getSelection().toString(),selectedRaw);assert.equal([...d.querySelectorAll('.model-responses pre')][1].scrollTop,42);
+  [...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Draft with Claude default').click();await tick();await tick();assert.equal(requests.at(-1).body.max_calls,1);
+  d.getElementById('draft-corrections-'+id(2)).click();
+  [...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Draft with Claude default').click();await tick();await tick();assert.equal(requests.at(-1).body.max_calls,3);
+  d.getElementById('project-activity-tab').click();await tick();assert(d.querySelector('.job-panel .model-responses'),'Model responses are accessible beside the job logs too');dom.window.close();
   dom=await create(null,false,{...fixture,projects:[],artifacts:[]});assert(dom.window.document.getElementById('project-grid').textContent.includes('first game'));dom.window.close();
   console.log('UI layouts passed: add a game, next step, drafting settings, default workspace, saved preferences, collection/list switching, grouped platforms, RomM imports, correct counts, game selection, deep links, filters, empty state and blocked storage.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

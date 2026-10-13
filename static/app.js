@@ -31,6 +31,8 @@ const automationDrafts = new Map();
 const inputDrafts = new Map();
 const draftModelReviews = new Map();
 const gameFileChoices = new Map(), gameFileChoiceLoading = new Set(), draftGameFileChoices = new Map(), inputChoiceDrafts = new Map();
+const draftCorrectionLimits = new Map();
+const modelResponses = new Map(), modelResponsesLoading = new Set();
 const projectDisclosures = new Map();
 const platformDetections = new Map();
 const platformSelections = new Map();
@@ -635,7 +637,7 @@ function markAllRead() { return runAction("read-all", "/api/notifications/read-a
 function renderProject() {
   const project = projectById(route.projectId);
   const heading = $("project-heading"), content = $("project-content");
-  const fingerprint = JSON.stringify([route.projectId, route.tab, state.projects, state.jobs, state.artifacts, state.proposals, state.playtests, state.activity, state.assistant, state.runner, state.romm, state.settings, state.catalog?.definitions, [...rommImports], [...rommImportsLoading], [...busy], [...assistantPromptDrafts], [...retentionDrafts], [...automationDrafts], [...inputDrafts], [...gameFileChoices], [...gameFileChoiceLoading], [...draftGameFileChoices], [...inputChoiceDrafts], [...platformDetections], [...platformSelections], [...draftImports], [...draftPrompts], [...preservationCache], [...preservationLoading], selectedJobId]);
+  const fingerprint = JSON.stringify([route.projectId, route.tab, state.projects, state.jobs, state.artifacts, state.proposals, state.playtests, state.activity, state.assistant, state.runner, state.romm, state.settings, state.catalog?.definitions, [...rommImports], [...rommImportsLoading], [...busy], [...assistantPromptDrafts], [...retentionDrafts], [...automationDrafts], [...inputDrafts], [...gameFileChoices], [...gameFileChoiceLoading], [...draftGameFileChoices], [...modelResponses], [...modelResponsesLoading], [...inputChoiceDrafts], [...platformDetections], [...platformSelections], [...draftImports], [...draftPrompts], [...preservationCache], [...preservationLoading], selectedJobId]);
   if (fingerprint === lastProjectRender) return;
   lastProjectRender = fingerprint;
   const reading = jsonReadingState(content);
@@ -1233,7 +1235,7 @@ function renderAdvanced(project, content, openJobs) {
 function renderBuildDiagnostics(project, content, openJobs) {
   const diagnostic = el("section", "detail-card", [el("h2", "", "Build progress & logs"), el("p", "detail-note", "Detailed logs and errors for troubleshooting a game step.")]);
   const jobs = projectJobs(project.id); const logs = el("div", "diagnostics-list");
-  jobs.forEach((job) => { const details = disclosure(`job:${job.id}`, "job-panel"); details.dataset.jobId = job.id; details.open = openJobs.has(String(job.id)) || String(job.id) === String(selectedJobId); details.append(el("summary", "", [targetPill(job.target || "capture"), el("span", "", job.version || "Update check"), statusBadge(jobStage(job)), el("span", "job-date", dateLabel(job.created_at))]), el("pre", "", (Array.isArray(job.logs) ? job.logs.join("\n") : String(job.logs || "Waiting for log output…")) + (job.error ? `\n\nError: ${job.error}` : ""))); if (job.status === "failed") details.append(button("Retry failed step", "button secondary small", () => retryJob(job.id), busy.has(`retry-${job.id}`))); logs.append(details); });
+  jobs.forEach((job) => { const details = disclosure(`job:${job.id}`, "job-panel"); details.dataset.jobId = job.id; details.open = openJobs.has(String(job.id)) || String(job.id) === String(selectedJobId); details.append(el("summary", "", [targetPill(job.target || "capture"), el("span", "", job.version || "Update check"), statusBadge(jobStage(job)), el("span", "job-date", dateLabel(job.created_at))]), el("pre", "", (Array.isArray(job.logs) ? job.logs.join("\n") : String(job.logs || "Waiting for log output…")) + (job.error ? `\n\nError: ${job.error}` : ""))); if (job.status === "failed") details.append(button("Retry failed step", "button secondary small", () => retryJob(job.id), busy.has(`retry-${job.id}`))); if (job.kind === "draft" && job.draft_record_available) details.append(draftingRecordLink(job.id)); logs.append(details); });
   diagnostic.append(jobs.length ? logs : el("p", "detail-empty", "No diagnostics yet.")); content.append(diagnostic);
 
 }
@@ -2001,7 +2003,10 @@ function draftCard(project) {
   card.append(el("label", "check-label", [prepare, "Prepare and include my game files when supported"]), el("p", "field-help", "Uses this project’s supported preparation tools. Otherwise the draft must explain which game data you need on your PC."));
   const review = input(`draft-model-review-${id}`, "checkbox"); review.checked = draftModelReviews.get(id) ?? false;
   review.addEventListener("change", () => draftModelReviews.set(id, review.checked));
-  card.append(el("label", "check-label", [review, "Add a separate model review (one extra model request)"]), el("p", "field-help", "Default: one drafting request, no automatic model corrections. The prompt is capped at 24,000 characters. File and schema checks run locally."));
+  const corrections = input(`draft-corrections-${id}`, "checkbox"); corrections.checked = (draftCorrectionLimits.get(id) ?? drafting?.draft_max_calls ?? 1) > 1;
+  corrections.addEventListener("change", () => draftCorrectionLimits.set(id, corrections.checked ? 3 : 1));
+  card.append(el("label", "check-label", [corrections, "Allow automatic corrections (up to 3 drafting requests)"]), el("p", "field-help", "When a draft fails validation or a test build, send the error back for correction. Each extra request uses your model allowance or API balance."));
+  card.append(el("label", "check-label", [review, "Add a separate model review (one extra model request)"]), el("p", "field-help", "Default: one drafting request, no automatic corrections. A successful draft stops corrections early. The prompt is capped at 24,000 characters. File and schema checks run locally."));
   const noRelease = !project.capture_id;
   if (noRelease) card.append(el("p", "field-help", "Check upstream first, so there is a release to read."));
   const actions = el("div", "inline-actions");
@@ -2058,15 +2063,38 @@ function renderProposalReview(card, project, proposal) {
   card.append(el("p", "quiet-note", "After approving, Build packages creates a downloadable package. Failed builds leave existing packages in place."));
 }
 function draftingRecordLink(jobId) {
-  const link = el("a", "button secondary small", "Download drafting record (JSON)");
-  link.href = `/api/jobs/${encodeURIComponent(jobId)}/draft-record`; link.setAttribute("download", ""); return link;
+  const node = el("div", "model-responses");
+  const link = el("a", "button secondary small", "Download drafting record (JSON)"); link.href = `/api/jobs/${encodeURIComponent(jobId)}/draft-record`; link.setAttribute("download", "");
+  node.append(el("div", "inline-actions", [button(modelResponsesLoading.has(jobId) ? "Loading responses…" : modelResponses.has(jobId) ? "Refresh model responses" : "View model responses", "button secondary small", () => loadModelResponses(jobId), modelResponsesLoading.has(jobId)), link]));
+  const responses = modelResponses.get(jobId);
+  if (responses) {
+    if (!responses.length) node.append(el("p", "field-help", "No model response has been saved yet. Refresh after the request finishes."));
+    responses.forEach((attempt, index) => {
+      const details = disclosure(`model-response:${jobId}:${index}`, "diagnostics-list"); details.open = index === responses.length - 1;
+      details.append(el("summary", "table-action", `${attempt.kind === "review" ? "Review" : "Draft attempt " + (attempt.attempt || index + 1)} · ${attempt.result || "saved"}`));
+      if (attempt.error) details.append(el("p", "project-error", attempt.error));
+      const preview = el("pre", "json-preview", attempt.response); preview.dataset.jsonKey = `model-response:${jobId}:${index}`;
+      const copy = button("Copy response", "button secondary small", () => copyJson(attempt.response, copy));
+      details.append(el("div", "inline-actions", copy), preview); node.append(details);
+    });
+  }
+  return node;
+}
+async function loadModelResponses(jobId) {
+  if (modelResponsesLoading.has(jobId)) return;
+  modelResponsesLoading.add(jobId); lastRender = null; render();
+  try {
+    const record = await api(`/api/jobs/${encodeURIComponent(jobId)}/draft-record`);
+    modelResponses.set(jobId, (record.attempts || []).filter(attempt => typeof attempt.response === "string").map(({kind, attempt, result, error, response}) => ({kind, attempt, result, error, response})));
+  } catch(error) { toast(error.message, true); }
+  finally { modelResponsesLoading.delete(jobId); lastRender = null; render(); }
 }
 async function approveDraft(proposal, project) {
   const result = await runAction(`approve-${proposal.id}`, `/api/proposals/${encodeURIComponent(proposal.id)}/apply`, {}, "Packaging steps approved. Use Build packages to build it.");
   if (result) navigateProject(project.id, "overview");
 }
 function prepareDraftGameFiles(id) { return draftGameFileChoices.get(id) ?? projectJobs(id).find(job => job.kind === "draft")?.prepare_game_files ?? true; }
-function queueDraft(id) { return runAction(`draft-${id}`, `/api/projects/${encodeURIComponent(id)}/draft`, { instruction: (assistantPromptDrafts.get(id) || "").trim(), prepare_game_files:prepareDraftGameFiles(id), review_model:draftModelReviews.get(id) ?? false }, "Drafting started. The draft appears here when it's ready."); }
+function queueDraft(id) { return runAction(`draft-${id}`, `/api/projects/${encodeURIComponent(id)}/draft`, { instruction: (assistantPromptDrafts.get(id) || "").trim(), prepare_game_files:prepareDraftGameFiles(id), review_model:draftModelReviews.get(id) ?? false, max_calls:draftCorrectionLimits.get(id) ?? projectJobs(id).find(job => job.kind === "draft")?.draft_max_calls ?? 1 }, "Drafting started. The draft appears here when it's ready."); }
 async function copyDraftPrompt(id) {
   const result = await runAction(`prompt-${id}`, `/api/projects/${encodeURIComponent(id)}/draft-prompt`, { instruction: (assistantPromptDrafts.get(id) || "").trim(), prepare_game_files:prepareDraftGameFiles(id) }, "");
   if (!result) return;

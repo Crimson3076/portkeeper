@@ -28,7 +28,10 @@ Top-level fields:
 - runner: "operations". runner_version: 1.
 - upstream: {repository: "owner/repo", documentation: ["https://..."],
   release_rules: {stable_only: true, tag_pattern: "regex for release tags", notes}}.
-- targets: any of "linux", "windows", "handheld".
+- targets: a non-empty JSON ARRAY of unique strings, e.g. ["windows"] or ["linux", "windows"].
+  Allowed values: "linux", "windows", "handheld". Use the requested runtime platforms only.
+  Never use a string/object, duplicate entries, "ps4", "android", "any", "win64" or "x86_64" here.
+  A Linux extraction tool does not add Linux runtime support; input platform_hint ps4 is not a target.
 - first_run: {mode, summary}. mode is one of:
   "ready" (nothing to set up), "preloaded" (your file is placed where the game looks for it),
   "generated" (files the game needs are generated during the build),
@@ -97,6 +100,8 @@ Top-level fields:
 Path rules (including Windows packages):
 - For definition path fields, use forward slashes, never Windows backslashes or absolute C:/ paths.
 - Operations' to/from fields use "$package" or "$shared" roots (e.g. "$package/game").
+- write_text.path and touch.path ALSO need a root, e.g. "$package/PORTABLE-README.txt".
+  launcher.path is DIFFERENT: use "Launch.cmd", with no $package prefix.
 - launcher.path, launcher.exec, launch.command, expected_files, required_members, source_checks.path,
   and strip_prefix are plain relative paths (e.g. "God of War III.exe"), NOT commands or $package paths.
 - Omit optional path fields such as strip_prefix if not needed; never use "", "." or null for them.

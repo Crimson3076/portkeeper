@@ -14,6 +14,53 @@ from test_packaging import Releases
 
 
 class GuidedDraftTests(unittest.TestCase):
+    def test_native_claude_can_correct_targets_then_write_text_path_within_three_calls(self):
+        bad_targets = copy.deepcopy(self.good);bad_targets['targets'] = ['windows', 'ps4']
+        bad_path = copy.deepcopy(self.good);bad_path['operations'].append({'op': 'write_text', 'path': 'README.txt', 'text': 'Fixture'})
+        replies = [json.dumps(value) for value in (bad_targets, bad_path, self.good)]
+        conversations = []
+        def reply(provider, system, messages, **kwargs):
+            conversations.append(copy.deepcopy(messages))
+            return replies[len(conversations) - 1]
+        config = {'provider': 'claude_code', 'agent_models': {}}
+        with patch.object(self.engine.assistant.agents, 'status', return_value={'installed': True, 'authenticated': True}), \
+             patch.object(self.engine.assistant.agents, 'chat', side_effect=reply) as chat:
+            result = self.engine.assistant.draft_definition('system', 'public material', lambda text: drafting.read_reply(text, self.project), lambda _: None, attempts=3, config=config)
+        self.assertEqual(chat.call_count, 3)
+        self.assertEqual(result[0]['targets'], ['windows'])
+        self.assertIn('unsupported values', conversations[1][-1]['content'])
+        self.assertIn('$package/PORTABLE-README.txt', conversations[2][-1]['content'])
+
+    def test_single_call_failure_explains_corrections_are_off(self):
+        config = {'provider': 'claude_code', 'agent_models': {}}
+        bad = copy.deepcopy(self.good);bad['targets'] = 'windows'
+        with patch.object(self.engine.assistant.agents, 'status', return_value={'installed': True, 'authenticated': True}), \
+             patch.object(self.engine.assistant.agents, 'chat', return_value=json.dumps(bad)) as chat:
+            with self.assertRaisesRegex(Invalid, 'Automatic corrections are off'):
+                self.engine.assistant.draft_definition('system', 'public material', lambda text: drafting.read_reply(text, self.project), lambda _: None, attempts=1, config=config)
+        self.assertEqual(chat.call_count, 1)
+
+    def test_test_build_feedback_cannot_exceed_the_selected_draft_call_limit(self):
+        config = {'provider': 'claude_code', 'agent_models': {}}
+        with patch.object(self.engine.assistant.agents, 'status', return_value={'installed': True, 'authenticated': True}), \
+             patch.object(self.engine.assistant.agents, 'chat', return_value=json.dumps(self.good)) as chat:
+            result = self.engine.assistant.draft_definition('system', 'public material', lambda text: drafting.read_reply(text, self.project), lambda _: None,
+                attempts=1, config=config, test=lambda _: 'Test build failed', test_rounds=3)
+        self.assertEqual(chat.call_count, 1)
+        self.assertEqual(result[0]['targets'], ['windows'])
+
+    def test_queued_correction_limit_and_review_choice_survive_retry(self):
+        from portkeeper.safety import Invalid
+        with patch.object(self.engine.assistant, 'connected', return_value=True), patch.object(self.engine.executor, 'submit'):
+            for invalid in [True, 0, 4, '3']:
+                with self.assertRaises(Invalid):
+                    self.engine.queue_draft(self.project['id'], max_calls=invalid)
+            job = self.engine.queue_draft(self.project['id'], max_calls=3, review_model=True)['job']
+            self.engine.store.update('jobs', job['id'], status='failed')
+            retried = self.engine.retry(job['id'])['job']
+        self.assertEqual(retried['draft_max_calls'], 3)
+        self.assertTrue(retried['review_model'])
+
     def test_trial_feedback_masks_private_input_paths_and_saved_credentials(self):
         self.engine.assistant.path.parent.mkdir(parents=True, exist_ok=True)
         self.engine.assistant.path.write_text(json.dumps({'api_key': 'unlabelled-private-key'}))

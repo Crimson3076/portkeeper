@@ -109,7 +109,9 @@ def _literal_path(value, field):
 def split_root(value, field, roots=("package", "shared")):
     """Return (root, relative path) for $package/... and $shared/... locations."""
     if not isinstance(value, str) or not value.startswith("$"):
-        raise Invalid(f"{field} must start with $package or $shared")
+        allowed = ' or '.join('$' + root for root in roots)
+        example = '$package/PORTABLE-README.txt' if 'package' in roots else '$shared/game'
+        raise Invalid(f"{field} must start with {allowed}; received {str(value)[:160]!r}. Example: {example}. write_text.path and operation to/from fields use these roots; launcher.path and launch.command are plain relative filenames.")
     root, _, rest = value[1:].partition("/")
     if root not in roots:
         raise Invalid(f"{field} must start with " + " or ".join("$" + r for r in roots))
@@ -331,8 +333,14 @@ def validate_definition(definition):
         _regex(rules["tag_pattern"], "release_rules.tag_pattern")
     _text(rules.get("notes"), "release_rules.notes", 2000)
     targets = d.get("targets")
-    if not isinstance(targets, list) or not targets or len(set(targets)) != len(targets) or any(t not in TARGETS for t in targets):
-        raise Invalid("Definition targets must be unique: linux, windows, handheld")
+    if not isinstance(targets, list) or not targets:
+        raise Invalid('Definition targets must be a non-empty JSON array, for example ["windows"]. Allowed values: linux, windows, handheld.')
+    invalid = [t for t in targets if not isinstance(t, str) or t not in TARGETS]
+    if invalid:
+        raise Invalid(f'Definition targets contains unsupported values: {str(invalid)[:200]}. Allowed values: linux, windows, handheld. Use runtime platforms, not input consoles, tool platforms or architecture names.')
+    if len(set(targets)) != len(targets):
+        duplicates = [t for t in dict.fromkeys(targets) if targets.count(t) > 1]
+        raise Invalid('Definition targets must be unique; repeated: ' + ', '.join(duplicates) + '. List each selected runtime platform once.')
     downloads = d.setdefault("downloads", {})
     if not isinstance(downloads, dict) or len(downloads) > 20:
         raise Invalid("downloads must map up to 20 download IDs")

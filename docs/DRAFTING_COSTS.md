@@ -1,11 +1,21 @@
 # Compact drafting and model call costs
 
 The default connected draft makes one model call. It does not automatically ask
-for corrections after a schema/archive error or failed test build. The draft UI
+for corrections after a schema/archive error or failed test build. Enable
+**Allow automatic corrections** on the game's drafting card to permit up to three
+drafting requests, including corrections from either source. A valid result stops
+early. Retries preserve this choice; each additional request consumes model usage.
+The draft UI
 has an unchecked option for a separate advisory review; checking it requests one
 additional model call. Local schema, archive and test-build checks still run
 without paid model calls. Test builds that skip unavailable game data are not
 proof of game preparation or gameplay.
+
+Failed drafts retain their full model output. Use **View model responses** on the
+drafting card or beside the job's logs, then **Copy response** for any attempt.
+The viewer shows each rejection reason and retains text selection and scrolling
+through polling. **Download drafting record (JSON)** also exports the prompts,
+responses and deterministic-check results. Viewing/copying makes no model request.
 
 The complete initial system/user prompt is capped at 24,000 characters. It uses
 the operation/schema contract, one fictional example and bounded public evidence

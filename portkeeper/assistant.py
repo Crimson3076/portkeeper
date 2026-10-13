@@ -496,27 +496,28 @@ class RecipeAssistant:
         if not self.connected(config):
             raise Invalid('No model is connected. Use the prepared prompt with your own chat, or connect a model in Settings.')
         messages = [{'role': 'user', 'content': user}]
-        rejected, tested, last = 0, 0, None
+        calls, tested, last = 0, 0, None
         while True:
-            log(f'Asking {self.public_config(config)["drafting_model"]} for a draft (attempt {rejected + tested + 1})')
+            calls += 1
+            log(f'Asking {self.public_config(config)["drafting_model"]} for a draft (attempt {calls} of {attempts})')
             text = self.chat(system, messages, config)
             try:
                 result = read(text)
             except Invalid as error:
-                rejected += 1
                 if record:
-                    record({'kind': 'draft', 'attempt': rejected + tested, 'messages': copy.deepcopy(messages), 'response': text, 'result': 'rejected', 'error': str(error)})
+                    record({'kind': 'draft', 'attempt': calls, 'messages': copy.deepcopy(messages), 'response': text, 'result': 'rejected', 'error': str(error)})
                 log(f'Portkeeper rejected the draft: {error}')
-                if rejected >= attempts:
+                if calls >= attempts:
                     if last is not None:
                         log('Keeping the last draft that passed the automatic checks')
                         return last
-                    raise Invalid(f'The model could not produce a valid definition: {error}') from None
+                    detail = ' Automatic corrections are off (one draft call). Enable automatic corrections on the drafting card to let the model fix validation errors.' if attempts == 1 else f' The {attempts}-call drafting limit was reached.'
+                    raise Invalid(f'The model could not produce a valid definition: {error}' + detail) from None
                 messages += [{'role': 'assistant', 'content': text[:60000]},
                              {'role': 'user', 'content': f'Portkeeper rejected that definition: {error}\nCorrect the named field while keeping valid parts of the definition. Use forward-slash relative paths; omit optional empty path fields. expected_files and required_members are literal paths, never wildcards. required_members must be a JSON array of at most 50 items; choose 2-10 essential files instead of copying the archive listing. All files are unpacked regardless. expected_files has at most 100 items. strip_prefix removes the ZIP folder; required_members must not repeat it. Match the launcher executable to its final unpacked path. stage_input accepts declared file inputs only, never directories. If the player chooses a game folder on their PC, remove that input, use first_run.mode asks_user and explain how to select it. Do not invent hashes, release assets, tools or operations. Return the corrected JSON object only.'}]
                 continue
             if record:
-                record({'kind': 'draft', 'attempt': rejected + tested + 1, 'messages': copy.deepcopy(messages), 'response': text, 'result': 'accepted'})
+                    record({'kind': 'draft', 'attempt': calls, 'messages': copy.deepcopy(messages), 'response': text, 'result': 'accepted'})
             if test is None or tested >= test_rounds:
                 return result
             last = result
@@ -526,8 +527,8 @@ class RecipeAssistant:
             tested += 1
             if record:
                 record({'kind': 'test_build', 'round': tested, 'feedback': feedback})
-            if tested >= test_rounds:
-                log('Test-build rounds used up; the last draft goes to review with its test result')
+            if tested >= test_rounds or calls >= attempts:
+                log('Draft call or test-build limit reached; the last draft goes to review with its test result')
                 return result
             log('Sending the test-build result back to the model')
             messages += [{'role': 'assistant', 'content': text[:60000]},
