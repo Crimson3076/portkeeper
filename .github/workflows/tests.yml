@@ -44,6 +44,29 @@ jobs:
         with:
           rootless: true
           daemon-config: '{"exec-opts": ["native.cgroupdriver=systemd"]}'
+      - name: Start the test daemon inside the delegated user service
+        run: |
+          # The action's detached shell inherits the runner's system-service
+          # cgroup. Use the same installed vendor binaries in a user service so
+          # runc can create delegated scopes without system-manager polkit auth.
+          mkdir -p "$RUNNER_TEMP/portkeeper-docker"
+          printf '{"exec-opts":["native.cgroupdriver=systemd"]}' > "$RUNNER_TEMP/portkeeper-docker/daemon.json"
+          systemd-run --user --unit=portkeeper-test-docker --property=Delegate=yes \
+            --setenv="PATH=$PATH" --setenv="XDG_RUNTIME_DIR=/run/user/$(id -u)" \
+            --setenv="DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" \
+            "$(command -v dockerd-rootless.sh)" \
+            --host="unix:///run/user/$(id -u)/portkeeper-docker.sock" \
+            --config-file="$RUNNER_TEMP/portkeeper-docker/daemon.json" \
+            --data-root="$RUNNER_TEMP/portkeeper-docker/data" \
+            --exec-root="$RUNNER_TEMP/portkeeper-docker/exec" \
+            --pidfile="$RUNNER_TEMP/portkeeper-docker/docker.pid"
+          docker context create portkeeper-rootless-tests --docker "host=unix:///run/user/$(id -u)/portkeeper-docker.sock"
+          docker context use portkeeper-rootless-tests
+          for attempt in $(seq 1 30); do
+            if docker version >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          docker info --format '{{json .SecurityOptions}} {{.CgroupDriver}}'
       - name: Build the public worker environment
         run: docker build -f Dockerfile.worker --tag portkeeper-worker:checks .
       - name: Check actual isolation, compilation, read-only inputs, replay and cancellation
