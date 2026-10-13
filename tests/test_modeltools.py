@@ -54,6 +54,19 @@ class ModelToolTests(unittest.TestCase):
         self.assertEqual(self.engine.store.all("artifacts"), [])
         self.assertEqual(list((self.engine.work_root).glob("trial-*")), [])
 
+    def test_input_consent_is_required_for_guided_trials_and_inventory_is_sanitized(self):
+        self.engine.bind_input(self.id, {'input': 'rom'})
+        inventory = self.tools.call('read_input_inventory', {'game_id': self.id})
+        encoded = json.dumps(inventory)
+        self.assertNotIn(str(self.engine.input_root), encoded)
+        self.assertNotIn('Example (USA)', encoded)
+        self.assertIn('.v64', encoded)
+        self.assertIn('verified_identity', encoded)
+        result = self.tools.start_trial(self.id, definition(), background=False, allow_selected_inputs=False)
+        self.assertEqual(result['status'], 'partial')
+        self.assertIn('game.z64', result['result']['targets']['windows']['unverified'])
+        self.assertEqual(self.engine.store.all('artifacts'), [])
+
     def test_wrong_paths_fail_with_the_produced_listing(self):
         wrong = definition()
         wrong["outputs"]["linux"]["expected_files"] = ["bin/port", "Launch.sh"]

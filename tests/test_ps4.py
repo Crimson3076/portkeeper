@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from portkeeper import packaging, ps4
 from portkeeper.engine import Engine
-from portkeeper.runner import Context
+from portkeeper.runner import Context, OperationRunner
 from portkeeper.safety import Invalid, checksum
 
 
@@ -159,6 +159,35 @@ class PkgPreparationTests(unittest.TestCase):
             self.run_tool(self.context(), encrypted)
         self.assertEqual([checksum(self.base), checksum(self.update)], originals)
         self.assertEqual(list(self.engine.packager.prepared.glob('ps4/*/portkeeper-extraction.json')), [])
+
+    def test_disposable_extraction_keeps_owned_data_out_of_persistent_cache(self):
+        project = self.context().project
+        definition = copy.deepcopy(self.definition)
+        definition.update(downloads={'pkgtool': self.definition['downloads']['pkgtool']}, operations=[self.op, self.definition['operations'][2]],
+                          outputs={'windows': {'expected_files': ['game/eboot.bin']}})
+        originals = [checksum(self.base), checksum(self.update)]
+        with patch('portkeeper.runner.COMPAT_SSL', str(self.ssl)), patch.object(OperationRunner, 'dependency', return_value=self.tool), patch.object(OperationRunner, 'run', side_effect=self.extract):
+            result = self.engine.packager.trial(project, definition, {'assets': [], 'version': 'fixture'}, ['windows'], lambda _: None)
+        self.assertEqual(result['status'], 'passed', result)
+        self.assertEqual([checksum(self.base), checksum(self.update)], originals)
+        self.assertEqual(list(self.engine.packager.prepared.glob('ps4/*/portkeeper-extraction.json')), [])
+        self.assertEqual(list(self.engine.work_root.glob('trial-*')), [])
+
+    def test_disposable_prepared_folder_is_a_private_copy_before_alias_writes(self):
+        ctx = self.context();self.run_tool(ctx)
+        folder = ctx.aliases['game']
+        binding = self.engine.packager.locate(None, self.definition, 'prepared_game')[0]
+        project = {**ctx.project, 'input_bindings': {'prepared_game': binding}}
+        definition = copy.deepcopy(self.definition)
+        definition.update(downloads={}, operations=[self.op,
+                          {'op': 'write_text', 'path': '$shared/game/trial.txt', 'text': 'private trial output'},
+                          self.definition['operations'][2]], outputs={'windows': {'expected_files': ['game/eboot.bin']}})
+        original = checksum(folder / 'eboot.bin')
+        result = self.engine.packager.trial(project, definition, {'assets': [], 'version': 'fixture'}, ['windows'], lambda _: None)
+        self.assertEqual(result['status'], 'passed', result)
+        self.assertEqual(checksum(folder / 'eboot.bin'), original)
+        self.assertFalse((folder / 'trial.txt').exists())
+        self.assertEqual(list(self.engine.work_root.glob('trial-*')), [])
 
     def test_other_extraction_errors_are_preserved(self):
         with patch.object(self.engine.packager, 'run', side_effect=Invalid('Tool exceeded its time limit')):

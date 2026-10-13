@@ -33,6 +33,7 @@ const draftModelReviews = new Map();
 const gameFileChoices = new Map(), gameFileChoiceLoading = new Set(), draftGameFileChoices = new Map(), inputChoiceDrafts = new Map();
 const draftCorrectionLimits = new Map();
 const modelResponses = new Map(), modelResponsesLoading = new Set();
+const investigationLimits = new Map(), investigationInputs = new Map();
 const projectDisclosures = new Map();
 const platformDetections = new Map();
 const platformSelections = new Map();
@@ -859,7 +860,7 @@ function unifiedActivity() {
   }));
 }
 function activityCategory(event) {
-  if (event.kind === "draft") return "drafts";
+  if (["draft", "investigation"].includes(event.kind)) return "drafts";
   if (["publish", "upload"].includes(event.kind)) return "uploads";
   if (event.kind === "test") return "tests";
   if (event.kind === "import") return "imports";
@@ -1235,7 +1236,7 @@ function renderAdvanced(project, content, openJobs) {
 function renderBuildDiagnostics(project, content, openJobs) {
   const diagnostic = el("section", "detail-card", [el("h2", "", "Build progress & logs"), el("p", "detail-note", "Detailed logs and errors for troubleshooting a game step.")]);
   const jobs = projectJobs(project.id); const logs = el("div", "diagnostics-list");
-  jobs.forEach((job) => { const details = disclosure(`job:${job.id}`, "job-panel"); details.dataset.jobId = job.id; details.open = openJobs.has(String(job.id)) || String(job.id) === String(selectedJobId); details.append(el("summary", "", [targetPill(job.target || "capture"), el("span", "", job.version || "Update check"), statusBadge(jobStage(job)), el("span", "job-date", dateLabel(job.created_at))]), el("pre", "", (Array.isArray(job.logs) ? job.logs.join("\n") : String(job.logs || "Waiting for log output…")) + (job.error ? `\n\nError: ${job.error}` : ""))); if (job.status === "failed") details.append(button("Retry failed step", "button secondary small", () => retryJob(job.id), busy.has(`retry-${job.id}`))); if (job.kind === "draft" && job.draft_record_available) details.append(draftingRecordLink(job.id)); logs.append(details); });
+  jobs.forEach((job) => { const details = disclosure(`job:${job.id}`, "job-panel"); details.dataset.jobId = job.id; details.open = openJobs.has(String(job.id)) || String(job.id) === String(selectedJobId); details.append(el("summary", "", [targetPill(job.target || "capture"), el("span", "", job.version || "Update check"), statusBadge(jobStage(job)), el("span", "job-date", dateLabel(job.created_at))]), el("pre", "", (Array.isArray(job.logs) ? job.logs.join("\n") : String(job.logs || "Waiting for log output…")) + (job.error ? `\n\nError: ${job.error}` : ""))); if (job.status === "failed") details.append(button("Retry failed step", "button secondary small", () => retryJob(job.id), busy.has(`retry-${job.id}`))); if (["draft","investigation"].includes(job.kind) && job.draft_record_available) details.append(draftingRecordLink(job.id)); logs.append(details); });
   diagnostic.append(jobs.length ? logs : el("p", "detail-empty", "No diagnostics yet.")); content.append(diagnostic);
 
 }
@@ -1737,7 +1738,7 @@ let addGame = null;
 const draftPrompts = new Map();
 const draftImports = new Map();
 function assistantSettings() { return state.assistant || {}; }
-function pendingProposal(project) { return (state.proposals || []).find((proposal) => String(proposal.project_id) === String(project.id)); }
+function pendingProposal(project) { return (state.proposals || []).find((proposal) => proposal.kind === "definition" && String(proposal.project_id) === String(project.id)); }
 async function openAddGame() {
   addGame = { step: "pick", games: [], loading: true, pick: null, files: null, choices: {}, targets: [], keep: false, publish: false, autoPublish: false, busy: false, rommConnected: rommReady(),
     custom: { repo: "", lookup: null, name: "", targets: [], method: assistantSettings().configured ? "assistant" : "handoff" } };
@@ -1963,6 +1964,7 @@ function setupProject(id) { return runAction(`setup-${id}`, `/api/projects/${enc
 function nextStepCard(project) {
   const card = el("section", "detail-card next-step-card");
   const active = projectActiveJob(project), proposal = pendingProposal(project), packages = latestPackages(project);
+  const investigation = (state.proposals || []).find(item => item.kind === "investigation" && item.project_id === project.id && item.status === "pending_review");
   const runner = project.packaging?.runner || (project.profile ? "profile" : project.recipe?.mode === "capture" ? "capture" : "recipe");
   const inRomm = packages.filter((artifact) => ["in_romm", "awaiting_scan", "uploading"].includes(artifact.romm?.status));
   const untested = packages.filter((artifact) => testStatus(artifact, null) === "untested");
@@ -1974,7 +1976,8 @@ function nextStepCard(project) {
   else if (projectJobs(project.id)[0]?.status === "failed") { heading = "A build needs your attention"; note = projectJobs(project.id)[0].error || "Review the failed step and retry when the cause is resolved."; action = button("View failure & logs", "button primary small", () => navigateProject(project.id, "activity", projectJobs(project.id)[0].id)); }
   else if (missingGameFiles(project).length && runner === "operations") { heading = "Choose your game files"; note = "Select the required files before building packages."; action = button("Choose game files", "button primary small", () => navigateProject(project.id, "advanced")); }
   else if (proposal) { heading = "Review the drafted packaging steps"; note = "Approve these steps before they replace your saved instructions. Optional test builds use a temporary workspace."; action = button("Review draft", "button primary small", () => navigateProject(project.id, "advanced")); }
-  else if (runner === "capture" && !project.demo) { heading = "Add packaging steps"; note = "Portkeeper keeps this game's releases, but doesn't know how to package it yet."; action = button("Draft packaging steps", "button primary small", () => navigateProject(project.id, "advanced")); }
+  else if (investigation && !packages.length) { heading = investigation.plan.can_draft ? "Review the packaging plan" : "Review the investigation result"; note = investigation.plan.summary; action = button("Review investigation", "button primary small", () => navigateProject(project.id, "advanced")); }
+  else if (runner === "capture" && !project.demo) { heading = "Add packaging steps"; note = "Portkeeper keeps this game's releases, but doesn't know how to package it yet."; action = button("Investigate packaging", "button primary small", () => navigateProject(project.id, "advanced")); }
   else if (!packages.length && !project.demo) { heading = "Build packages"; note = "Check the latest release and build your selected platforms. Packages stay here; uploading is a separate action unless automatic publishing is enabled."; action = button(working ? "Starting…" : "Build packages", "button primary small", () => setupProject(project.id), working); }
   else if (rommReady() && !project.demo && inRomm.length < packages.length) { heading = "Send to RomM"; note = "These packages are built but aren't in RomM yet."; action = button("Send to RomM", "button primary small", () => packages.filter((artifact) => !inRomm.includes(artifact)).forEach((artifact) => publishToRomM(artifact.id))); }
   else if (untested.length) { heading = "Try it and record how it ran"; note = "A result helps you and others know this exact download works."; action = button("Record test result", "button primary small", () => openReview(project, untested[0], null)); }
@@ -1991,7 +1994,8 @@ function draftCard(project) {
   const proposal = pendingProposal(project);
   if (proposal) { renderProposalReview(card, project, proposal); return card; }
   const settings = assistantSettings(), id = project.id, drafting = projectJobs(id).find((job) => job.kind === "draft");
-  card.append(el("p", "detail-note", project.packaging?.runner === "operations" ? "Ask for a revised draft, for example after a new release changed something. The current steps stay in use until you approve a draft." : "A model reads this game's latest release, README and source, then proposes packaging steps. Optional test builds run in a temporary workspace; saving the steps and publishing packages require approval."));
+  card.append(investigationCard(project));
+  card.append(el("p", "detail-note", "Investigate first to establish a supported plan. Direct drafting and JSON import remain available below for advanced use. Current instructions stay in use until you approve a definition; optional test builds run in a temporary workspace."));
   card.append(el("p", "field-help", "A draft uses public release facts and is checked locally. You can request a separate model review; approval and packaging tests remain separate steps."));
   if (drafting && (jobActive(drafting) || drafting.status === "failed")) card.append(el("div", "inline-actions", [statusBadge(jobActive(drafting) ? "building" : "failed", jobActive(drafting) ? "Drafting…" : "Draft failed"), el("span", "field-help", drafting.error || (drafting.logs || []).slice(-1)[0] || "")]));
   if (drafting?.draft_record_available) card.append(draftingRecordLink(drafting.id));
@@ -2024,7 +2028,7 @@ function draftCard(project) {
   field(card, "Paste the answer from your chat or agent", paste);
   card.append(el("div", "inline-actions", button(busy.has(`import-${id}`) ? "Checking…" : "Check and review", "button secondary small", () => importDraft(id), busy.has(`import-${id}`))));
   const where = settings.provider === "ollama" ? " Drafts run on your local model." : ["anthropic", "openai"].includes(settings.provider) ? ` Drafts are sent to ${settings.provider_label}.` : "";
-  card.append(el("p", "quiet-note", "A model sees only public project material: the release's file list, the README and documentation, and short source excerpts. Never your game files, their locations or any token." + where));
+  card.append(el("p", "quiet-note", "Models receive public project evidence and limited selected-input metadata: formats, sizes and recognized identities. Game contents, locations and credentials stay on the server." + where));
   if (!settings.configured) card.append(button("Connect a local or cloud model →", "text-button", () => navigateSettings("assistant")));
   return card;
 }
@@ -2032,6 +2036,7 @@ function renderProposalReview(card, project, proposal) {
   const definition = proposal.definition, view = proposal.view || {};
   card.append(el("p", "detail-note", `Drafted by ${proposal.source} · ${dateLabel(proposal.created_at)}. Nothing has run. Review it before approving.`));
   if (proposal.explanation) card.append(el("p", "review-notes", proposal.explanation));
+  if (proposal.investigation_plan) card.append(disclosure(`investigation-plan:${proposal.id}`, "diagnostics-list", [el("summary", "table-action", "Reviewed investigation plan"), jsonViewer(`investigation:${proposal.id}`, proposal.investigation_plan)]));
   card.append(el("div", "detail-facts", [meta("Platforms", definition.targets.map((target) => targetLabels[target] || target).join(", ")), meta("Files for packaging", definition.inputs.filter((item) => item.required !== false).map((item) => item.label).join("; ") || "None"), meta("First launch", view.first_run?.text || definition.first_run?.summary || "Not stated", true)]));
   const asks = definition.inputs.filter((item) => item.required !== false).map((item) => item.label);
   card.append(el("p", "info-note", asks.length ? `Portkeeper will ask you for: ${asks.join("; ")}.` : definition.first_run?.mode === "asks_user" ? "Portkeeper will not ask you for any game files. The game asks for them when you play." : "Portkeeper will not ask you for any game files."));
@@ -2062,6 +2067,47 @@ function renderProposalReview(card, project, proposal) {
   card.append(el("div", "inline-actions", [button(busy.has(`approve-${proposal.id}`) ? "Approving…" : "Approve", "button primary small", () => approveDraft(proposal, project), busy.has(`approve-${proposal.id}`)), button("Discard", "button secondary small", () => runAction(`discard-${proposal.id}`, `/api/proposals/${encodeURIComponent(proposal.id)}/discard`, {}, "Draft discarded."))]));
   card.append(el("p", "quiet-note", "After approving, Build packages creates a downloadable package. Failed builds leave existing packages in place."));
 }
+function investigationCard(project) {
+  const id = project.id, settings = assistantSettings();
+  const report = (state.proposals || []).find(item => item.kind === "investigation" && item.project_id === id && item.status === "pending_review");
+  const job = projectJobs(id).find(item => item.kind === "investigation");
+  const node = el("section", "detail-card investigation-card", [el("h3", "", "Investigate before drafting"), el("p", "detail-note", "Discover whether this release contains a playable runtime, what game data it needs, and which steps Portkeeper can perform. The model can request more public evidence; no game is built during investigation.")]);
+  const limit = el("select");limit.id = `investigation-limit-${id}`;limit.setAttribute("aria-label", "Maximum investigation requests");
+  [1,3,6].forEach(value => { const option = el("option", "", `Up to ${value} model request${value === 1 ? "" : "s"}`);option.value = String(value);limit.append(option); });
+  limit.value = String(investigationLimits.get(id) ?? job?.investigation_max_calls ?? 3);
+  limit.addEventListener("change", () => investigationLimits.set(id, Number(limit.value)));
+  field(node, "Investigation limit", limit);
+  node.append(el("p", "field-help", "Each evidence follow-up uses one request from this limit. A later draft and optional review have separate limits and consume additional model usage."));
+  if (job && jobActive(job)) node.append(el("p", "field-help", "Investigating… " + (job.logs || []).slice(-1)[0]));
+  if (settings.configured) node.append(button(report ? "Investigate again" : `Investigate with ${settings.drafting_model}`, "button primary small", () => investigateProject(id), !project.capture_id || Boolean(projectActiveJob(project)) || busy.has(`investigate-${id}`)));
+  else node.append(el("p", "field-help", "Connect a local model, API or subscription agent in Settings to investigate. Manual prompts and JSON editing remain available below."));
+  if (job?.draft_record_available) node.append(draftingRecordLink(job.id));
+  if (report) {
+    const plan = report.plan;
+    node.append(el("h4", "", {ready:"Plan ready to review",unsupported:"Current runner cannot package this release",needs_evidence:"More evidence or capabilities are needed"}[plan.outcome] || "Investigation result"), el("p", "review-notes", plan.summary));
+    (plan.targets || []).forEach(target => node.append(el("p", "field-help", `${targetLabels[target.target] || target.target}: ${target.method}${target.asset ? " · " + target.asset : ""}${target.launch ? " · launch " + target.launch : ""}`)));
+    node.append(el("p", "field-help", "Game data: " + plan.game_files.requirements));
+    node.append(el("p", "field-help", report.prepare_game_files ? "This plan requested game-data preparation. Changing that choice requires another investigation." : "This plan keeps owned data external. Changing that choice requires another investigation."));
+    if (plan.steps?.length) node.append(el("ol", "instruction-steps", plan.steps.map(step => el("li", "", step.purpose + " (" + step.capability + ")"))));
+    [...(plan.capability_problems || []), ...(plan.uncertainties || [])].forEach(problem => node.append(el("p", "review-notes", problem)));
+    if (plan.evidence?.length) node.append(disclosure(`plan-evidence:${report.id}`, "diagnostics-list", [el("summary", "table-action", "View plan evidence"), ...plan.evidence.map(ref => el("p", "quiet-note", `${ref.matched ? "Quote found" : "Quote unconfirmed"} · ${ref.path || ref.source}: “${ref.quote}” — ${ref.supports}`))]));
+    node.append(disclosure(`plan:${report.id}`, "diagnostics-list", [el("summary", "table-action", "View investigation JSON"), jsonViewer(`plan:${report.id}`, plan)]));
+    if (plan.can_draft) {
+      const consent = input(`investigation-inputs-${id}`, "checkbox");consent.checked = investigationInputs.get(id) ?? false;
+      consent.addEventListener("change", () => investigationInputs.set(id, consent.checked));
+      node.append(el("label", "check-label", [consent, "Use my selected game files in disposable draft tests"]), el("p", "field-help", "Off: test public runtime files and mark game-data steps unverified. On: the runner may use your selected inputs. Nothing is published by a test."));
+      node.append(button("Draft packaging steps from this plan", "button primary small", () => queueDraftFromPlan(id, report), Boolean(projectActiveJob(project)) || busy.has(`draft-${id}`)));
+    }
+    node.append(el("p", "quiet-note", "Matched quotations and capability checks do not establish that every claim is correct or that gameplay works. Review the plan before drafting; the resulting definition needs its own approval."));
+  }
+  return node;
+}
+function investigateProject(id) {
+  return runAction(`investigate-${id}`, `/api/projects/${encodeURIComponent(id)}/investigate`, {instruction:(assistantPromptDrafts.get(id) || "").trim(), max_calls:investigationLimits.get(id) ?? projectJobs(id).find(job => job.kind === "investigation")?.investigation_max_calls ?? 3, prepare_game_files:prepareDraftGameFiles(id)}, "Investigation started. Review the plan before drafting.");
+}
+function queueDraftFromPlan(id, report) {
+  return runAction(`draft-${id}`, `/api/projects/${encodeURIComponent(id)}/draft`, {instruction:(assistantPromptDrafts.get(id) || "").trim(), investigation_id:report.id, prepare_game_files:prepareDraftGameFiles(id), review_model:draftModelReviews.get(id) ?? false, max_calls:draftCorrectionLimits.get(id) ?? 1, test_inputs:investigationInputs.get(id) ?? false}, "Drafting from the reviewed plan. Review the checked definition before approval.");
+}
 function draftingRecordLink(jobId) {
   const node = el("div", "model-responses");
   const link = el("a", "button secondary small", "Download drafting record (JSON)"); link.href = `/api/jobs/${encodeURIComponent(jobId)}/draft-record`; link.setAttribute("download", "");
@@ -2071,7 +2117,7 @@ function draftingRecordLink(jobId) {
     if (!responses.length) node.append(el("p", "field-help", "No model response has been saved yet. Refresh after the request finishes."));
     responses.forEach((attempt, index) => {
       const details = disclosure(`model-response:${jobId}:${index}`, "diagnostics-list"); details.open = index === responses.length - 1;
-      details.append(el("summary", "table-action", `${attempt.kind === "review" ? "Review" : "Draft attempt " + (attempt.attempt || index + 1)} · ${attempt.result || "saved"}`));
+      details.append(el("summary", "table-action", `${attempt.kind === "review" ? "Review" : attempt.kind === "investigation" ? "Investigation request " + (attempt.attempt || index + 1) : "Draft attempt " + (attempt.attempt || index + 1)} · ${attempt.result || "saved"}`));
       if (attempt.error) details.append(el("p", "project-error", attempt.error));
       const preview = el("pre", "json-preview", attempt.response); preview.dataset.jsonKey = `model-response:${jobId}:${index}`;
       const copy = button("Copy response", "button secondary small", () => copyJson(attempt.response, copy));

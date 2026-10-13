@@ -127,6 +127,18 @@ class HttpIntegrationTests(unittest.TestCase):
             for value in [True, 0, 4, '3']:
                 self.assertEqual(self.request('POST', route, {'max_calls': value})[0], 400)
 
+    def test_investigation_route_keeps_host_origin_guards_and_bounded_call_choice(self):
+        project = self.engine.create_project({'name':'Fixture','repo':'example/game','targets':['windows']})
+        self.engine.store.update('projects',project['id'],capture_id='a'*32)
+        route = f'/api/projects/{project["id"]}/investigate'
+        with patch.object(self.engine.assistant,'connected',return_value=True),patch.object(self.engine.executor,'submit') as submit:
+            status, _, body = self.request('POST',route,{'max_calls':3,'prepare_game_files':False})
+            self.assertEqual(status,202)
+            self.assertEqual(json.loads(body)['job']['kind'],'investigation')
+            self.assertFalse(json.loads(body)['job']['prepare_game_files'])
+            self.assertEqual(self.request('POST',route,{},headers={'Origin':'https://evil.example'})[0],400)
+            self.assertEqual(submit.call_count, 1)
+
     def test_import_download_streams_full_file_ranges_and_checks_game(self):
         project_id = 'a' * 32
         self.engine.store.put('projects', {'id': project_id, 'name': 'Example', 'metadata': {'filename_prefix': 'Example', 'igdb_id': 1}})

@@ -141,6 +141,10 @@ releases.
 
 ## Drafting with a model
 
+For unfamiliar projects, start with [Investigate before drafting](INVESTIGATIONS.md):
+bounded evidence retrieval, a reviewable plan, capability checks and explicit
+unsupported outcomes. Supported plans can then become checked packaging JSON.
+
 Settings → **Drafting assistant** chooses how drafts are made. All of it is optional; catalog games never need it.
 
 - **My own chat or agent** (default): no connection. A game's **Draft packaging steps** card copies a prompt,

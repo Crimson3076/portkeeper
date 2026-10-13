@@ -27,6 +27,10 @@ container do not. Do not delete the app-data folder as part of updating.
 
 ## Editing your own build instructions
 
+New repositories can use **Advanced → Draft packaging steps → Investigate before
+drafting**. Review the plan and evidence before generating packaging JSON. See
+[Investigations](INVESTIGATIONS.md) for model limits, input privacy and test consent.
+
 For PS4 base games and separate update PKGs, see
 [Preparing PS4 game files](PS4_GAME_FILES.md), including ROMs folder mappings,
 file selection, automatic extraction and the GOW3 Windows packaging candidate.

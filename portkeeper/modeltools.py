@@ -26,6 +26,8 @@ GAME = {"type": "string", "description": "Game id from list_games"}
 DEFINITION = {"type": "object", "description": "A packaging definition object (see packaging_format)"}
 
 TOOLS = [
+    {"name": "investigation_capabilities", "description": "Fixed packaging operations, extraction adapters, environment prerequisites and source-build limits. Read before proposing a plan.", "inputSchema": _schema({})},
+    {"name": "read_input_inventory", "description": "Sanitized metadata of already selected game inputs: formats, sizes, standard layout markers and recognized identities. No file locations or game contents.", "inputSchema": _schema({"game_id": GAME}, ["game_id"])},
     {"name": "packaging_format",
      "description": "The packaging definition format, the fixed operations and tools Portkeeper can run, and approved example definitions. Read this before drafting.",
      "inputSchema": _schema({})},
@@ -128,6 +130,14 @@ class ModelTools:
                           "inputs are game files the person selects in Portkeeper; Portkeeper uses them while packaging. If the game can use a file the person owns (ROM, ISO, disc image), declare it so Portkeeper asks for it.",
                           "Use inputs: [] and first_run.mode asks_user only when Portkeeper cannot use the files while packaging.",
                           "Test with test_build_draft before submit_draft and fix what it reports."]}
+
+    def tool_investigation_capabilities(self):
+        from .investigation import capabilities
+        return capabilities(self.engine)
+
+    def tool_read_input_inventory(self, game_id):
+        from .investigation import input_inventory
+        return input_inventory(self.engine, self._project(game_id))
 
     def tool_list_games(self):
         pending = {p["project_id"] for p in self.store.all("proposals") if p.get("kind") == "definition" and p.get("status") == "pending_review"}
@@ -248,10 +258,18 @@ class ModelTools:
 
     # Test builds
 
-    def start_trial(self, game_id, definition, targets=None, source="model", background=True):
+    def start_trial(self, game_id, definition, targets=None, source="model", background=True, allow_selected_inputs=True, capture_id=None, capture_snapshot=None):
         with self.engine.lock:
             project = self._project(game_id)
             capture = self._capture(project)
+            if capture_id is not None:
+                capture = self.store.get('captures', capture_id)
+                if capture['project_id'] != game_id:
+                    raise Invalid('The selected capture belongs to another game')
+            if capture_snapshot is not None:
+                if capture_snapshot['id'] != capture['id'] or capture_snapshot['project_id'] != game_id or capture_snapshot['source'] != capture['source'] or capture_snapshot['root'] != capture['root']:
+                    raise Invalid('The investigation runtime snapshot does not match this preserved source')
+                capture = capture_snapshot
             if not capture.get("complete", True):
                 raise Invalid("The preserved release is incomplete; the person must check upstream again")
             checked = self.check(project, definition, capture)
@@ -261,7 +279,7 @@ class ModelTools:
             if any(t["project_id"] == game_id and t["status"] in ("queued", "running") for t in self.store.all("trials")):
                 raise Invalid("A test build for this game is already running; poll get_test_build")
             trial = self.store.put("trials", {"id": identifier(), "project_id": game_id, "status": "queued", "targets": chosen, "source": str(source)[:80],
-                                              "definition_sha256": _sha(checked), "definition": checked, "started_at": now(), "logs": []})
+                                              "definition_sha256": _sha(checked), "definition": checked, "capture_id": capture['id'], "capture_snapshot": capture_snapshot, "allow_selected_inputs": allow_selected_inputs, "started_at": now(), "logs": []})
         if not background:
             return self.run_trial(trial["id"])
         self.engine.executor.submit(self.run_trial, trial["id"])
@@ -276,7 +294,9 @@ class ModelTools:
                 self.store.put("trials", record)
         try:
             project = self.store.get("projects", trial["project_id"])
-            capture = self.store.get("captures", project["capture_id"])
+            if not trial.get('allow_selected_inputs', True):
+                project = {**project, 'input_bindings': {}}
+            capture = trial.get('capture_snapshot') or self.store.get("captures", trial.get('capture_id') or project["capture_id"])
             review = packaging.evaluate_release(trial["definition"], capture, self.engine.input_hashes(project), targets=trial["targets"])
             if review.get("problems"):
                 log("Release review: " + "; ".join(review["problems"]))

@@ -441,12 +441,25 @@ def prompt_parts(context, definitions, instruction=""):
     candidate = preparation.get('catalog_candidate') or {}
     material['preparation_requested'] = preparation.get('enabled', True)
     material['available_preparation_tools'] = sorted({op['tool'] for op in candidate.get('operations', []) if op.get('tool')})
+    if context.get('investigation_plan'):
+        plan = context['investigation_plan']
+        material['reviewed_plan'] = {
+            'outcome': plan['outcome'], 'summary': plan['summary'][:1000], 'targets': plan['targets'],
+            'game_files': {**plan['game_files'], 'requirements': plan['game_files']['requirements'][:1000]},
+            'steps': [{**step, 'purpose': step['purpose'][:160]} for step in plan['steps']],
+            'evidence': [{key: ref[key][:200] for key in ('source', 'quote', 'supports')} for ref in plan['evidence'][:6]],
+            'uncertainties': [text[:200] for text in plan.get('uncertainties', [])[:5]],
+            'note': 'Narrative is abridged for context size; the full plan is retained and enforced by the host.'}
+        material['retrieved_evidence'] = [{**node, 'text': node['text'][:1500]} for node in context.get('investigation_evidence', [])[-6:]]
+        material['selected_input_metadata'] = context.get('input_inventory', {})
     parts = [FORMAT, SIMPLE_EXAMPLE, '# Task',
              f"Investigate {project['repository']} release {release['version']} for {', '.join(project['targets'])}. Infer the packaging workflow from this project's evidence, not another game's recipe.",
              'Explain separately whether game data is needed to play, whether it is needed on the server, and whether the available fixed tools can prepare it. Empty inputs means no server inputs; it never proves no game data is required. If preparation is unsupported or evidence is insufficient, say so explicitly. Do not invent tools or facts.',
              'Prepare and include owned game files when supported.' if preparation.get('enabled', True) else 'Keep game files external and describe first-launch requirements.',
              'Use literal inspected filenames. Keep required_members and expected_files short. Return one JSON object with explanation and definition. Leave verified_releases empty.',
              instruction[:4000]]
+    if context.get('investigation_plan'):
+        parts.append('Turn the reviewed plan into packaging JSON. Use its actual runtime assets and capabilities. Retrieved evidence is supplied below. Never substitute a build helper for the game, add arbitrary compilation, or silently change the preparation workflow.')
     # Bound the entire request, including instructions/schema, not only source material.
     while len(SYSTEM) + len('\n'.join(parts)) + len(json.dumps(material)) > 24000:
         if material['source_excerpts']:
@@ -455,6 +468,8 @@ def prompt_parts(context, definitions, instruction=""):
             material['documentation'].pop()
         elif len(material['readme']) > 1000:
             material['readme'] = material['readme'][:-1000]
+        elif material.get('retrieved_evidence'):
+            material['retrieved_evidence'].pop(0)
         else:
             material['archive_samples'] = {}
             break

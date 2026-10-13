@@ -310,11 +310,20 @@ class OperationRunner:
                 raise Invalid(f"Missing game file: {item['label']}. Choose it in Packaging instructions → Game files.")
             ctx.inputs[input_id] = None
             return None
-        root = self.prepared if binding.get("source") == "prepared" else self.engine.input_root
+        root = getattr(self, 'prepared_input_root', self.prepared) if binding.get("source") == "prepared" else self.engine.input_root
         path = confined(root, binding["path"])
         if item["kind"] == "directory":
             if not path.is_dir() or path.is_symlink():
                 raise Invalid(f"{item['label']} folder is missing: {binding['path']}")
+            if getattr(self, 'is_trial', False):
+                size, _ = self.check_tree(path, item.get('max_bytes', packaging.MAX_PACKAGE_BYTES))
+                if shutil.disk_usage(ctx.workspace).free < size + 256 * 1024 * 1024:
+                    raise Invalid('Not enough temporary space to test a private copy of the selected folder')
+                private = ctx.workspace / 'selected-inputs' / input_id
+                private.parent.mkdir(parents=True, exist_ok=True)
+                ctx.log('Copying the selected folder into the disposable test workspace')
+                shutil.copytree(path, private, copy_function=shutil.copyfile)
+                path = private
             record = {"path": path, "kind": "directory"}
         else:
             if not path.is_file() or path.is_symlink():
@@ -1212,14 +1221,20 @@ class OperationRunner:
     def trial(self, project, definition, capture, targets, log):
         """Build a draft without archiving it. Steps that need unselected game files are skipped,
         and checks that depend on them are reported as unverified instead of failed."""
+        if not getattr(self, 'is_trial', False):
+            isolated = OperationRunner(self.engine)
+            isolated.is_trial = True
+            isolated.prepared_input_root = self.prepared
+            return isolated.trial(project, definition, capture, targets, log)
         bindings = project.get("input_bindings") or {}
         group = self.engine.work_root / ("trial-" + identifier())
         group.mkdir(parents=True)
+        self.prepared = group / 'prepared'
         skipped, skipped_paths, results = [], [], {}
 
         def blocked(op):
             missing = [i for i in self.op_inputs(op) if i not in bindings]
-            if op.get('tool') == 'wwhd_extract' and op.get('prepared_input') in bindings:
+            if op.get('tool') in ('wwhd_extract', 'ps4_pkg_extract') and op.get('prepared_input') in bindings:
                 missing = []
             sources = [op.get(key) for key in ("from", "rom") if isinstance(op.get(key), str)]
             if not missing and not any(s == p or s.startswith(p.rstrip("/") + "/") for s in sources for p in skipped_paths):

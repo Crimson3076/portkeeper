@@ -218,9 +218,12 @@ class Handler(BaseHTTPRequestHandler):
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/setup", path) and method == "POST":
                 payload = self.body()
                 self.json(202, self.engine.setup(path.split("/")[3], publish=payload.get("publish", True) is True))
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/investigate", path) and method == "POST":
+                payload = self.body()
+                self.json(202, self.engine.queue_investigation(path.split('/')[3], payload.get('instruction', ''), payload.get('max_calls', 3), payload.get('prepare_game_files', True)))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/draft", path) and method == "POST":
                 payload = self.body()
-                self.json(202, self.engine.queue_draft(path.split("/")[3], payload.get("instruction", ""), prepare_game_files=payload.get('prepare_game_files', True), review_model=payload.get('review_model', False), max_calls=payload.get('max_calls')))
+                self.json(202, self.engine.queue_draft(path.split("/")[3], payload.get("instruction", ""), prepare_game_files=payload.get('prepare_game_files', True), review_model=payload.get('review_model', False), max_calls=payload.get('max_calls'), investigation_id=payload.get('investigation_id'), test_inputs=payload.get('test_inputs', False)))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/draft-prompt", path) and method == "POST":
                 payload = self.body()
                 result = self.engine.draft_prompt(path.split("/")[3], payload.get("instruction", ""), prepare_game_files=payload.get('prepare_game_files', True))

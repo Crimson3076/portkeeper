@@ -1,5 +1,11 @@
 # Compact drafting and model call costs
 
+The guided [investigation workflow](INVESTIGATIONS.md) precedes drafting for an
+unfamiliar repository. Its visible limit permits up to one, three or six model
+requests, including evidence follow-ups. It can stop early with a plan, an
+unsupported outcome or insufficient evidence. Draft generation/corrections and
+optional review have their own limits. Local models use the same JSON protocol.
+
 The default connected draft makes one model call. It does not automatically ask
 for corrections after a schema/archive error or failed test build. Enable
 **Allow automatic corrections** on the game's drafting card to permit up to three
@@ -39,8 +45,9 @@ must expose what the player must provide on first launch. Preparing a new port
 can require a new fixed tool adapter; a language model cannot safely invent an
 executable operation that the runner does not implement.
 
-The longer-term design is bounded evidence retrieval on demand (README sections,
-release layout, specific source files) and provider-reported token/call accounting
-visible before approval. Discovery and executable packaging remain separate:
+Guided investigation retrieves bounded evidence on demand (README sections,
+release layout and specific source files), with visible request limits and saved
+exchanges. Provider-reported token and monetary accounting remains future work.
+Discovery and executable packaging remain separate:
 the model investigates; Portkeeper validates and executes supported operations.
 Neither model confidence nor advisory model review establishes correctness.
