@@ -239,7 +239,7 @@ class Engine:
         public_romm["connected"] = bool(public_romm.get("last_test", {}).get("connected")) if public_romm["last_test"] else False
         assistant = self.assistant.public_config()
         proposals = [p for p in self.store.all("proposals") if p.get("kind") == "definition" and p.get("status") == "pending_review"]
-        return {"projects": projects, "jobs": jobs, "artifacts": artifacts, "proposals": proposals, "activity": self.reviews.activity(), "playtests": self.store.all("playtests")[:1000],
+        return {"projects": projects, "jobs": jobs, "artifacts": artifacts, "proposals": proposals, "activity": self.reviews.activity(), "activity_cutoffs": self.get_setting("activity_cutoffs", {"projects": {}}), "playtests": self.store.all("playtests")[:1000],
                 "settings": {"input_root": str(self.input_root), "library_root": str(self.library_root),
                              "archive_root": str(self.archive_root), "docker_enabled": self.enable_docker,
                              "toolchain": self.get_setting("toolchain", {})},
