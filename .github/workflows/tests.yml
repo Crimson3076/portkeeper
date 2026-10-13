@@ -23,6 +23,15 @@ jobs:
           persist-credentials: false
       - name: Build the runner image
         run: docker build --tag portkeeper:checks .
+      - name: Check native subscription CLI contracts without login or inference
+        run: |
+          docker run --rm --network none --read-only --user 10001:10001 \
+            --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 512 \
+            --tmpfs /tmp:exec,size=512m \
+            --entrypoint python --workdir /source \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/source,readonly" \
+            -e PYTHONPATH=/source -e PORTKEEPER_TEST_SUBSCRIPTION_CLIS=1 \
+            portkeeper:checks -W error -m unittest discover -s tests -p test_real_subscription_agents.py -v
       - name: Download the pinned extraction tool
         run: |
           curl --fail --location --retry 2 --max-time 120 \

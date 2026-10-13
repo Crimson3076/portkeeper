@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from portkeeper import drafting, packaging
 from portkeeper.engine import Engine
@@ -13,6 +14,43 @@ from test_packaging import Releases
 
 
 class GuidedDraftTests(unittest.TestCase):
+    def test_trial_feedback_masks_private_input_paths_and_saved_credentials(self):
+        self.engine.assistant.path.parent.mkdir(parents=True, exist_ok=True)
+        self.engine.assistant.path.write_text(json.dumps({'api_key': 'unlabelled-private-key'}))
+        project = {**self.project, 'input_bindings': {'game': {'path': 'private/game-dump.pkg'}}}
+        feedback = f"Failed reading {self.engine.input_root}/private/game-dump.pkg; unlabelled-private-key; token=hidden. Missing Launch.cmd"
+        masked = self.engine._draft_feedback(project, feedback)
+        for private in (str(self.engine.input_root), 'private/game-dump.pkg', 'game-dump.pkg', 'unlabelled-private-key', 'hidden'):
+            self.assertNotIn(private, masked)
+        self.assertIn('Missing Launch.cmd', masked)
+        self.assertIsNone(self.engine._draft_feedback(project, None))
+
+    def test_subscription_draft_uses_existing_checks_tests_and_review(self):
+        self.engine.save_setting('draft_test_builds', True)
+        trial = {'id': 'b' * 32, 'status': 'passed', 'finished_at': '2026-10-13T00:00:00Z'}
+        agent = self.engine.assistant.agents
+        replies = [json.dumps({'explanation': 'Fixture', 'definition': self.good}), json.dumps(self.review)]
+        with patch.object(agent, 'status', return_value={'installed': True, 'authenticated': True, 'billing': 'subscription'}), \
+             patch.object(agent, 'chat', side_effect=replies) as chat, \
+             patch.object(self.engine.assistant, '_post') as paid_api, \
+             patch.object(self.engine.model_tools, 'start_trial', return_value=trial) as build, \
+             patch.object(self.engine.model_tools, 'trial_feedback', return_value=None):
+            self.engine.assistant.configure_provider({'provider': 'codex'})
+            job = self.engine.job(self.project, 'capture', 'v1')
+            self.engine.store.update('jobs', job['id'], kind='draft')
+            self.engine._draft(self.project['id'], job['id'], '')
+            job = self.engine.store.get('jobs', job['id'])
+            self.assertEqual(job['status'], 'ready', job.get('error'))
+            self.assertEqual(chat.call_count, 2)
+            paid_api.assert_not_called()
+            build.assert_called_once()
+            record = self.engine.draft_record(job['id'])
+            self.assertEqual(record['build_test'], 'passed')
+            self.assertEqual(record['gameplay_test'], 'not_run')
+            self.assertEqual(record['model']['billing'], 'subscription')
+            self.assertEqual(self.engine.store.all('artifacts'), [])
+            self.assertEqual(self.engine.store.all('proposals')[0]['status'], 'pending_review')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

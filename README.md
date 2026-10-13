@@ -80,7 +80,7 @@ Credentials stay in server-side files with mode `0600`; they are not returned to
 - Version pinning, validation history, known-good pointers, and retention previews protecting current, pinned, latest, and known-good packages.
 - Preservation exports containing captured sources, available pinned dependencies, patches, optional archived toolchains, scoped proof status, and saved-bundle downloads.
 - An inbox for meaningful worker events and optional browser notifications.
-- Optional drafting of packaging steps with your own chat or agent, a local Ollama model, the Claude API or an OpenAI-compatible API. Drafts are reviewed before use and never execute commands. See [packaging](docs/PACKAGING.md#drafting-with-a-model).
+- Optional drafting with recommended Codex (ChatGPT subscription) and Claude Code (Pro/Max subscription), Gemini CLI (free Google account), your own chat, Ollama, or a separately billed API. [Subscription agent setup](docs/SUBSCRIPTION_AGENTS.md) uses official CLI sign-in and isolated text-only workspaces. Optional temporary test builds use Portkeeper's supported operations; instructions require review before they become active. See [packaging](docs/PACKAGING.md#drafting-with-a-model).
 
 The **Library**, **Activity**, and **Settings** pages and each worker's overview, versions, jobs, and advanced tabs expose these workflows. [Recipes](docs/RECIPES.md) and [architecture](docs/ARCHITECTURE.md) describe the execution boundaries.
 

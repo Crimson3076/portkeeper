@@ -1909,7 +1909,7 @@ function renderCustomGame(content, actions) {
   content.append(details);
   const settings = assistantSettings();
   const methods = [
-    ...(settings.configured ? [["assistant", `Draft with ${settings.drafting_model}`, "The model reads the release, README and source, then proposes the packaging steps. Nothing builds until you approve them."]] : []),
+    ...(settings.configured ? [["assistant", `Draft with ${settings.drafting_model}`, "The model proposes packaging steps for review. Optional test builds check the draft in a temporary workspace; saving it and publishing packages require approval."]] : []),
     ["handoff", "Draft with my own chat or agent", "Portkeeper prepares a prompt or a folder for Claude, ChatGPT or another assistant you use. You paste the answer back. No API key needed."],
     ["manual", "Write the packaging steps myself", "Opens the packaging definition editor."],
     ["keep", "Only keep copies of its releases", "Portkeeper saves each release and its source but doesn't build a download. You can add packaging steps later."]];
@@ -1971,7 +1971,7 @@ function nextStepCard(project) {
   if (active) { heading = "Working on it"; note = `${String(jobStage(active)).replaceAll("_", " ")}…`; action = button("View build progress", "button primary small", () => navigateProject(project.id, "activity", active.id)); }
   else if (projectJobs(project.id)[0]?.status === "failed") { heading = "A build needs your attention"; note = projectJobs(project.id)[0].error || "Review the failed step and retry when the cause is resolved."; action = button("View failure & logs", "button primary small", () => navigateProject(project.id, "activity", projectJobs(project.id)[0].id)); }
   else if (missingGameFiles(project).length && runner === "operations") { heading = "Choose your game files"; note = "Select the required files before building packages."; action = button("Choose game files", "button primary small", () => navigateProject(project.id, "advanced")); }
-  else if (proposal) { heading = "Review the drafted packaging steps"; note = "Nothing is built until you approve them."; action = button("Review draft", "button primary small", () => navigateProject(project.id, "advanced")); }
+  else if (proposal) { heading = "Review the drafted packaging steps"; note = "Approve these steps before they replace your saved instructions. Optional test builds use a temporary workspace."; action = button("Review draft", "button primary small", () => navigateProject(project.id, "advanced")); }
   else if (runner === "capture" && !project.demo) { heading = "Add packaging steps"; note = "Portkeeper keeps this game's releases, but doesn't know how to package it yet."; action = button("Draft packaging steps", "button primary small", () => navigateProject(project.id, "advanced")); }
   else if (!packages.length && !project.demo) { heading = "Build packages"; note = "Check the latest release and build your selected platforms. Packages stay here; uploading is a separate action unless automatic publishing is enabled."; action = button(working ? "Starting…" : "Build packages", "button primary small", () => setupProject(project.id), working); }
   else if (rommReady() && !project.demo && inRomm.length < packages.length) { heading = "Send to RomM"; note = "These packages are built but aren't in RomM yet."; action = button("Send to RomM", "button primary small", () => packages.filter((artifact) => !inRomm.includes(artifact)).forEach((artifact) => publishToRomM(artifact.id))); }
@@ -1989,8 +1989,8 @@ function draftCard(project) {
   const proposal = pendingProposal(project);
   if (proposal) { renderProposalReview(card, project, proposal); return card; }
   const settings = assistantSettings(), id = project.id, drafting = projectJobs(id).find((job) => job.kind === "draft");
-  card.append(el("p", "detail-note", project.packaging?.runner === "operations" ? "Ask for a revised draft, for example after a new release changed something. The current steps stay in use until you approve a draft." : "A model reads this game's latest release, README and source, then proposes the packaging steps. Nothing is built until you approve them."));
-  card.append(el("p", "field-help", "Portkeeper prepares an editable starter from release facts, checks the model's answer, and sends specific errors back for correction. Connected models then review the draft in a fresh conversation. Usually this uses one drafting call and one review call; corrections add calls."));
+  card.append(el("p", "detail-note", project.packaging?.runner === "operations" ? "Ask for a revised draft, for example after a new release changed something. The current steps stay in use until you approve a draft." : "A model reads this game's latest release, README and source, then proposes packaging steps. Optional test builds run in a temporary workspace; saving the steps and publishing packages require approval."));
+  card.append(el("p", "field-help", "A draft uses public release facts and is checked locally. You can request a separate model review; approval and packaging tests remain separate steps."));
   if (drafting && (jobActive(drafting) || drafting.status === "failed")) card.append(el("div", "inline-actions", [statusBadge(jobActive(drafting) ? "building" : "failed", jobActive(drafting) ? "Drafting…" : "Draft failed"), el("span", "field-help", drafting.error || (drafting.logs || []).slice(-1)[0] || "")]));
   if (drafting?.draft_record_available) card.append(draftingRecordLink(drafting.id));
   const prompt = el("textarea", "assistant-prompt"); prompt.id = `draft-instruction-${id}`; prompt.rows = 2; prompt.placeholder = "Anything the model should know, for example “Windows only” (optional)"; prompt.value = assistantPromptDrafts.get(id) || "";
@@ -2001,7 +2001,7 @@ function draftCard(project) {
   card.append(el("label", "check-label", [prepare, "Prepare and include my game files when supported"]), el("p", "field-help", "Uses this project’s supported preparation tools. Otherwise the draft must explain which game data you need on your PC."));
   const review = input(`draft-model-review-${id}`, "checkbox"); review.checked = draftModelReviews.get(id) ?? false;
   review.addEventListener("change", () => draftModelReviews.set(id, review.checked));
-  card.append(el("label", "check-label", [review, "Add a separate model review (one extra API call)"]), el("p", "field-help", "Default: one drafting call, no automatic model corrections. The prompt is capped at 24,000 characters. File and schema checks run locally."));
+  card.append(el("label", "check-label", [review, "Add a separate model review (one extra model request)"]), el("p", "field-help", "Default: one drafting request, no automatic model corrections. The prompt is capped at 24,000 characters. File and schema checks run locally."));
   const noRelease = !project.capture_id;
   if (noRelease) card.append(el("p", "field-help", "Check upstream first, so there is a release to read."));
   const actions = el("div", "inline-actions");
@@ -2055,7 +2055,7 @@ function renderProposalReview(card, project, proposal) {
   if (proposal.draft_job_id && state.jobs.some(job => job.id === proposal.draft_job_id && job.draft_record_available)) card.append(draftingRecordLink(proposal.draft_job_id));
   card.append(disclosure(`draft-definition:${proposal.id}`, "diagnostics-list", [el("summary", "table-action", "View definition JSON"), jsonViewer(`proposal:${proposal.id}`, definition, "proposal-json")]));
   card.append(el("div", "inline-actions", [button(busy.has(`approve-${proposal.id}`) ? "Approving…" : "Approve", "button primary small", () => approveDraft(proposal, project), busy.has(`approve-${proposal.id}`)), button("Discard", "button secondary small", () => runAction(`discard-${proposal.id}`, `/api/proposals/${encodeURIComponent(proposal.id)}/discard`, {}, "Draft discarded."))]));
-  card.append(el("p", "quiet-note", "After approving, use Build packages to run a test build. A failed build changes nothing else."));
+  card.append(el("p", "quiet-note", "After approving, Build packages creates a downloadable package. Failed builds leave existing packages in place."));
 }
 function draftingRecordLink(jobId) {
   const link = el("a", "button secondary small", "Download drafting record (JSON)");
@@ -2082,17 +2082,120 @@ async function importDraft(id) {
 
 // Settings: drafting assistant ----------------------------------------------------
 let assistantProviderDirty = false;
+const agentProviders = { codex: "Codex", claude_code: "Claude Code", gemini: "Gemini CLI" };
+const agentModelDrafts = new Map(), agentModelChoices = new Map(), agentModelMessages = new Map(), agentLoginStatuses = new Map();
+const agentLoginRecovered = new Set();
+let agentLoginTimer = null, agentLoginPolling = false, agentModelsSerial = 0;
+function agentProvider(provider) { return Object.hasOwn(agentProviders, provider); }
 function selectedProvider() { return document.querySelector('[name="assistant-provider"]:checked')?.value || "handoff"; }
 function syncAssistantFields() {
   const provider = selectedProvider(), saved = assistantSettings();
   $("assistant-ollama-fields").hidden = provider !== "ollama";
+  $("assistant-agent-fields").hidden = !agentProvider(provider);
   $("assistant-cloud-fields").hidden = !["anthropic", "openai"].includes(provider);
   $("assistant-base-url-field").hidden = provider !== "openai";
-  $("assistant-test").disabled = !saved.configured || provider !== saved.provider;
+  $("assistant-test").disabled = busy.has("assistant-test") || !saved.configured || provider !== saved.provider || (agentProvider(provider) && ["api", "api_key"].includes(saved.agents?.[provider]?.billing));
+  $("assistant-test").textContent = busy.has("assistant-test") ? "Testing…" : agentProvider(provider) ? "Test connection (uses allowance)" : "Test connection";
   const sameProvider = saved.provider === provider && saved.has_api_key;
   $("assistant-api-key").placeholder = sameProvider ? "Saved key · leave blank to keep" : provider === "anthropic" ? "Paste a Claude API key" : "Paste an API key (optional for local servers)";
   $("assistant-clear-key-line").hidden = !sameProvider;
   $("assistant-cloud-model").placeholder = provider === "anthropic" ? "claude-opus-5-5" : "Model name";
+  clearTimeout(agentLoginTimer); agentLoginTimer = null;
+  if (agentProvider(provider)) { renderAgentSettings(provider); scheduleAgentLoginPoll(provider); recoverAgentLogin(provider); }
+}
+function renderAgentSettings(provider = selectedProvider()) {
+  if (!agentProvider(provider) || selectedProvider() !== provider) return;
+  const saved = assistantSettings(), account = saved.agents?.[provider] || {}, login = agentLoginStatuses.get(provider);
+  const invalidBilling = ["api", "api_key"].includes(account.billing);
+  const signedIn = !invalidBilling && Boolean(account.authenticated || (account.authenticated === undefined && login?.status === "connected")), missing = account.installed === false;
+  const status = $("assistant-agent-account");
+  status.replaceChildren(statusBadge(missing ? "needs_attention" : signedIn ? "ready" : "watching", missing ? "Unavailable on this server" : signedIn ? "Signed in" : "Sign-in needed"), el("p", "field-help", invalidBilling ? "This CLI is using API billing. Sign in with your account’s native subscription or Google sign-in to use this provider." : account.message || (missing ? `${agentProviders[provider]} must be installed on the Portkeeper server before signing in.` : signedIn ? `Your ${agentProviders[provider]} account is connected. Save to use it for drafts.` : `Use ${agentProviders[provider]}’s native account sign-in. Your password is never entered in Portkeeper.`)));
+  $("assistant-agent-login").textContent = `${signedIn ? "Sign in again to" : "Sign in to"} ${agentProviders[provider]}`;
+  $("assistant-agent-login").disabled = missing || busy.has("agent-login") || (agentLoginPolling && !login) || login?.status === "waiting";
+  $("assistant-agent-login-check").hidden = login?.status !== "waiting";
+  $("assistant-agent-login-check").disabled = agentLoginPolling;
+  $("assistant-agent-logout").hidden = !signedIn && login?.status !== "waiting";
+  $("assistant-agent-logout").disabled = busy.has("agent-logout");
+  $("assistant-agent-logout").textContent = signedIn ? "Sign out" : "Cancel sign-in";
+  $("assistant-agent-login-progress").hidden = !login || login.status === "not_started" || (login.status === "connected" && !signedIn) || (login.status === "failed" && signedIn);
+  $("assistant-agent-login-message").textContent = login?.message || "";
+  const terminalHelp = $("assistant-agent-terminal-help");
+  terminalHelp.hidden = signedIn || !(login?.terminal_command && ["waiting", "failed"].includes(login.status));
+  if (terminalHelp.hidden) terminalHelp.open = false;
+  $("assistant-agent-terminal-command").textContent = terminalHelp.hidden ? "" : login.terminal_command;
+  const links = $("assistant-agent-login-link"); links.replaceChildren();
+  if (login?.status === "waiting" && login.url) {
+    try { const url = new URL(login.url); if (url.protocol === "https:" && !url.username && !url.password) { const link = el("a", "button secondary small", `Open ${agentProviders[provider]} sign-in`); link.href = url.href; link.target = "_blank"; link.rel = "noopener noreferrer"; links.append(link); } } catch (_) { /* The native flow can still explain terminal-only sign-in. */ }
+  }
+  const code = login?.status === "waiting" ? login.code || "" : "";
+  $("assistant-agent-login-code-row").hidden = !code; $("assistant-agent-login-code").textContent = code;
+  $("assistant-agent-login-input-row").hidden = !(login?.status === "waiting" && login.needs_input === true);
+  $("assistant-agent-login-submit").disabled = busy.has("agent-login-input");
+  const selected = agentModelDrafts.has(provider) ? agentModelDrafts.get(provider) : saved.agent_models?.[provider] || (saved.provider === provider ? saved.agent_model : "") || "";
+  const select = $("assistant-agent-model"); select.replaceChildren(el("option", "", "Provider default")); select.firstChild.value = "";
+  const choices = agentModelChoices.get(provider) || [];
+  [...new Set([...choices, ...(selected ? [selected] : [])])].forEach(name => { const option = el("option", "", name); option.value = name; select.append(option); }); select.value = selected;
+  $("assistant-agent-models-status").textContent = agentModelMessages.get(provider) || "Model choices can be loaded without making a model request.";
+  $("assistant-agent-allowance").textContent = provider === "gemini" ? "Uses your Google account’s Gemini CLI allowance. The free tier is capped; a paid Google plan has its own limits. Portkeeper never switches to a paid API." : `Uses your ${provider === "codex" ? "ChatGPT plan’s Codex" : "Claude Pro or Max plan’s"} allowance, subject to its usage limits. Portkeeper never switches to a paid API. To keep spending within your subscription, disable extra usage or credit spending in your provider account.`;
+}
+function rememberAgentLogin(provider, result) {
+  const status = {provider, status: result.status || "not_started", message: result.message || "", url: result.url, code: result.code, needs_input: result.needs_input === true, terminal_command: result.terminal_command};
+  agentLoginStatuses.set(provider, status);
+  if (status.status !== "waiting" && selectedProvider() === provider) $("assistant-agent-login-input").value = "";
+  renderAgentSettings(provider);
+  return status;
+}
+function recoverAgentLogin(provider = selectedProvider()) {
+  if (!agentProvider(provider) || agentLoginRecovered.has(provider) || agentLoginPolling || selectedProvider() !== provider || document.hidden || route.page !== "settings" || settingsView !== "assistant" || assistantSettings().agents?.[provider]?.installed === false) return;
+  agentLoginRecovered.add(provider); void checkAgentLogin(provider);
+}
+function scheduleAgentLoginPoll(provider) {
+  clearTimeout(agentLoginTimer); agentLoginTimer = null;
+  if (agentLoginStatuses.get(provider)?.status !== "waiting" || selectedProvider() !== provider || document.hidden || route.page !== "settings" || settingsView !== "assistant") return;
+  agentLoginTimer = setTimeout(() => { if (selectedProvider() === provider && !document.hidden && route.page === "settings" && settingsView === "assistant") void checkAgentLogin(provider); }, 2500);
+}
+async function checkAgentLogin(provider = selectedProvider()) {
+  if (!agentProvider(provider) || agentLoginPolling) return;
+  agentLoginPolling = true; renderAgentSettings(provider);
+  try {
+    const previous = agentLoginStatuses.get(provider)?.status;
+    const result = rememberAgentLogin(provider, await api(`/api/assistant/agent/login?provider=${encodeURIComponent(provider)}`));
+    if (result.status === "connected" && previous !== "connected") { if (selectedProvider() === provider) $("assistant-result").textContent = `${agentProviders[provider]} signed in. Save your selection to use it for drafts.`; await refresh(); }
+  } catch (error) { rememberAgentLogin(provider, {status:"failed", message:error.message}); }
+  finally { agentLoginPolling = false; renderAgentSettings(); scheduleAgentLoginPoll(selectedProvider()); recoverAgentLogin(); }
+}
+async function startAgentLogin() {
+  const provider = selectedProvider(); if (!agentProvider(provider) || busy.has("agent-login")) return;
+  busy.add("agent-login"); renderAgentSettings(provider); $("assistant-agent-login-input").value = "";
+  try {
+    const result = rememberAgentLogin(provider, await api("/api/assistant/agent/login", {method:"POST", body:{provider}}));
+    if (result.status === "connected") await refresh();
+  } catch (error) { rememberAgentLogin(provider, {status:"failed", message:error.message}); }
+  finally { busy.delete("agent-login"); renderAgentSettings(); scheduleAgentLoginPoll(selectedProvider()); }
+}
+async function completeAgentLogin() {
+  const provider = selectedProvider(), login = agentLoginStatuses.get(provider), value = $("assistant-agent-login-input").value.trim();
+  if (!agentProvider(provider) || login?.status !== "waiting" || login.needs_input !== true || !value || busy.has("agent-login-input")) return;
+  busy.add("agent-login-input"); renderAgentSettings(provider);
+  try {
+    const result = rememberAgentLogin(provider, await api("/api/assistant/agent/login/input", {method:"POST", body:{provider,value}})); if (selectedProvider() === provider) $("assistant-agent-login-input").value = "";
+    if (result.status === "connected") await refresh();
+  } catch (error) { rememberAgentLogin(provider, {status:"failed", message:error.message}); }
+  finally { busy.delete("agent-login-input"); renderAgentSettings(); scheduleAgentLoginPoll(selectedProvider()); }
+}
+async function logoutAgent() {
+  const provider = selectedProvider(); if (!agentProvider(provider) || busy.has("agent-logout")) return;
+  busy.add("agent-logout"); clearTimeout(agentLoginTimer); renderAgentSettings(provider);
+  try { await api("/api/assistant/agent/logout", {method:"POST", body:{provider}}); agentLoginStatuses.delete(provider); $("assistant-agent-login-input").value = ""; await refresh(); $("assistant-result").textContent = `${agentProviders[provider]} signed out.`; }
+  catch (error) { $("assistant-result").classList.add("error"); $("assistant-result").textContent = error.message; }
+  finally { busy.delete("agent-logout"); renderAgentSettings(); }
+}
+async function refreshAgentModels() {
+  const provider = selectedProvider(), serial = ++agentModelsSerial, control = $("assistant-agent-models-refresh"); if (!agentProvider(provider)) return;
+  control.disabled = true; control.textContent = "Loading models…";
+  try { const result = await api("/api/assistant/models", {method:"POST", body:{provider}}); agentModelChoices.set(provider, result.models || []); agentModelMessages.set(provider, "Model choices loaded. No model request was made."); }
+  catch (error) { agentModelMessages.set(provider, error.message); }
+  finally { if (serial === agentModelsSerial) { control.disabled = false; control.textContent = "Refresh models"; renderAgentSettings(provider); } }
 }
 let mcpToken = "", mcpFingerprint = "";
 function renderMcpSettings() {
@@ -2137,21 +2240,23 @@ async function submitAssistant(event) {
   const provider = selectedProvider();
   const body = { provider };
   if (provider === "ollama") Object.assign(body, { endpoint: $("assistant-endpoint").value.trim(), model: $("assistant-model").value.trim(), context_tokens: Number($("assistant-context").value) || 32768 });
+  if (agentProvider(provider)) Object.assign(body, {model: $("assistant-agent-model").value});
   if (["anthropic", "openai"].includes(provider)) Object.assign(body, { model: $("assistant-cloud-model").value.trim(), api_key: $("assistant-api-key").value.trim(), clear_api_key: $("assistant-clear-key").checked, ...(provider === "openai" ? { base_url: $("assistant-base-url").value.trim() } : {}) });
   try {
     const saved = await api("/api/assistant/provider", { method: "POST", body });
     $("assistant-result").classList.remove("error");
-    $("assistant-result").textContent = provider === "handoff" ? "Saved. Each game's Draft packaging steps card prepares a prompt for your own chat or agent." : `Saved. ${saved.drafting_model} is ready to draft. Use Test connection to check it answers.`;
+    $("assistant-result").textContent = provider === "handoff" ? "Saved. Each game's Draft packaging steps card prepares a prompt for your own chat or agent." : saved.configured ? `Saved. ${saved.drafting_model} is ready to draft. Use Test connection to check it answers.` : `Saved. Sign in to ${agentProviders[provider] || "the selected provider"} before drafting.`;
     ["assistant-endpoint", "assistant-model", "assistant-context", "assistant-base-url", "assistant-cloud-model"].forEach((id) => { $(id).dataset.dirty = ""; });
-    assistantProviderDirty = false; $("assistant-api-key").value = ""; $("assistant-clear-key").checked = false; await refresh();
+    agentModelDrafts.delete(provider); assistantProviderDirty = false; $("assistant-api-key").value = ""; $("assistant-clear-key").checked = false; await refresh();
   } catch (error) { $("assistant-result").classList.add("error"); $("assistant-result").textContent = error.message; }
   finally { submit.disabled = false; }
 }
 async function testAssistant() {
-  const control = $("assistant-test"); control.disabled = true; control.textContent = "Testing…"; $("assistant-result").classList.remove("error"); $("assistant-result").textContent = "Sending a short request to the model…";
+  if (busy.has("assistant-test")) return; busy.add("assistant-test");
+  const control = $("assistant-test"); control.disabled = true; control.textContent = "Testing…"; $("assistant-result").classList.remove("error"); $("assistant-result").textContent = agentProvider(selectedProvider()) ? "Sending one short request using your account allowance…" : "Sending a short request to the model…";
   try { const result = await api("/api/assistant/test", { method: "POST", body: {} }); $("assistant-result").textContent = `Connected. ${result.model} answered in ${result.seconds} s.`; }
   catch (error) { $("assistant-result").classList.add("error"); $("assistant-result").textContent = error.message; }
-  finally { control.textContent = "Test connection"; syncAssistantFields(); }
+  finally { busy.delete("assistant-test"); syncAssistantFields(); }
 }
 async function loadCloudModels() {
   const provider = selectedProvider(), control = $("assistant-cloud-models-refresh"); control.disabled = true; control.textContent = "Loading…";
@@ -2210,11 +2315,19 @@ $("settings-open-inbox").addEventListener("click", openInbox);
 $("proposal-confirm").addEventListener("change", () => { $("proposal-apply").disabled = !$("proposal-confirm").checked || !recipeProposal?._reviewValid; });
 $("proposal-apply").addEventListener("click", applyProposal);
 ["romm-url", "assistant-endpoint", "assistant-model", "assistant-context", "assistant-base-url", "assistant-cloud-model"].forEach((id) => $(id).addEventListener("input", () => { $(id).dataset.dirty = "true"; }));
-document.querySelectorAll('[name="assistant-provider"]').forEach((node) => node.addEventListener("change", () => { assistantProviderDirty = true; $("assistant-result").textContent = ""; syncAssistantFields(); }));
+document.querySelectorAll('[name="assistant-provider"]').forEach((node) => node.addEventListener("change", () => { assistantProviderDirty = true; $("assistant-result").textContent = ""; $("assistant-agent-login-input").value = ""; syncAssistantFields(); }));
 $("assistant-test").addEventListener("click", testAssistant);
 $("assistant-cloud-models-refresh").addEventListener("click", loadCloudModels);
+$("assistant-agent-login").addEventListener("click", startAgentLogin);
+$("assistant-agent-login-check").addEventListener("click", () => checkAgentLogin());
+$("assistant-agent-login-submit").addEventListener("click", completeAgentLogin);
+$("assistant-agent-logout").addEventListener("click", logoutAgent);
+$("assistant-agent-models-refresh").addEventListener("click", refreshAgentModels);
+$("assistant-agent-model").addEventListener("change", () => agentModelDrafts.set(selectedProvider(), $("assistant-agent-model").value));
+$("assistant-agent-code-copy").addEventListener("click", () => copyJson($("assistant-agent-login-code").textContent, $("assistant-agent-code-copy")));
+$("assistant-agent-terminal-copy").addEventListener("click", () => copyJson($("assistant-agent-terminal-command").textContent, $("assistant-agent-terminal-copy")));
 document.querySelectorAll("[data-activity-view]").forEach(node => node.addEventListener("click", () => { activityView = node.dataset.activityView; renderActivity(); }));
-document.querySelectorAll("[data-settings-tab]").forEach((node) => node.addEventListener("click", () => { settingsView = node.dataset.settingsTab; renderSettingsTabs(); }));
+document.querySelectorAll("[data-settings-tab]").forEach((node) => node.addEventListener("click", () => { settingsView = node.dataset.settingsTab; renderSettingsTabs(); if (settingsView === "assistant") recoverAgentLogin(); }));
 document.querySelectorAll("[data-project-tab]").forEach((node) => node.addEventListener("click", () => navigateProject(route.projectId, node.dataset.projectTab)));
 $("apply-template").addEventListener("click", () => {
   const template = recipes.find((item) => item.id === $("recipe-template").value);

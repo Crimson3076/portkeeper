@@ -194,6 +194,7 @@ class Engine:
             self.scheduler.join(timeout=5)
         if self.identity_scheduler:
             self.identity_scheduler.join(timeout=5)
+        self.assistant.agents.close()
         self.executor.shutdown(wait=True, cancel_futures=False)
 
     def state(self):
@@ -1425,6 +1426,32 @@ class Engine:
         result = self.draft_prompt(project_id, instruction, prepare_game_files=prepare_game_files)
         return drafting.workspace_zip(result["prompt"], result["context"], self.catalog.definitions())
 
+    def _draft_feedback(self, project, feedback):
+        """Keep trial diagnostics useful without sending private input paths or keys."""
+        if feedback is None:
+            return None
+        from .assistant import redact_text
+        replacements = [(str(root), '[private-workspace]') for root in
+                        (self.data, self.work_root, self.input_root, self.library_root) if root]
+        for input_id, binding in (project.get('input_bindings') or {}).items():
+            if isinstance(binding, dict) and isinstance(binding.get('path'), str) and binding['path']:
+                path = binding['path']
+                replacements += [(path, '[private-input:' + input_id + ']'),
+                                 (Path(path).name, '[private-input:' + input_id + ']')]
+        for filename in ('assistant.json', 'romm.json'):
+            path = self.data / 'secrets' / filename
+            if path.is_file() and not path.is_symlink():
+                try:
+                    values = json.loads(path.read_text())
+                    replacements += [(value, '[redacted]') for key, value in values.items()
+                                     if key in ('api_key', 'token', 'password', 'secret') and isinstance(value, str) and len(value) > 4]
+                except (OSError, ValueError, AttributeError):
+                    pass
+        text = str(feedback)
+        for original, replacement in sorted(set(replacements), key=lambda item: len(item[0]), reverse=True):
+            text = text.replace(original, replacement)
+        return redact_text(text)
+
     def queue_draft(self, project_id, instruction="", targets=None, prepare_game_files=True, review_model=False):
         with self.lock:
             project = self.store.get("projects", project_id)
@@ -1464,7 +1491,7 @@ class Engine:
             system, user = drafting.prompt_parts(context, self.catalog.definitions(), instruction)
             starter = drafting.starter_definition(context)
             record = {'schema': 1, 'job_id': job_id, 'project_id': project_id, 'created_at': now(),
-                      'model': {key: config.get(key) for key in ('provider', 'drafting_model', 'context_tokens')},
+                      'model': {key: config.get(key) for key in ('provider', 'drafting_model', 'context_tokens', 'billing')},
                       'temperature': 0.1 if config['provider'] == 'ollama' else None,
                       'starter': starter, 'context': context, 'draft_prompt': {'system': system, 'user': user},
                       'attempts': [], 'status': 'drafting', 'build_test': 'not_run', 'gameplay_test': 'not_run'}
@@ -1493,11 +1520,11 @@ class Engine:
                                                          source=config["drafting_model"], background=False)
                 except Invalid as error:
                     log(f"Test build could not start: {error}")
-                    return f"Portkeeper could not test-build your definition: {error}"
+                    return self._draft_feedback(project, f"Portkeeper could not test-build your definition: {error}")
                 trials.append({"id": trial["id"], "status": trial["status"], "finished_at": trial.get("finished_at")})
                 log(f"Test build {trial['status']}")
                 self.stage(job_id, "drafting", "Waiting for the model's draft")
-                return self.model_tools.trial_feedback(trial)
+                return self._draft_feedback(project, self.model_tools.trial_feedback(trial))
             definition, explanation = self.assistant.draft_definition(system, user, read, log, attempts=self.get_setting("draft_max_calls", 1), test_rounds=self.get_setting("draft_test_rounds", 1), record=remember, config=model_config,
                                                                       test=test if self.get_setting("draft_test_builds", True) else None)
             record['automatic_checks'] = {'schema': 'passed', 'release_assets': 'checked',
@@ -1514,12 +1541,12 @@ class Engine:
                     review = {'status': 'unavailable', 'summary': str(error), 'findings': [],
                               'note': 'The draft passed automatic checks, but the model review could not be completed. Inspect it manually. Build and gameplay are untested.'}
                     log('Model review unavailable: ' + str(error))
-            record.update(status='ready', finished_at=now(), model_review=review, accepted_definition=definition)
+            record.update(status='ready', finished_at=now(), model_review=review, accepted_definition=definition,
+                          build_test=trials[-1]['status'] if trials else 'not_run')
             self.save_draft_record(job_id, record)
             details = {'model_review': review, 'starter': starter, 'automatic_checks': record['automatic_checks'], 'draft_job_id': job_id}
             if trials:
                 details['model_tests'] = trials[::-1]
-                record['build_test'] = trials[-1]['status']
             if requested_targets:
                 details.update(requested_targets=requested_targets, base_targets=original_targets)
             proposal = self.save_definition_proposal(project, definition, explanation, f"{config['provider_label']} · {config['drafting_model']}", capture, draft_details=details)

@@ -1,5 +1,6 @@
 import argparse
 import os
+import signal
 from pathlib import Path
 
 from .engine import Engine
@@ -20,6 +21,9 @@ def main():
     parser.add_argument("--enable-profile-builds", action="store_true", help="Allow reviewed profile extractor builds with the local C/C++ toolchain")
     args = parser.parse_args()
     engine = Engine(args.data_dir, args.input_root, args.library_root, args.enable_docker, enable_profile_builds=args.enable_profile_builds)
+    def stop_on_term(signum, frame):
+        raise KeyboardInterrupt
+    previous_term = signal.signal(signal.SIGTERM, stop_on_term)
     try:
         server = make_server(engine, args.host, args.port, args.allowed_hosts)
         engine.start_scheduler()
@@ -34,6 +38,7 @@ def main():
             server.server_close()
     finally:
         engine.close()
+        signal.signal(signal.SIGTERM, previous_term)
 
 
 if __name__ == "__main__":
