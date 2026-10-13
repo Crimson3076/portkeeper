@@ -5,9 +5,9 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from portkeeper import drafting
+from portkeeper import drafting, packaging
 from portkeeper.engine import Engine
-from portkeeper.safety import checksum
+from portkeeper.safety import Invalid, checksum
 from test_drafting import Server
 from test_packaging import Releases
 
@@ -130,3 +130,28 @@ class ReviewCandidateEvidenceTests(unittest.TestCase):
         result = drafting.read_review(json.dumps(response), context, candidate)
         self.assertEqual(result['findings'][0]['severity'], 'uncertain')
         self.assertEqual(result['findings'][0]['candidate_evidence_status'], 'unconfirmed')
+
+
+class MatchingPreparationCandidateTests(unittest.TestCase):
+    def context(self):
+        context = {'project': {'name': 'Fixture', 'definition_id': 'fixture', 'repository': 'ZeldaWWHDRecomp/ZeldaWWHDRecomp', 'targets': ['linux', 'windows']}, 'release': {'assets': []}, 'material': {'readme': ''}}
+        context['game_file_preparation'] = drafting.preparation_guidance(context, packaging.bundled())
+        return context
+
+    def test_matching_catalog_starter_exposes_supported_preparation(self):
+        context = self.context()
+        starter = drafting.starter_definition(context)['definition']
+        checked = packaging.validate_definition(starter)
+        self.assertTrue(any(op.get('tool') == 'wwhd_extract' for op in checked['operations']))
+        self.assertTrue(checked['inputs'])
+        drafting.check_preparation_choice(checked, context)
+        checked['operations'] = [op for op in checked['operations'] if not op.get('tool')]
+        with self.assertRaisesRegex(Invalid, 'matching catalog candidate'):
+            drafting.check_preparation_choice(checked, context)
+
+    def test_preparation_off_does_not_insert_catalog_extraction(self):
+        context = self.context()
+        context['game_file_preparation']['enabled'] = False
+        starter = drafting.starter_definition(context)['definition']
+        self.assertEqual(starter['inputs'], [])
+        drafting.check_preparation_choice(starter, context)

@@ -402,7 +402,15 @@ class RecipeAssistant:
                     'messages': [{'role': 'system', 'content': system}, *messages],
                     'options': {'temperature': 0.1, 'num_ctx': config.get('context_tokens', 32768)}}
             reply = self._post(_endpoint(config['endpoint']) + '/api/chat', body, {}, timeout)
-            text = (reply.get('message') or {}).get('content')
+            message = reply.get('message') or {}
+            text = message.get('content')
+            if reply.get('done_reason') == 'length':
+                used = reply.get('prompt_eval_count')
+                detail = f' The prompt used {used} tokens.' if isinstance(used, int) else ''
+                raise Invalid('Ollama reached its context or output limit before finishing the answer.' + detail + ' Increase Assistant context size or reduce the project material, then retry. Reasoning text is not a packaging definition.')
+            if not isinstance(text, str) or not text.strip():
+                if message.get('thinking'):
+                    raise Invalid('Ollama returned reasoning but no final answer. Increase Assistant context size or try another model, then retry. No draft was accepted.')
         elif provider == 'anthropic':
             model = config.get('cloud_model') or ANTHROPIC_DEFAULT_MODEL
             body = {'model': model, 'max_tokens': 16000, 'system': system, 'messages': messages,
