@@ -99,6 +99,9 @@ class ModelToolTests(unittest.TestCase):
             self.tools.call("approve_draft", {})
 
     def test_built_in_assistant_fixes_a_draft_after_a_failed_test_build(self):
+        self.engine.save_setting('draft_max_calls', 3)
+        self.engine.save_setting('draft_test_rounds', 2)
+        self.engine.save_setting('draft_model_review', True)
         from test_drafting import Server
         good = definition(source_checks=[])
         good["inputs"][0] = {key: value for key, value in good["inputs"][0].items() if key != "accepted"} | {"verify": "downstream"}

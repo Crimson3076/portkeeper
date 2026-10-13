@@ -207,7 +207,7 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();d.getElementById('project-advanced-tab').click();await tick();
   const gameFiles=[...d.querySelectorAll('.instruction-section')].find(node=>node.querySelector('h3')?.textContent==='3. Your game files');
   assert(gameFiles.textContent.includes('When you play: Choose your owned game folder'),'An empty build-input list still shows runtime game requirements');
-  assert(gameFiles.textContent.includes('No game files need to be uploaded to Portkeeper for packaging.'));
+  assert(gameFiles.textContent.includes('Runtime-only recipe: no server inputs are configured.'));
   assert(!gameFiles.textContent.includes('No game files are needed.'));dom.window.close();
   const ps4=JSON.parse(JSON.stringify(runtimeFiles));
   const pkgDefinition=JSON.parse(fs.readFileSync(path.join(base,'catalog/definitions/gow3-pc-windows.json'),'utf8'));

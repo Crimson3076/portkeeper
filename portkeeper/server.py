@@ -205,7 +205,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(202, self.engine.setup(path.split("/")[3], publish=payload.get("publish", True) is True))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/draft", path) and method == "POST":
                 payload = self.body()
-                self.json(202, self.engine.queue_draft(path.split("/")[3], payload.get("instruction", ""), prepare_game_files=payload.get('prepare_game_files', True)))
+                self.json(202, self.engine.queue_draft(path.split("/")[3], payload.get("instruction", ""), prepare_game_files=payload.get('prepare_game_files', True), review_model=payload.get('review_model', False)))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/draft-prompt", path) and method == "POST":
                 payload = self.body()
                 result = self.engine.draft_prompt(path.split("/")[3], payload.get("instruction", ""), prepare_game_files=payload.get('prepare_game_files', True))

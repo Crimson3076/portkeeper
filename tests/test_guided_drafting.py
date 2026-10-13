@@ -18,6 +18,8 @@ class GuidedDraftTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.engine = Engine(Path(self.temp.name) / 'data', github=Releases())
         self.addCleanup(self.engine.close)
+        self.engine.save_setting('draft_model_review', True)
+        self.engine.save_setting('draft_max_calls', 3)
         self.engine.save_setting('draft_test_builds', False)  # This fixture preserves no release assets.
         self.project = self.engine.create_project({'name': 'Example', 'repo': 'example/port', 'targets': ['windows']})
         root = self.engine.data / 'fixture-source'
@@ -46,6 +48,16 @@ class GuidedDraftTests(unittest.TestCase):
         self.engine.store.update('jobs', job['id'], kind='draft')
         self.engine._draft(self.project['id'], job['id'], '')
         return self.engine.store.get('jobs', job['id']), server
+
+    def test_default_draft_uses_one_model_call_and_skips_model_review(self):
+        self.engine.save_setting('draft_model_review', False)
+        self.engine.save_setting('draft_max_calls', 1)
+        job, server = self.run_model([{'explanation': 'Fixture', 'definition': self.good}])
+        self.assertEqual(job['status'], 'ready', job.get('error'))
+        self.assertEqual(len(server.requests), 1)
+        record = self.engine.draft_record(job['id'])
+        self.assertEqual(record['model_review']['status'], 'not_requested')
+        self.assertLessEqual(len(record['draft_prompt']['system']) + len(record['draft_prompt']['user']), 24000)
 
     def test_corrected_draft_gets_fresh_review_and_exportable_record_without_credentials(self):
         bad = copy.deepcopy(self.good)
