@@ -1,10 +1,10 @@
 {
   "schema": 2,
   "id": "zeldawwhdrecomp",
-  "revision": 3,
+  "revision": 4,
   "name": "The Wind Waker HD (native port)",
   "game": "The Legend of Zelda: The Wind Waker HD",
-  "summary": "Native Linux and Windows port of The Wind Waker HD. Portkeeper extracts your Cemu archive into the package; the first start builds the game code on your PC without asking for files.",
+  "summary": "Native Linux and Windows port of The Wind Waker HD. Portkeeper prepares your Cemu archive, decrypted ZIP or decrypted folder into data/game; the first start compiles the game code on your PC without asking for game files.",
   "package_prefix": "WindWakerHD",
   "runner": "operations",
   "runner_version": 1,
@@ -58,13 +58,24 @@
   "inputs": [
     {
       "id": "game_wua",
-      "label": "The Wind Waker HD Cemu archive (.wua)",
+      "label": "Wind Waker HD Cemu archive or decrypted ZIP",
       "kind": "file",
       "platform_hint": "wiiu",
-      "name_hint": "(?i)\\.wua$",
+      "name_hint": "(?i)\\.(wua|zip)$",
       "verify": "downstream",
       "max_bytes": 17179869184,
-      "notes": "A Cemu archive of the USA (00050000-10143500) or European (00050000-10143600) game, version 0. An archive that also holds the update is fine; the update is left out. Disc images (.wux/.wud) need keys and are not supported here; convert them in Cemu with \"Convert to compressed Wii U archive (.wua)\"."
+      "notes": "Choose a .wua archive or ZIP containing a decrypted code/content/meta folder. Alternatively choose the decrypted folder below. WUD/WUX need keys and are not yet prepared here.",
+      "required": false
+    },
+    {
+      "id": "game_folder",
+      "label": "Wind Waker HD decrypted game folder",
+      "kind": "directory",
+      "required": false,
+      "platform_hint": "wiiu",
+      "verify": "downstream",
+      "max_bytes": 17179869184,
+      "notes": "Select the folder containing code/, content/ and meta/. Title ID, version 0 and code/cking.rpx SHA-256 are checked before packaging."
     }
   ],
   "source_checks": [
@@ -117,7 +128,8 @@
       ],
       "to": "$shared/game",
       "timeout_minutes": 60,
-      "description": "Extract the base game from your archive"
+      "description": "Prepare and validate your version-0 Wii U game",
+      "prepared_input": "game_folder"
     },
     {
       "op": "include_tree",
@@ -214,13 +226,14 @@
     ]
   },
   "limitations": [
-    "Only Cemu archives (.wua) are prepared. Disc images need keys; convert them in Cemu first.",
+    "Prepares .wua, ZIP of a decrypted folder, or a decrypted code/content/meta folder. WUD/WUX require keys and are not yet supported by this recipe.",
     "The first start still compiles the game code on the player's PC; Portkeeper cannot ship compiled game code.",
     "The package contains your extracted game files (about 2-3 GB); keep it private.",
     "Not yet launched on a real PC by Portkeeper."
   ],
   "history": [
-    "Catalog revision 3: extract the player's Cemu archive with the release's own extractor and run the release's setup non-interactively on first start, so the game no longer asks for files."
+    "Catalog revision 3: extract the player's Cemu archive with the release's own extractor and run the release's setup non-interactively on first start, so the game no longer asks for files.",
+    "Revision 4: validate decrypted folder and ZIP alternatives by metadata and RPX hash; source dumps remain unchanged."
   ],
   "verified_releases": []
 }

@@ -245,7 +245,10 @@ def _check_tool(op, definition, inputs, downloads, where):
         accepted = _list(op.get("accepted_rpx_sha256"), f"{where} accepted_rpx_sha256", 16)
         if not accepted or any(not isinstance(v, str) or not _SHA256.fullmatch(v) for v in accepted):
             raise Invalid(f"{where} needs at least one accepted code/cking.rpx SHA-256")
-        return {"tool", "download", "extractor", "archive", "titles", "accepted_rpx_sha256", "to", "timeout_minutes"}
+        prepared = op.get("prepared_input")
+        if prepared is not None and (prepared not in inputs or inputs[prepared]["kind"] != "directory"):
+            raise Invalid(f"{where} prepared_input must be a declared directory input")
+        return {"tool", "download", "extractor", "archive", "prepared_input", "titles", "accepted_rpx_sha256", "to", "timeout_minutes"}
     # ps4_pkg_extract
     if op.get("tool_download") not in downloads or not downloads[op["tool_download"]].get("sha256"):
         raise Invalid(f"{where} must use a pinned PkgTool download")
@@ -434,10 +437,10 @@ def validate_definition(definition):
             raise Invalid("An operations definition needs at least one operation")
         for index, op in enumerate(operations):
             _check_operation(op, d, index)
-        prepared = {op.get("prepared_input") for op in operations if op["op"] == "tool" and op.get("tool") == "ps4_pkg_extract"}
+        prepared = {op.get("prepared_input") for op in operations if op["op"] == "tool" and op.get("tool") in ("ps4_pkg_extract", "wwhd_extract")}
         for item in inputs:
             if item["kind"] == "directory" and item["id"] not in prepared:
-                raise Invalid(f"inputs.{item['id']}: directory inputs must be consumed as prepared_input by ps4_pkg_extract. For a game folder chosen on the player's PC, remove this input, use first_run.mode asks_user, and describe folder selection. Packaging does not need that folder on the server.")
+                raise Invalid(f"inputs.{item['id']}: directory inputs must be consumed as prepared_input by ps4_pkg_extract or wwhd_extract. For a game folder chosen on the player's PC, remove this input, use first_run.mode asks_user, and describe folder selection. Packaging does not need that folder on the server.")
         for target in targets:
             if not outputs.get(target, {}).get("expected_files"):
                 raise Invalid(f"Declare expected files for the {target} package")
@@ -706,7 +709,8 @@ def describe_operation(op, definition):
     if tool == "opengoal_extract":
         return lead + f"Run the release's OpenGOAL extractor on your {inputs[op['iso']]['label']} to extract, validate, decompile and compile {op['game']}, then keep " + ", ".join(op["collect"]) + "."
     if tool == "wwhd_extract":
-        return lead + f"Run the release's {op['extractor']} on your {inputs[op['archive']]['label']} to extract title " + " or ".join(op["titles"]) + " (version 0 only), and require an accepted code/cking.rpx SHA-256. Your archive stays unchanged."
+        alternative = ' Alternatively validate your selected decrypted game folder without modifying it.' if op.get('prepared_input') else ''
+        return lead + f"Prepare your {inputs[op['archive']]['label']}: use the release's {op['extractor']} for WUA, or safely extract a decrypted ZIP. Require title " + " or ".join(op["titles"]) + " (version 0 only) and an accepted code/cking.rpx SHA-256. Originals stay unchanged." + alternative
     return lead + "Check and copy the PS4 packages to a private work folder, then extract the base game first and overlay its updates in order with the pinned PkgTool (" + " → ".join(inputs[p]["label"] for p in op["packages"]) + f"). Originals stay unchanged. Require title {op['title_id']}, version {op['app_version']} and an accepted eboot.bin SHA-256. Reuse a validated earlier extraction when available."
 
 

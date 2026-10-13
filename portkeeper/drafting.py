@@ -76,7 +76,7 @@ Top-level fields:
   - touch: {path}  create an empty marker file such as portable.txt.
   - tool: fixed tools only. ship_o2r_headless {download, appimage, rom, output, to, min_entries},
     opengoal_extract {download, game, iso, collect, to}, ps4_pkg_extract {tool_download, packages,
-    title_id, app_version, accepted_eboot_sha256, to}, wwhd_extract {download, extractor, archive, titles,
+    title_id, app_version, accepted_eboot_sha256, to}, wwhd_extract {download, extractor, archive, prepared_input (optional validated directory), titles,
     accepted_rpx_sha256, to}. Use a tool only when the project clearly needs it.
     ps4_pkg_extract details: packages is an ordered array of input IDs: BASE FIRST, UPDATE SECOND.
     Each PKG input is kind file, verify downstream, platform_hint ps4, name_hint "(?i)\\.pkg$",
@@ -288,6 +288,18 @@ def starter_definition(context):
                   'downloads': {}, 'inputs': [], 'source_checks': [], 'operations': [],
                   'outputs': {target: {'expected_files': []} for target in project['targets']},
                   'launch': {}, 'history': [], 'verified_releases': []}
+    preparation = context.get('game_file_preparation', {})
+    candidate = preparation.get('catalog_candidate')
+    if preparation.get('enabled', True) and candidate:
+        definition = copy.deepcopy(candidate)
+        definition.update(id=project['definition_id'], revision=1, targets=list(project['targets']), history=[], verified_releases=[])
+        definition['outputs'] = {k: v for k, v in definition['outputs'].items() if k in definition['targets']}
+        definition['launch'] = {k: v for k, v in definition.get('launch', {}).items() if k in definition['targets']}
+        definition['operations'] = [op for op in definition['operations'] if not op.get('targets') or set(op['targets']) & set(definition['targets'])]
+        for op in definition['operations']:
+            if op.get('targets'):
+                op['targets'] = [target for target in op['targets'] if target in definition['targets']]
+        return {'definition': definition, 'unresolved': ['Review this matching catalog candidate against the current release, source checks, archive layouts and requested first-launch behavior. Preserve supported preparation when requested; it has not been executed by drafting.'], 'note': 'Reviewable catalog starter; catalog checks do not establish gameplay or input extractability.'}
     unresolved = ['Determine first-launch requirements, launch commands, settings locations and dependencies from the README and source.']
     for target in project['targets']:
         candidates = [asset for asset in release['assets']
@@ -353,7 +365,12 @@ def preparation_guidance(context, definitions):
             tool = reference.get('downloads', {}).get(operation['tool_download'])
             if tool:
                 break
-    return {'enabled': True, 'ps4': facts, 'pinned_tool': copy.deepcopy(tool),
+    matched = next((reference for reference in definitions.values()
+                    if reference.get('runner') == 'operations'
+                    and reference.get('upstream', {}).get('repository', '').lower() == context.get('project', {}).get('repository', '').lower()
+                    and set(context.get('project', {}).get('targets', [])) <= set(reference.get('targets', []))
+                    and reference.get('inputs') and any(op.get('tool') for op in reference.get('operations', []))), None)
+    return {'enabled': True, 'ps4': facts, 'pinned_tool': copy.deepcopy(tool), 'catalog_candidate': copy.deepcopy(matched),
             'note': 'Prefer preparing owned game files when this fixed runner and source evidence support it. PS4 clues above are extracted from the README, not private PKGs. Confirm their meaning; ambiguous or missing values must not be invented. A PKG header match alone does not prove extraction will work. If no supported preparation path exists, state that and keep honest first-launch instructions.'}
 
 
@@ -481,9 +498,15 @@ def check_preparation_choice(definition, context):
     preparation = context.get('game_file_preparation', {})
     tools = [op for op in definition['operations'] if op.get('tool') == 'ps4_pkg_extract']
     if preparation.get('enabled') is False:
-        if tools:
-            raise Invalid('Game file preparation is turned off. Remove PS4 PKG extraction and describe selecting an already prepared game folder when playing.')
+        if tools or (preparation.get('catalog_candidate') and any(op.get('tool') for op in definition['operations'])):
+            raise Invalid('Game file preparation is turned off. Remove game extraction and describe selecting an already prepared game folder when playing.')
         return
+    candidate = preparation.get('catalog_candidate')
+    if candidate:
+        required = {op['tool'] for op in candidate['operations'] if op.get('tool')}
+        present = {op['tool'] for op in definition['operations'] if op.get('tool')}
+        if not required <= present:
+            raise Invalid('Game file preparation is selected and a matching catalog candidate supplies supported fixed tools: ' + ', '.join(sorted(required)) + '. Preserve its preparation operations and game inputs, or turn preparation off; a runtime-only draft does not fulfill this choice.')
     facts = preparation.get('ps4', {})
     pinned = preparation.get('pinned_tool')
     if not pinned or not all(facts.get(key) for key in ('title_id', 'app_version', 'eboot_sha256')):

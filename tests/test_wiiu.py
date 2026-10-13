@@ -123,6 +123,49 @@ class WiiUTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(packaging.Invalid):
                 packaging.validate_definition(value)
 
+    def dump_files(self, version='0', rpx=RPX):
+        return {'code/cking.rpx': rpx, 'content/game.pack': b'fixture data', 'meta/meta.xml': f'<menu><title_id>0005000010143500</title_id><title_version>{version}</title_version></menu>'.encode()}
+
+    def test_decrypted_zip_is_included_and_wrong_version_is_rejected(self):
+        payload = archive_bytes({'Nested/Game/' + name: value for name, value in self.dump_files().items()})
+        job = self.build(payload)
+        self.assertEqual(job['status'], 'ready', job.get('error'))
+        artifact = self.engine.store.get('artifacts', job['artifact_id'])
+        with zipfile.ZipFile(artifact['file']) as package:
+            self.assertEqual(package.read('data/game/code/cking.rpx'), RPX)
+        bad = archive_bytes({'Game/' + name: value for name, value in self.dump_files(version='1').items()})
+        job = self.build(bad)
+        self.assertEqual(job['status'], 'failed')
+        self.assertIn('version-0', job['error'])
+
+    def test_decrypted_folder_discovery_and_packaging_preserve_originals(self):
+        folder = self.root / 'inputs/wiiu/roms/Unrelated filename'
+        for name, content in self.dump_files().items():
+            path = folder / name;path.parent.mkdir(parents=True, exist_ok=True);path.write_bytes(content)
+        project = self.engine.create_project({'name': 'WW', 'repo': 'x/ww', 'targets': ['linux'], 'packaging': definition()})
+        choices = self.engine.packager.find_files(project['packaging'])
+        found = next(x for x in choices if x['id'] == 'game_folder')['found']
+        self.assertEqual(found, [{'source': 'inputs', 'path': 'wiiu/roms/Unrelated filename'}])
+        self.engine.bind_input(project['id'], {'input': 'game_folder', **found[0]})
+        self.engine.check(project['id'])
+        while project['id'] in self.engine.busy:time.sleep(0.01)
+        job = self.engine.build(project['id'])['jobs'][0]
+        while project['id'] in self.engine.busy:time.sleep(0.01)
+        job = self.engine.store.get('jobs', job['id'])
+        self.assertEqual(job['status'], 'ready', job.get('error'))
+        self.assertEqual((folder / 'code/cking.rpx').read_bytes(), RPX)
+
+    def test_decrypted_folder_rejects_wrong_hash_and_symlinks(self):
+        folder = self.root / 'folder'
+        for name, content in self.dump_files(rpx=b'wrong version').items():
+            path = folder / name;path.parent.mkdir(parents=True, exist_ok=True);path.write_bytes(content)
+        op = next(x for x in definition()['operations'] if x.get('tool') == 'wwhd_extract')
+        with self.assertRaisesRegex(packaging.Invalid, 'SHA-256'):
+            self.engine.packager.validate_wiiu_folder(op, folder)
+        (folder / 'content/link').symlink_to(self.root)
+        with self.assertRaises(packaging.Invalid):
+            self.engine.packager.validate_wiiu_folder(op, folder)
+
     def test_catalog_definition_is_bundled_and_offered_to_the_existing_project(self):
         bundled = packaging.bundled()["zeldawwhdrecomp"]
         self.assertEqual(bundled["inputs"][0]["id"], "game_wua")

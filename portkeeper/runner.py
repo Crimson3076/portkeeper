@@ -16,6 +16,7 @@ import tarfile
 import threading
 import time
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from . import packaging
@@ -147,6 +148,9 @@ class OperationRunner:
         expected = ps4.input_expectation(definition, input_id)
         if item["kind"] == "directory":
             roots, depth = [(self.prepared, "prepared")], 4
+            if any(op.get('tool') == 'wwhd_extract' and op.get('prepared_input') == input_id for op in definition['operations']):
+                base = self.engine.input_root / item['platform_hint'] if item.get('platform_hint') else self.engine.input_root
+                roots.append((base, 'inputs'))
         else:
             hint = item.get("platform_hint")
             base = self.engine.input_root / hint if hint else self.engine.input_root
@@ -173,6 +177,12 @@ class OperationRunner:
                         preparation = next((op for op in definition['operations'] if op.get('tool') == 'ps4_pkg_extract' and op.get('prepared_input') == input_id), None)
                         if preparation and not self.validate_ps4(preparation, path)[0]:
                             continue
+                        wiiu = next((op for op in definition['operations'] if op.get('tool') == 'wwhd_extract' and op.get('prepared_input') == input_id), None)
+                        if wiiu:
+                            try:
+                                self.validate_wiiu_folder(wiiu, path)
+                            except (Invalid, OSError):
+                                continue
                     if item["kind"] == "file":
                         if not path.is_file() or path.stat().st_size > item.get("max_bytes", packaging.GIB):
                             continue
@@ -516,11 +526,67 @@ class OperationRunner:
             return self._wwhd(ctx, op, destination, timeout)
         return self._ps4(ctx, op, destination, timeout)
 
+    def validate_wiiu_folder(self, op, folder):
+        self.check_tree(folder, 16 * packaging.GIB)
+        rpx, metadata = folder / 'code/cking.rpx', folder / 'meta/meta.xml'
+        if not rpx.is_file() or not metadata.is_file() or not (folder / 'content').is_dir():
+            raise Invalid('The Wii U folder must contain code/cking.rpx, content/ and meta/meta.xml')
+        if metadata.stat().st_size > 1024 * 1024:
+            raise Invalid('Wii U meta.xml exceeds its size limit')
+        text = metadata.read_bytes()
+        if b'<!DOCTYPE' in text.upper() or b'<!ENTITY' in text.upper():
+            raise Invalid('Wii U metadata must not contain XML entity declarations')
+        try:
+            root = ET.fromstring(text)
+            title = (root.findtext('title_id') or '').strip().lower()
+            version = int((root.findtext('title_version') or '-1').strip())
+        except (ET.ParseError, ValueError):
+            raise Invalid('Wii U meta.xml has invalid title/version metadata') from None
+        if title not in op['titles'] or version != 0:
+            raise Invalid(f'Wii U dump is title {title or "unknown"}, version {version}; choose a supported base game, version 0')
+        digest = checksum(rpx)
+        if digest not in op['accepted_rpx_sha256']:
+            raise Invalid('code/cking.rpx does not match a supported base-game SHA-256; nothing was packaged')
+        return {'title': title, 'version': version, 'rpx_sha256': digest}
+
     def _wwhd(self, ctx, op, destination, timeout):
         """Extract one title folder (code/, content/, meta/) from the person's Cemu archive (.wua)
         with the extractor the release ships, then check the game code against accepted hashes."""
         ctx.stage("extracting", "Extracting your Wii U game with the release's extractor")
+        prepared = self.resolve_input(ctx, op['prepared_input']) if op.get('prepared_input') else None
+        if prepared:
+            info = self.validate_wiiu_folder(op, prepared['path'])
+            rel = packaging.split_root(op['to'], 'to')[1]
+            ctx.aliases[rel] = prepared['path']
+            ctx.provenance['tools'].append({'tool': 'wwhd_extract', 'format': 'decrypted folder', **info})
+            ctx.log('Validated your decrypted Wii U folder; originals remain unchanged')
+            return
         archive = self.resolve_input(ctx, op["archive"])
+        if archive is None:
+            raise Invalid('Choose a Wii U .wua, ZIP of a decrypted game, or a decrypted code/content/meta folder')
+        if zipfile.is_zipfile(archive['path']):
+            run = ctx.workspace / ('wiiu-zip-' + identifier())
+            try:
+                safe_extract(archive['path'], run, max_expanded=16 * packaging.GIB)
+                matches = []
+                for rpx in run.rglob('cking.rpx'):
+                    if rpx.parent.name != 'code':
+                        continue
+                    try:
+                        info = self.validate_wiiu_folder(op, rpx.parent.parent)
+                    except Invalid:
+                        continue
+                    matches.append((rpx.parent.parent, info))
+                if len(matches) != 1:
+                    raise Invalid('The ZIP must contain exactly one supported version-0 code/content/meta game folder with an accepted cking.rpx SHA-256')
+                game, info = matches[0]
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(game), str(destination))
+                ctx.provenance['tools'].append({'tool': 'wwhd_extract', 'format': 'decrypted ZIP', **info})
+                ctx.log('Extracted and validated your decrypted Wii U ZIP; originals remain unchanged')
+                return
+            finally:
+                shutil.rmtree(run, ignore_errors=True)
         run = ctx.workspace / ("wwhd-" + identifier())
         self.unpack(ctx, op["download"], run)
         extractor = confined(run, op["extractor"], must_exist=True)
@@ -1072,6 +1138,8 @@ class OperationRunner:
 
         def blocked(op):
             missing = [i for i in self.op_inputs(op) if i not in bindings]
+            if op.get('tool') == 'wwhd_extract' and op.get('prepared_input') in bindings:
+                missing = []
             sources = [op.get(key) for key in ("from", "rom") if isinstance(op.get(key), str)]
             if not missing and not any(s == p or s.startswith(p.rstrip("/") + "/") for s in sources for p in skipped_paths):
                 return False

@@ -3,6 +3,7 @@ import json
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -11,6 +12,18 @@ from portkeeper.safety import Invalid
 
 
 class AssistantTests(unittest.TestCase):
+    def test_ollama_limit_explains_empty_final_answer_without_using_reasoning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            assistant = RecipeAssistant(Path(directory))
+            response = {'message': {'content': '', 'thinking': 'not a definition'}, 'done_reason': 'length', 'prompt_eval_count': 29325}
+            with patch.object(assistant, '_post', return_value=response):
+                with self.assertRaisesRegex(Invalid, 'context or output limit.*29325'):
+                    assistant.chat('system', [], {'provider': 'ollama', 'endpoint': 'http://localhost:11434', 'model': 'fixture'})
+            response['done_reason'] = 'stop'
+            with patch.object(assistant, '_post', return_value=response):
+                with self.assertRaisesRegex(Invalid, 'reasoning but no final answer'):
+                    assistant.chat('system', [], {'provider': 'ollama', 'endpoint': 'http://localhost:11434', 'model': 'fixture'})
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
