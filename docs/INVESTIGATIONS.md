@@ -94,6 +94,14 @@ the report should identify the actual evidence and gap for the selected release.
 
 ## Audit and outside agents
 
+Connected agents use `action` and `payload_json` for structured replies. The string
+encodes only a plan object (with `outcome` equal to `ready`, `unsupported` or
+`needs_evidence`) or an evidence request array. Equivalent natural and bounded
+nested wrappers are accepted; missing/invalid outcomes are still rejected.
+Rejection feedback includes the returned value or missing fields so a subsequent
+request can correct the format within the selected budget. This does not replace
+runtime, capability or evidence validation.
+
 **View model responses**, **Copy response** and **Download drafting record (JSON)**
 include the investigation exchanges. Records preserve the outcome, evidence,
 source/capture identity and selected request limits. They can be used to compare

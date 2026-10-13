@@ -109,6 +109,78 @@ class InvestigationTests(unittest.TestCase):
         self.assertNotIn(str(self.root), json.dumps(server.requests))
         self.assertEqual([event['result'] for event in events], ['evidence_requested', 'ready'])
 
+    def test_native_codex_plan_accepts_canonical_and_nested_structured_payloads(self):
+        bodies = [self.plan, {'plan': self.plan}, {'action': 'plan', 'plan': self.plan},
+                  {'action': 'plan', 'payload_json': json.dumps(self.plan)}]
+        config = {'provider': 'codex', 'drafting_model': 'Codex default', 'agent_models': {'codex': ''}}
+        for body in bodies:
+            with self.subTest(body_fields=list(body)):
+                response = json.dumps({'action': 'plan', 'payload_json': json.dumps(body)})
+                events = []
+                with patch.object(self.engine.assistant.agents, 'chat', return_value=response) as chat:
+                    result, _, _ = investigation.run(self.engine, self.project, self.capture, copy.deepcopy(self.context), config, 1, lambda _: None, events.append)
+                self.assertTrue(result['can_draft'], result)
+                self.assertEqual(chat.call_count, 1)
+                self.assertEqual(chat.call_args.kwargs['response_schema'], investigation.SCHEMA)
+                self.assertEqual(events[0]['response'], response)
+
+    def test_natural_flattened_and_bare_plan_variants_keep_the_same_facts(self):
+        replies = [{'action': 'plan', 'plan': self.plan}, {'action': 'plan', 'plan': json.dumps(self.plan)},
+                   {'action': 'plan', **self.plan}, self.plan]
+        for reply in replies:
+            action, body = investigation.read_response(json.dumps(reply))
+            self.assertEqual(action, 'plan')
+            self.assertEqual(body, self.plan)
+
+    def test_nested_structured_evidence_requests_reach_the_second_call(self):
+        request = {'kind': 'source', 'path': 'src/launch.cpp'}
+        first = json.dumps({'action': 'request_evidence', 'payload_json': json.dumps({'action': 'request_evidence', 'requests': [request]})})
+        second = json.dumps({'action': 'plan', 'payload_json': json.dumps(self.plan)})
+        events = []
+        config = {'provider': 'codex', 'drafting_model': 'Codex default'}
+        with patch.object(self.engine.assistant.agents, 'chat', side_effect=[first, second]) as chat:
+            result, _, _ = investigation.run(self.engine, self.project, self.capture, copy.deepcopy(self.context), config, 2, lambda _: None, events.append)
+        self.assertTrue(result['can_draft'], result)
+        self.assertEqual(chat.call_count, 2)
+        self.assertIn('game_dir', chat.call_args.args[2][0]['content'])
+        self.assertEqual([event['result'] for event in events], ['evidence_requested', 'ready'])
+
+    def test_transport_normalization_does_not_fix_invalid_outcomes_or_evidence(self):
+        for change in [{'outcome': 'supported'}, {'outcome': None}]:
+            plan = {**self.plan, **change}
+            _, body = investigation.read_response(json.dumps({'action': 'plan', 'payload_json': json.dumps({'plan': plan})}))
+            with self.assertRaisesRegex(Invalid, 'Plan outcome.*received'):
+                investigation.check_plan(body, self.project, self.capture, self.reader())
+        _, body = investigation.read_response(json.dumps({'action': 'plan', 'plan': {'summary': 'No outcome supplied'}}))
+        with self.assertRaisesRegex(Invalid, 'missing.*summary'):
+            investigation.check_plan(body, self.project, self.capture, self.reader())
+        invalid = copy.deepcopy(self.plan);invalid['evidence'][0]['quote'] = 'fabricated evidence'
+        _, body = investigation.read_response(json.dumps({'action': 'plan', 'payload_json': json.dumps({'plan': invalid})}))
+        self.assertFalse(investigation.check_plan(body, self.project, self.capture, self.reader())['can_draft'])
+
+    def test_conflicting_malformed_and_unbounded_reply_wrappers_are_rejected(self):
+        nested = {'plan': self.plan}
+        for _ in range(6):nested = {'action': 'plan', 'payload_json': json.dumps(nested)}
+        replies = [{'action': 'plan', 'payload_json': 'not JSON'},
+                   {'action': 'plan', 'plan': self.plan, 'payload_json': json.dumps(self.plan)},
+                   {'action': 'plan', 'payload_json': json.dumps({'action': 'request_evidence', 'requests': []})},
+                   {'action': 'plan', 'requests': []}, {'action': 'execute', 'plan': self.plan}, nested]
+        for reply in replies:
+            with self.subTest(reply_fields=list(reply)), self.assertRaises(Invalid):
+                investigation.read_response(json.dumps(reply))
+
+    def test_invalid_outcome_feedback_is_actionable_and_preserves_the_raw_reply(self):
+        invalid = {**self.plan, 'outcome': 'supported'}
+        responses = [json.dumps({'action': 'plan', 'payload_json': json.dumps(invalid)}),
+                     json.dumps({'action': 'plan', 'payload_json': json.dumps(self.plan)})]
+        events = []
+        with patch.object(self.engine.assistant, 'chat', side_effect=responses) as chat:
+            result, _, _ = investigation.run(self.engine, self.project, self.capture, copy.deepcopy(self.context), {'drafting_model': 'fixture'}, 2, lambda _: None, events.append)
+        self.assertTrue(result['can_draft'])
+        self.assertIn("received 'supported'", chat.call_args.args[1][0]['content'])
+        self.assertEqual(events[0]['result'], 'rejected')
+        self.assertEqual(events[0]['response'], responses[0])
+
     def test_limit_returns_insufficient_evidence_without_an_extra_model_call(self):
         request = json.dumps({'action': 'request_evidence', 'requests': [{'kind': 'source', 'path': 'README.md'}]})
         with patch.object(self.engine.assistant, 'chat', return_value=request) as chat:
