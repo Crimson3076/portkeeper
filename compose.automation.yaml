@@ -1,0 +1,17 @@
+# Optional override for an application deployed on a dedicated ROOTLESS Docker
+# host/VM. Start the broker on that host under its unprivileged daemon account.
+# Do not use this override with the ordinary Unraid/rootful Docker daemon.
+# docker compose -f compose.yaml -f compose.automation.yaml up -d
+services:
+  portkeeper:
+    # UID 0 inside a rootless container maps to the unprivileged host account.
+    # It lets the app share the broker's private Unix socket and exchange files.
+    user: "0:0"
+    environment:
+      PUID: "0"
+      PGID: "0"
+      PORTKEEPER_WORKER_SOCKET: /worker/broker.sock
+      PORTKEEPER_WORKER_EXCHANGE: /worker/exchange
+    volumes:
+      - ${PORTKEEPER_BROKER_DIRECTORY:?Set the private broker directory}:/worker
+      - ${PORTKEEPER_OWNED_DIRECTORY:?Set the broker input directory}:/inputs:ro

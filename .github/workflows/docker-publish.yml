@@ -24,6 +24,13 @@ env:
 
 jobs:
   build:
+    strategy:
+      matrix:
+        include:
+          - suffix: ''
+            dockerfile: Dockerfile
+          - suffix: '-worker'
+            dockerfile: Dockerfile.worker
 
     runs-on: ubuntu-latest
     permissions:
@@ -67,7 +74,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@96383f45573cb7f253c731d3b3ab81c87ef81934 # v5.0.0
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}
           # Unraid and `docker pull` default to :latest when no tag is given.
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
@@ -83,11 +90,12 @@ jobs:
         uses: docker/build-push-action@0565240e2d4ab88bba5387d719585280857ece09 # v5.0.0
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=portkeeper${{ matrix.suffix }}
+          cache-to: type=gha,mode=max,scope=portkeeper${{ matrix.suffix }}
 
       # Sign the resulting Docker image digest except on PRs.
       # This will only write to the public Rekor transparency log when the Docker

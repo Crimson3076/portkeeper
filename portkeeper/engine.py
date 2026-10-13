@@ -67,7 +67,13 @@ class Github:
 
     def release(self, repo, version=None):
         route = "latest" if version is None else "tags/" + urllib.parse.quote(version, safe="")
-        release = self.json(f"https://api.github.com/repos/{repo}/releases/{route}")
+        try:
+            release = self.json(f"https://api.github.com/repos/{repo}/releases/{route}")
+        except Invalid as error:
+            # Repositories without releases are valid source-build candidates.
+            if version is None and isinstance(error.__cause__, urllib.error.HTTPError) and error.__cause__.code == 404:
+                return self.snapshot(repo)
+            raise
         tag = release["tag_name"]
         commit = self.json(f"https://api.github.com/repos/{repo}/commits/{urllib.parse.quote(tag, safe='')}")["sha"]
         if not re.fullmatch(r"[a-f0-9]{40}", commit):
@@ -77,6 +83,13 @@ class Github:
 
     def release_tag(self, repo, version):
         return self.release(repo, version)
+
+    def snapshot(self, repo, ref='HEAD'):
+        commit = self.json(f"https://api.github.com/repos/{repo}/commits/{urllib.parse.quote(ref, safe='')}")['sha']
+        if not re.fullmatch(r'[a-f0-9]{40}', commit):
+            raise Invalid('GitHub returned an invalid source commit')
+        return {'version': 'source-' + commit[:12], 'commit': commit, 'release_id': 'source-' + commit,
+                'url': f'https://github.com/{repo}/tree/{commit}', 'assets': [], 'kind': 'source_snapshot'}
 
     def download(self, url, output):
         output = Path(output)
@@ -117,6 +130,8 @@ class Engine:
             path.mkdir(parents=True, exist_ok=True)
         if self.input_root == self.library_root or self.input_root.is_relative_to(self.library_root) or self.library_root.is_relative_to(self.input_root):
             raise Invalid("Input and library directories must not overlap")
+        if self.data.is_relative_to(self.input_root):
+            raise Invalid('The input collection must not contain Portkeeper data or credentials')
         self.store = Store(self.data / "portkeeper.sqlite3")
         self.github = github or Github()
         self.lock = threading.RLock()
@@ -145,6 +160,9 @@ class Engine:
         self.mcp = MCP(self)
         self.publisher = Publisher(self)
         self.catalog = Catalog(self)
+        from .autonomous import Automation
+        self.automation = Automation(self)
+        self.automation.recover()
         self.enable_docker = enable_docker
         self.docker_available = False
         self.docker_error = "Docker builds are disabled; start with --enable-docker to opt in."
@@ -189,7 +207,17 @@ class Engine:
                               definition_source={"kind": "migration", "migrated_at": now(), "from_mode": (project.get("recipe") or {}).get("mode", "capture")})
 
     def close(self):
+        if getattr(self, '_closed', False):
+            return
+        self._closed = True
         self.stop.set()
+        if self.automation.broker and self.store.path.exists():
+            for record in self.store.all('automation'):
+                if record.get('status') in ('queued', 'running'):
+                    try:
+                        self.automation.cancel(record['id'])
+                    except Invalid:
+                        pass
         if self.scheduler:
             self.scheduler.join(timeout=5)
         if self.identity_scheduler:
@@ -219,6 +247,14 @@ class Engine:
                     project["packaging_view"]["first_run"] = packaging.view(known)["first_run"]
                 project["releases"] = self.releases(project, captures, all_artifacts)
                 project["catalog_update"] = self.catalog.update_for(project)
+            if project.get('autonomous_recipe'):
+                manifest = project['autonomous_recipe']['manifest']
+                project['packaging_view'] = {**project.get('packaging_view', {}),
+                    'summary': manifest['summary'], 'runner': 'isolated_scripts',
+                    'launch': {target: {'command': package['command'], 'instructions': package['instructions']}
+                               for target, package in manifest['packages'].items()},
+                    'first_run': {'mode': 'preloaded' if manifest['game_files']['included'] else 'manual', 'summary': manifest['game_files']['instructions'], 'text': manifest['game_files']['instructions']},
+                    'saves': manifest['saves'], 'limitations': manifest['limitations']}
         all_jobs = self.store.all("jobs")
         jobs = all_jobs[:150]
         included = {job['id'] for job in jobs}
@@ -249,7 +285,7 @@ class Engine:
                            "packaging_runner": {**self.packager.availability(), "runner_version": packaging.RUNNER_VERSION}},
                 "catalog": self.catalog.status(),
                 "romm": public_romm, "profiles": catalog(), "notifications": self.lifecycle.notifications(),
-                "assistant": assistant, "mcp": self.mcp.public_config(),
+                "assistant": assistant, "mcp": self.mcp.public_config(), "automation": self.automation.status(),
                 "summary": {"projects": len(projects), "artifacts": len(artifacts),
                             "needs_attention": sum(p["status"] == "needs_attention" for p in projects)}}
 
@@ -335,14 +371,19 @@ class Engine:
             return self.publisher.queue(job["artifact_id"])
         if job.get('kind') == 'investigation':
             return self.queue_investigation(job['project_id'], job.get('instruction', ''), job.get('investigation_max_calls', 3), job.get('prepare_game_files', True))
+        if job.get('kind') == 'automation':
+            record = self.automation.record(job_id)
+            return self.automation.queue(job['project_id'], {'instruction': record.get('instruction', ''),
+                                          'inputs': record['inputs'], 'replay': record.get('replay', False), 'prepare_game_files': record.get('prepare_game_files', True)})
         if job.get("kind") == "draft":
             return self.queue_draft(job["project_id"], job.get("instruction", ""), targets=job.get("requested_targets"), prepare_game_files=job.get('prepare_game_files', True), review_model=job.get('review_model', False), max_calls=job.get('draft_max_calls'), investigation_id=job.get('investigation_id'), test_inputs=job.get('test_inputs', False))
         project = self.store.get("projects", job["project_id"])
         if job["target"] == "capture":
-            return self.check(project["id"], build_after=job.get("build_after", False), release_version=job.get("release_version"))
+            return self.check(project["id"], build_after=job.get("build_after", False), release_version=job.get("release_version"),
+                              automate_after=job.get('automate_after', False))
         return self.build(project["id"], [job["target"]], capture_id=job.get("capture_id"))
 
-    def validate_project(self, config):
+    def validate_project(self, config, script_active=False):
         if not isinstance(config, dict):
             raise Invalid("Project must be an object")
         config = copy.deepcopy(config)
@@ -413,7 +454,7 @@ class Engine:
             if definition["upstream"]["repository"].lower() != repo.lower():
                 raise Invalid("The packaging definition describes another repository")
             unsupported = [t for t in targets if t not in definition["targets"]]
-            if unsupported:
+            if unsupported and not script_active:
                 raise Invalid("The packaging definition does not produce: " + ", ".join(unsupported))
             if definition["runner"] == "profile" and definition.get("profile") != profile_id:
                 raise Invalid("Profile definitions belong to projects created from that verified profile")
@@ -440,7 +481,7 @@ class Engine:
             raise Invalid("Automatic publication goes to RomM or to the local library folder")
         if recipe["mode"] == "profile" and not profile_id:
             raise Invalid("Select a verified project profile before using its fixed recipe")
-        if auto_build and recipe["mode"] == "capture":
+        if auto_build and recipe["mode"] == "capture" and not script_active:
             raise Invalid("Configure a build recipe before enabling automatic builds")
         auto_draft_platforms = config.get("auto_draft_platforms", False)
         if not isinstance(auto_draft_platforms, bool):
@@ -480,13 +521,16 @@ class Engine:
                        "packaging", "input_bindings", "auto_publish_destination", "auto_draft_platforms"}
             if not isinstance(config, dict) or any(key not in allowed for key in config):
                 raise Invalid("Only name, targets, poll_minutes, automation, packaging, game files, recipe and metadata can be edited")
+            manual_instructions = 'packaging' in config or 'recipe' in config
             config = self._definition_update(project, config)
             merged = {**project, **config}
-            checked = self.validate_project(merged)
+            checked = self.validate_project(merged, script_active=bool(project.get('autonomous_recipe')) and not manual_instructions)
             for key in allowed:
                 if key in checked:
                     project[key] = checked[key]
             previous = self.store.get("projects", project_id).get("packaging")
+            if project.get('autonomous_recipe') and manual_instructions:
+                project['autonomous_history'] = (project.get('autonomous_history', []) + [project.pop('autonomous_recipe')])[-10:]
             if previous and previous != project.get("packaging"):
                 history = project.get("definition_history", [])
                 history.append({"saved_at": now(), "definition": copy.deepcopy(previous)})
@@ -677,8 +721,14 @@ class Engine:
                   "finished_at": None, "error": None, "logs": [], "artifact_id": None, "stage": "queued", "checkpoints": []}
         return self.store.put("jobs", record)
 
-    def check(self, project_id, build_after=False, release_version=None, publish_after=False, draft_after=False, publication_override=None):
+    def check(self, project_id, build_after=False, release_version=None, publish_after=False, draft_after=False, publication_override=None, automate_after=False):
         project = self.store.get("projects", project_id)
+        if automate_after:
+            policy = self.automation.policy()
+            if not policy['enabled'] or not self.automation.status()['worker'].get('ready') or self.assistant._config()['provider'] not in policy['eligible_providers']:
+                raise Invalid('Connect and enable the worker/provider before requesting automatic setup')
+            if draft_after or build_after or project.get('profile'):
+                raise Invalid('Choose automatic setup or the existing drafting/build workflow')
         if project.get("demo"):
             raise Invalid("The synthetic demo is local and has no upstream updates")
         if release_version is not None:
@@ -689,7 +739,7 @@ class Engine:
         self.claim(project_id, expected_project=project)
         job = self.job(project, "capture")
         job = self.store.update("jobs", job["id"], build_after=build_after, release_version=release_version,
-                                publish_after=publish_after, draft_after=draft_after)
+                                publish_after=publish_after, draft_after=draft_after, automate_after=automate_after)
         if publication_override is not None:
             job = self.store.update("jobs", job["id"], publication_override=publication_override)
         self.executor.submit(self._check, project, job, build_after, release_version)
@@ -698,6 +748,8 @@ class Engine:
     def setup(self, project_id, publish=True, publication_override=None):
         """Set up a game in one step: preserve the latest release, build it and send it to RomM."""
         project = self.store.get("projects", project_id)
+        if project.get('autonomous_recipe'):
+            return self.automation.queue(project_id, {'replay': True, 'publish': publish})
         runner = (project.get("packaging") or {}).get("runner")
         if runner == "capture" or (runner is None and (project.get("recipe") or {}).get("mode") == "capture"):
             raise Invalid("This game has no packaging steps yet. Draft or write them first.")
@@ -722,6 +774,7 @@ class Engine:
     def _check(self, project, job, build_after=False, release_version=None):
         jid = job["id"]
         log = lambda message: self.store.append_log(jid, message)
+        automatic_after = None
         try:
             self.store.update("jobs", jid, status="checking")
             self.store.update("projects", project["id"], status="checking", last_error=None)
@@ -729,8 +782,12 @@ class Engine:
             log(f"Checking {release_version or 'latest stable release'} of {project['repo']}")
             release = self.github.release_tag(project["repo"], release_version) if release_version else self.github.release(project["repo"])
             recipe = project["recipe"]
-            definition = project.get("packaging") if (project.get("packaging") or {}).get("runner") == "operations" else None
-            if definition:
+            definition = project.get("packaging") if (project.get("packaging") or {}).get("runner") == "operations" and not project.get('autonomous_recipe') else None
+            if project.get('autonomous_recipe'):
+                from .drafting import platform_assets
+                selected_names = {a['name'] for a in platform_assets(release['assets'], project['targets'])}
+                wanted = ['^' + re.escape(name) + '$' for name in selected_names]
+            elif definition:
                 from . import packaging
                 wanted = packaging.asset_patterns(definition)
             else:
@@ -766,6 +823,7 @@ class Engine:
                 assets = previous.get("assets", []) if previous else []
                 capture = {"id": cid, "project_id": project["id"], "repo": project["repo"], "capture_key": key,
                            "version": release["version"], "commit": release["commit"], "release_url": release["url"],
+                           "upstream_kind": release.get('kind', 'release'),
                            "created_at": now(), "root": str(root), "source": source, "assets": assets, "complete": False}
                 # Preserve a usable source record even if a later release asset fails.
                 self.checkpoint_capture(capture)
@@ -806,6 +864,15 @@ class Engine:
                 review = self.review_release(project, definition, capture, log)
             self.watch_platform_releases(project, release, log)
             self.stage(jid, "complete", check_message)
+            if job.get('automate_after'):
+                automatic_after = {'replay': False, 'publish': bool(job.get('publish_after'))}
+                return
+            if project.get('autonomous_recipe'):
+                if build_after or (changed and project['auto_build']):
+                    saved = project['autonomous_recipe']
+                    automatic_after = {'replay': saved['capture_id'] == capture['id'], 'publish': bool(job.get('publish_after'))}
+                    log('Reusing the saved script recipe' if automatic_after['replay'] else 'New source preserved; investigating a replacement script recipe')
+                return
             if review and review["status"] == "needs_review":
                 self.store.update("jobs", jid, check_outcome="needs_review", message=f"{capture['version']} was preserved but needs instruction review before building.")
                 if build_after or project["auto_build"]:
@@ -837,6 +904,12 @@ class Engine:
                                   str(error), jobid=jid, event_key=f"check:{project['id']}:{str(error)[:180]}")
         finally:
             self.release_claim(project["id"])
+            if automatic_after is not None:
+                try:
+                    self.automation.queue(project['id'], automatic_after)
+                except Invalid as error:
+                    log('Automatic setup could not start: ' + str(error))
+                    self.store.update('projects', project['id'], status='needs_attention', last_error=str(error))
 
     def watch_platform_releases(self, project, release, log):
         """Notify on new OS release assets. Drafting is opt-in; never change live builds."""
@@ -858,7 +931,7 @@ class Engine:
         supported = new & platforms.PACKAGING
         pending = any(p.get("project_id") == project["id"] and p.get("status") == "pending_review" for p in self.store.all("proposals"))
         drafting = any(j["project_id"] == project["id"] and j.get("kind") == "draft" and j["status"] in ("queued", "running") for j in self.store.all("jobs"))
-        if supported and current.get("auto_draft_platforms") and not pending and not drafting and self.assistant.connected() and not current.get("profile"):
+        if supported and current.get("auto_draft_platforms") and not pending and not drafting and self.assistant.connected() and not current.get("profile") and not current.get('autonomous_recipe'):
             targets = sorted(set(current["targets"]) | supported)
             try:
                 self.queue_draft(project["id"], "A new native OS release download was detected. Add packaging for the requested platforms using real release files. Keep existing platforms; do not invent assets. This draft must be reviewed before use.", targets=targets)
@@ -950,6 +1023,13 @@ class Engine:
 
     def build(self, project_id, targets=None, capture_id=None, publish=False):
         project = self.store.get("projects", project_id)
+        if project.get('autonomous_recipe'):
+            options = {'replay': True, 'publish': publish}
+            if targets is not None:
+                options['targets'] = targets
+            if capture_id is not None:
+                options['capture_id'] = capture_id
+            return self.automation.queue(project_id, options)
         if project["recipe"]["mode"] == "capture":
             raise Invalid("This recipe preserves source only. Configure an assembly or Docker recipe first.")
         chosen = project["targets"] if targets is None else targets
@@ -1386,7 +1466,8 @@ class Engine:
             raise Invalid("Check upstream first, so Portkeeper has a release to read")
         capture = self.store.get("captures", project["capture_id"])
         capture = copy.deepcopy(capture)
-        release = self.github.release_tag(project["repo"], capture["version"])
+        release = (self.github.snapshot(project['repo'], capture['commit']) if capture.get('upstream_kind') == 'source_snapshot'
+                   else self.github.release_tag(project["repo"], capture["version"]))
         if preserve_evidence and release.get('commit') != capture['commit']:
             raise Invalid('The release now points to different source; check upstream before investigating')
         assets = [a for a in release.get("assets", []) if isinstance(a.get("name"), str)]

@@ -72,6 +72,7 @@ Credentials stay in server-side files with mode `0600`; they are not returned to
 
 ## What is included
 
+- [Automatic port setup](docs/AUTOMATION.md): a separate offline script worker, provider-neutral model loop, preserved dependencies, editable recipes and model-free clean replay. Requires a dedicated rootless broker; the ordinary Unraid image alone does not enable arbitrary model-authored builds.
 - Public GitHub stable-release monitoring, source/release archival, staged jobs, logs, retries, and checksums.
 - Packaging definitions with a fixed operation vocabulary, headless extraction tools (Ship-style `.o2r` generation, OpenGOAL, PS4 PKG), explicit compatibility rules for new releases, and per-release status: preserved, needs review, packaged, in RomM.
 - A cached GitHub project catalog with verification scopes and definition updates.

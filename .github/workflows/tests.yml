@@ -13,6 +13,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  workers:
+    name: Real rootless script workers (synthetic inputs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - name: Delegate resource controllers to the ephemeral runner account
+        run: |
+          sudo mkdir -p /etc/systemd/system/user@.service.d
+          printf '[Service]\nDelegate=cpu cpuset io memory pids\n' | sudo tee /etc/systemd/system/user@.service.d/portkeeper-delegate.conf >/dev/null
+          sudo systemctl daemon-reload
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl start "user@$(id -u).service"
+          printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$(id -u)" "$(id -u)" >> "$GITHUB_ENV"
+      - uses: docker/setup-docker-action@e43656e248c0bd0647d3f5c195d116aacf6fcaf4 # v4
+        with:
+          rootless: true
+          daemon-config: '{"exec-opts": ["native.cgroupdriver=systemd"]}'
+      - name: Build the public worker environment
+        run: docker build -f Dockerfile.worker --tag portkeeper-worker:checks .
+      - name: Check actual isolation, compilation, read-only inputs, replay and cancellation
+        run: |
+          curl --fail --location --retry 2 --max-time 120 --output "$RUNNER_TEMP/openlara-win.zip" \
+            https://github.com/XProger/OpenLara/releases/download/latest/OpenLara_win.zip
+          printf '%s  %s\n' d24cbf90ee4ef94414c64808d3aa13198079faf72d9ea3cae393675284929ad1 "$RUNNER_TEMP/openlara-win.zip" | sha256sum --check
+          PORTKEEPER_TEST_WORKER_IMAGE=$(docker image inspect --format '{{.Id}}' portkeeper-worker:checks)
+          PORTKEEPER_TEST_OPENLARA_ZIP="$RUNNER_TEMP/openlara-win.zip"
+          export PORTKEEPER_TEST_OPENLARA_ZIP
+          export PORTKEEPER_TEST_WORKER_IMAGE PORTKEEPER_TEST_ROOTLESS=1
+          python -W error -m unittest discover -s tests -p test_real_workers.py -v
+
   ps4_extraction:
     name: Real PS4 extraction (synthetic files)
     runs-on: ubuntu-latest

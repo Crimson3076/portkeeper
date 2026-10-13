@@ -1,5 +1,6 @@
 # Application state, credentials, private caches, and owned game inputs.
 .data/
+.worker/
 data/
 secrets/
 cache/

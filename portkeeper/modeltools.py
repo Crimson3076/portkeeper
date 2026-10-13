@@ -161,8 +161,14 @@ class ModelTools:
             result["release"] = {"version": capture["version"], "commit": capture["commit"], "complete": capture.get("complete", True),
                                  "assets": [{"name": a["name"], "size": a.get("size")} for a in capture.get("assets", [])]}
         builds = [j for j in self.store.all("jobs") if j["project_id"] == game_id and j.get("kind") != "draft"][:4]
+        if builds and builds[0].get('kind') == 'automation' and result.get('last_error'):
+            result['last_error'] = 'Automatic setup needs attention; private diagnostics are available only in the local app.'
         result["recent_builds"] = [{"target": j.get("target"), "status": j.get("status"), "error": j.get("error"),
                                     "log_tail": [line[:400] for line in (j.get("logs") or [])[-15:]]} for j in builds]
+        for job, view in zip(builds, result['recent_builds']):
+            if job.get('kind') == 'automation':
+                view['error'] = 'Inspect the local automation record' if job.get('error') else None
+                view['log_tail'] = []
         proposal = next((p for p in self.store.all("proposals") if p["project_id"] == game_id and p.get("kind") == "definition" and p.get("status") == "pending_review"), None)
         if proposal:
             result["pending_draft"] = {"source": proposal["source"], "created_at": proposal["created_at"], "definition": proposal["definition"],

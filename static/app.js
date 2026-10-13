@@ -34,6 +34,9 @@ const gameFileChoices = new Map(), gameFileChoiceLoading = new Set(), draftGameF
 const draftCorrectionLimits = new Map();
 const modelResponses = new Map(), modelResponsesLoading = new Set();
 const investigationLimits = new Map(), investigationInputs = new Map();
+const automaticSetupDrafts = new Map(), scriptRecipeDrafts = new Map(), automaticRecords = new Map();
+const automaticInputChoices = new Map(), automaticLogs = new Map();
+let automaticPolicyDraft = null;
 const projectDisclosures = new Map();
 const platformDetections = new Map();
 const platformSelections = new Map();
@@ -309,7 +312,7 @@ function gameAvailability(project) {
 }
 function projectJobs(id) { return newestFirst(state.jobs.filter((job) => String(job.project_id) === String(id) && !job.activity_hidden)); }
 function jobActive(job) { return activeStatuses.has(job.status) && !job.finished_at; }
-function captureCheck(job) { return job.target === "capture" && !["draft", "publish"].includes(job.kind); }
+function captureCheck(job) { return job.target === "capture" && !["draft", "publish", "automation"].includes(job.kind); }
 const checkOutcomeLabels = { unchanged: "No upstream changes", changed: "Release saved", needs_review: "Needs review", builds_queued: "Builds queued", packages_current: "Packages current" };
 function checkOutcome(job) {
   if (!captureCheck(job) || job.status !== "archived") return null;
@@ -317,7 +320,7 @@ function checkOutcome(job) {
   return Array.isArray(job.logs) && job.logs.some(log => String(log).endsWith("This source revision and selected assets are already archived")) ? "unchanged" : null;
 }
 function projectActiveJob(project) { const jobs = projectJobs(project.id).filter(jobActive); return jobs.find((job) => job.status !== "queued") || jobs[0]; }
-function jobStage(job) { return job.status === "failed" ? "failed" : job.stage || job.status; }
+function jobStage(job) { return ["failed", "cancelled"].includes(job.status) ? job.status : job.stage || job.status; }
 function projectStatus(project) { const active = projectActiveJob(project); return active ? jobStage(active) : project.status; }
 function validationLevel(artifact) { return artifact.validation_level || artifact.validation?.level || (typeof artifact.validation === "string" ? artifact.validation : "packaged"); }
 const testResultLabels = {untested: "Not tested", starts: "Starts successfully", played: "Played successfully", failed: "Doesn’t work"};
@@ -552,6 +555,7 @@ function renderSettings() {
   const missing = state.runner?.missing || state.runner?.missing_tools || state.runner?.profile_tools_missing || state.runner?.profile_runner?.missing_tools || state.runner?.profile_runner?.missing;
   if (Array.isArray(missing) && missing.length) buildNote.append(el("p", "", `Required tools missing: ${missing.join(", ")}`));
   detail.append(buildNote, el("p", "quiet-note", "Device support is defined by each profile or recipe. The current Ship of Harkinian profile supports Linux, Steam Deck through Linux, and Windows."));
+  renderAutomaticSettings($("settings-storage"));
   renderNotificationPreference(); renderToolchain(); renderCatalog();
 }
 function renderNotificationPreference() {
@@ -638,7 +642,7 @@ function markAllRead() { return runAction("read-all", "/api/notifications/read-a
 function renderProject() {
   const project = projectById(route.projectId);
   const heading = $("project-heading"), content = $("project-content");
-  const fingerprint = JSON.stringify([route.projectId, route.tab, state.projects, state.jobs, state.artifacts, state.proposals, state.playtests, state.activity, state.assistant, state.runner, state.romm, state.settings, state.catalog?.definitions, [...rommImports], [...rommImportsLoading], [...busy], [...assistantPromptDrafts], [...retentionDrafts], [...automationDrafts], [...inputDrafts], [...gameFileChoices], [...gameFileChoiceLoading], [...draftGameFileChoices], [...modelResponses], [...modelResponsesLoading], [...inputChoiceDrafts], [...platformDetections], [...platformSelections], [...draftImports], [...draftPrompts], [...preservationCache], [...preservationLoading], selectedJobId]);
+  const fingerprint = JSON.stringify([route.projectId, route.tab, state.projects, state.jobs, state.artifacts, state.proposals, state.playtests, state.activity, state.assistant, state.runner, state.romm, state.settings, state.catalog?.definitions, state.automation, [...automaticRecords], [...rommImports], [...rommImportsLoading], [...busy], [...assistantPromptDrafts], [...retentionDrafts], [...automationDrafts], [...inputDrafts], [...gameFileChoices], [...gameFileChoiceLoading], [...draftGameFileChoices], [...modelResponses], [...modelResponsesLoading], [...inputChoiceDrafts], [...platformDetections], [...platformSelections], [...draftImports], [...draftPrompts], [...preservationCache], [...preservationLoading], selectedJobId]);
   if (fingerprint === lastProjectRender) return;
   lastProjectRender = fingerprint;
   const reading = jsonReadingState(content);
@@ -860,6 +864,7 @@ function unifiedActivity() {
   }));
 }
 function activityCategory(event) {
+  if (event.kind === "automation") return "builds";
   if (["draft", "investigation"].includes(event.kind)) return "drafts";
   if (["publish", "upload"].includes(event.kind)) return "uploads";
   if (event.kind === "test") return "tests";
@@ -907,6 +912,18 @@ function rommBadge(artifact) {
   return node;
 }
 function definitionInstructions(project) {
+  if (project.autonomous_recipe) {
+    const recipe = project.autonomous_recipe, manifest = recipe.manifest;
+    return el("section", "detail-card packaging-instructions", [el("h2", "", "Packaging instructions"),
+      el("p", "detail-note", manifest.summary),
+      el("p", "field-help", `Script recipe ${recipe.revision} · ${recipe.targets.map(t => targetLabels[t] || t).join(", ")}`),
+      el("h3", "", "Your game files"), el("p", "field-help", manifest.game_files.instructions),
+      el("h3", "", "Launch & saves"), ...Object.entries(manifest.packages).map(([target, pack]) =>
+        el("p", "field-help", `${targetLabels[target] || target}: ${pack.command} — ${pack.instructions}`)),
+      el("p", "field-help", manifest.saves), ...manifest.limitations.map(note => el("p", "review-notes", note)),
+      el("p", "quiet-note", "Package files and clean replay were checked. Native startup and gameplay are untested."),
+      button("View scripts & JSON →", "text-button", () => navigateProject(project.id, "advanced"))]);
+  }
   const definition = project.packaging, view = project.packaging_view || {};
   const section = el("section", "detail-card packaging-instructions");
   section.append(el("h2", "", "Packaging instructions"), el("p", "detail-note", definition.summary || "Generated from this game's packaging definition."));
@@ -935,6 +952,7 @@ function definitionInstructions(project) {
   return section;
 }
 function inputsSection(project) {
+  if (project.autonomous_recipe) return [el("p", "field-help", project.autonomous_recipe.manifest.game_files.instructions)];
   const definition = project.packaging, bindings = project.input_bindings || {};
   const firstRun = definition.first_run || project.packaging_view?.first_run;
   const runtime = firstRun?.mode === "asks_user" ? [el("p", "first-run-note warn", [el("strong", "", "When you play: "), firstRun.summary || firstRun.text || "Complete the launcher's setup on the device where you play."])] : [];
@@ -1013,7 +1031,7 @@ function releasesCard(project) {
   const rows = releases.slice(0, 10).map((release) => {
     const problems = release.review?.status === "needs_review" ? el("ul", "review-problems", release.review.problems.map((problem) => el("li", "", problem))) : release.review?.notes?.length ? el("p", "field-help", release.review.notes.join(" ")) : "";
     const status = el("div", "", [releaseBadge(release), release.packaged_targets.length ? el("span", "field-help", ` ${release.packaged_targets.map((t) => targetLabels[t] || t).join(", ")}`) : "", release.romm_targets.length ? el("span", "field-help", ` · in RomM: ${release.romm_targets.map((t) => targetLabels[t] || t).join(", ")}`) : ""]);
-    const canBuild = project.packaging?.runner !== "capture" && release.complete && release.status !== "needs_review";
+    const canBuild = (project.autonomous_recipe || project.packaging?.runner !== "capture") && release.complete && release.status !== "needs_review";
     return el("tr", "", [el("td", "", [el("span", "table-title", release.version || "Release"), el("span", "table-detail", `${(release.commit || "").slice(0, 12)} · ${dateLabel(release.created_at)}`)]), el("td", "", [status, problems]), el("td", "", canBuild ? button("Build…", "table-action", () => openBuild(project.id, release.capture_id)) : "")]);
   });
   card.append(table(["Release", "Status", ""], rows));
@@ -1032,7 +1050,7 @@ function automationCard(project) {
   autoPublish.addEventListener("change", () => { destination.disabled = !autoPublish.checked; });
   const remember = () => automationDrafts.set(project.id, {auto_build: autoBuild.checked, auto_publish: autoPublish.checked, auto_publish_destination: destination.value, auto_draft_platforms: autoDraft.checked});
   [autoBuild, autoPublish, destination, autoDraft].forEach(node => node.addEventListener("change", remember));
-  const capture = project.packaging?.runner === "capture" || project.recipe?.mode === "capture";
+  const capture = !project.autonomous_recipe && (project.packaging?.runner === "capture" || project.recipe?.mode === "capture");
   if (capture) { autoBuild.disabled = true; autoPublish.disabled = true; destination.disabled = true; }
   card.append(el("label", "checkbox-line", [autoBuild, "Automatically build compatible new releases"]), el("label", "checkbox-line", [autoPublish, "Automatically publish successful packages"]), destination,
     el("p", "field-help", "RomM uploads use RomM's upload API and need a token with roms.write. RomM adds the file to its library after its filesystem watcher rescans; Portkeeper confirms the new entry. A local library folder copy reaches RomM only if that folder is RomM's own platform folder."),
@@ -1137,7 +1155,7 @@ function platformEvidence(detection) {
 }
 function projectPlatformsCard(project) {
   const key = `platforms-${project.id}`, definition = project.packaging;
-  const editable = definition?.runner === "capture" || !definition;
+  const editable = Boolean(project.autonomous_recipe) || definition?.runner === "capture" || !definition;
   const allowed = editable ? ["linux", "windows", "handheld"] : definition.targets;
   const selection = platformSelections.get(project.id) || project.targets;
   const card = el("section", "detail-card", [el("h2", "", "Platforms to build"), el("p", "field-help", "Change the platforms you selected when adding this game. Detect reads the latest release and linked build documentation; it does not start a build.")]);
@@ -1155,7 +1173,7 @@ async function detectProjectPlatforms(id) {
   try {
     const project = projectById(id), result = await api(`/api/github/lookup?repo=${encodeURIComponent(project.repo)}`);
     platformDetections.set(id, result.platform_detection);
-    const allowed = !project.packaging || project.packaging.runner === "capture" ? ["linux", "windows", "handheld"] : project.packaging.targets;
+    const allowed = project.autonomous_recipe || !project.packaging || project.packaging.runner === "capture" ? ["linux", "windows", "handheld"] : project.packaging.targets;
     const suggested = result.platforms.filter(target => allowed.includes(target));
     if (suggested.length) platformSelections.set(id, suggested);
     toast("Platform evidence loaded. Review the selection and save it when ready.");
@@ -1164,7 +1182,7 @@ async function detectProjectPlatforms(id) {
 }
 async function saveProjectPlatforms(id) {
   const project = projectById(id), targets = platformSelections.get(id) || project.targets, body = {targets};
-  if (project.packaging?.runner === "capture") body.packaging = {...project.packaging, targets: [...new Set([...project.packaging.targets, ...targets])]};
+  if (project.packaging?.runner === "capture" && !project.autonomous_recipe) body.packaging = {...project.packaging, targets: [...new Set([...project.packaging.targets, ...targets])]};
   const key = `platforms-${id}`; if (busy.has(key)) return; busy.add(key); render();
   try { await api(`/api/projects/${encodeURIComponent(id)}`, {method:"PATCH", body}); platformSelections.delete(id); toast("Platforms saved. Draft again if you need packaging steps for a newly selected platform."); await refresh(); }
   catch(error) { toast(error.message, true); }
@@ -1189,8 +1207,9 @@ async function maintenance(action, projectId = null, jobId = null) {
 
 function renderAdvanced(project, content, openJobs) {
   const stack = el("div", "advanced-stack");
+  if (!project.profile && !project.demo) stack.append(automaticSetupCard(project));
   const preparation = ps4PreparationCard(project); if (preparation) stack.prepend(preparation);
-  const configuration = el("section", "detail-card", [el("h2", "", project.packaging ? "Your build instructions" : "Saved configuration & automation"), el("p", "detail-note", project.packaging ? "The readable instructions above are generated from this definition. Editing it creates a new definition revision, so new packages and their tests are never confused with older ones." + (project.profile ? " The reviewed profile's build commands stay fixed." : "") : project.profile ? "This game uses fixed, reviewed build instructions for its supported release. Automation settings are editable; changing trusted build execution requires a profile update. New unsupported releases are preserved for review." : "A custom recipe controls required inputs, outputs, and the build runner.")]);
+  const configuration = el("section", "detail-card", [el("h2", "", project.autonomous_recipe ? "Previous fixed packaging instructions" : project.packaging ? "Your build instructions" : "Saved configuration & automation"), el("p", "detail-note", project.autonomous_recipe ? "The active script recipe is shown above. Saving changes to these fixed instructions switches back to the fixed runner and keeps the script recipe in history." : project.packaging ? "The readable instructions above are generated from this definition. Editing it creates a new definition revision, so new packages and their tests are never confused with older ones." + (project.profile ? " The reviewed profile's build commands stay fixed." : "") : project.profile ? "This game uses fixed, reviewed build instructions for its supported release. Automation settings are editable; changing trusted build execution requires a profile update. New unsupported releases are preserved for review." : "A custom recipe controls required inputs, outputs, and the build runner.")]);
   if (!project.packaging) configuration.append(el("div", "detail-facts", [meta("Packaging method", project.recipe?.mode || "capture"), meta("Automatic build", project.auto_build ? "Enabled" : "Disabled"), meta("Automatic local library copy", project.auto_publish ? "Enabled" : "Disabled"), meta("Polling interval", `${project.poll_minutes || 60} minutes`)]));
   configuration.append(externalLink("Configuration reference ↗", "https://github.com/Crimson3076/portkeeper/blob/main/docs/PACKAGING.md"));
   configuration.append(button(project.packaging ? "Edit packaging definition" : "Edit packaging instructions", "button secondary small", () => openRecipe(project.id)));
@@ -1741,7 +1760,7 @@ function assistantSettings() { return state.assistant || {}; }
 function pendingProposal(project) { return (state.proposals || []).find((proposal) => proposal.kind === "definition" && String(proposal.project_id) === String(project.id)); }
 async function openAddGame() {
   addGame = { step: "pick", games: [], loading: true, pick: null, files: null, choices: {}, targets: [], keep: false, publish: false, autoPublish: false, busy: false, rommConnected: rommReady(),
-    custom: { repo: "", lookup: null, name: "", targets: [], method: assistantSettings().configured ? "assistant" : "handoff" } };
+    custom: { repo: "", lookup: null, name: "", targets: [], method: automaticAvailable() ? "automatic" : assistantSettings().configured ? "assistant" : "handoff" } };
   $("add-game-error").textContent = ""; renderAddGame(); $("add-game-dialog").showModal();
   try { const result = await api("/api/catalog/games"); const groups = new Map();
     (result.games || []).forEach(game => { const key = game.game || game.name; if (!groups.has(key)) groups.set(key, []); groups.get(key).push(game); });
@@ -1912,6 +1931,7 @@ function renderCustomGame(content, actions) {
   content.append(details);
   const settings = assistantSettings();
   const methods = [
+    ...(automaticAvailable() ? [["automatic", "Set up automatically", "The worker investigates, prepares owned data, builds and verifies a reusable script recipe."]] : []),
     ...(settings.configured ? [["assistant", `Draft with ${settings.drafting_model}`, "The model proposes packaging steps for review. Optional test builds check the draft in a temporary workspace; saving it and publishing packages require approval."]] : []),
     ["handoff", "Draft with my own chat or agent", "Portkeeper prepares a prompt or a folder for Claude, ChatGPT or another assistant you use. You paste the answer back. No API key needed."],
     ["manual", "Write the packaging steps myself", "Opens the packaging definition editor."],
@@ -1945,11 +1965,11 @@ async function submitCustomGame() {
   try {
     const result = await api("/api/projects", { method: "POST", body: { name: custom.name.trim(), repo: custom.lookup.repository, targets: custom.targets, poll_minutes: 60, auto_build: false, auto_publish: false, recipe: captureRecipe } });
     const project = result.project || result;
-    await api(`/api/projects/${encodeURIComponent(project.id)}/check`, { method: "POST", body: { draft: custom.method === "assistant" } });
+    await api(`/api/projects/${encodeURIComponent(project.id)}/check`, { method: "POST", body: { draft: custom.method === "assistant", automate: custom.method === "automatic" } });
     $("add-game-dialog").close(); await refresh();
     navigateProject(project.id, custom.method === "keep" ? "overview" : "advanced");
     if (custom.method === "manual") openRecipe(project.id);
-    toast({ assistant: `${project.name} added. Its release is being saved, then ${assistantSettings().drafting_model} drafts the packaging steps.`, handoff: `${project.name} added. When its release is saved, copy the prompt under Draft packaging steps.`, manual: `${project.name} added. Write its packaging steps in the editor.`, keep: `${project.name} added. Its releases are being saved.` }[custom.method]);
+    toast({ automatic: `${project.name} added. Source is being preserved, then automatic setup starts.`, assistant: `${project.name} added. Its release is being saved, then ${assistantSettings().drafting_model} drafts the packaging steps.`, handoff: `${project.name} added. When its release is saved, copy the prompt under Draft packaging steps.`, manual: `${project.name} added. Write its packaging steps in the editor.`, keep: `${project.name} added. Its releases are being saved.` }[custom.method]);
   } catch (error) { $("add-game-error").textContent = error.message; }
   finally { if (addGame) { addGame.busy = false; renderAddGame(); } }
 }
@@ -1977,7 +1997,8 @@ function nextStepCard(project) {
   else if (missingGameFiles(project).length && runner === "operations") { heading = "Choose your game files"; note = "Select the required files before building packages."; action = button("Choose game files", "button primary small", () => navigateProject(project.id, "advanced")); }
   else if (proposal) { heading = "Review the drafted packaging steps"; note = "Approve these steps before they replace your saved instructions. Optional test builds use a temporary workspace."; action = button("Review draft", "button primary small", () => navigateProject(project.id, "advanced")); }
   else if (investigation && !packages.length) { heading = investigation.plan.can_draft ? "Review the packaging plan" : "Review the investigation result"; note = investigation.plan.summary; action = button("Review investigation", "button primary small", () => navigateProject(project.id, "advanced")); }
-  else if (runner === "capture" && !project.demo) { heading = "Add packaging steps"; note = "Portkeeper keeps this game's releases, but doesn't know how to package it yet."; action = button("Investigate packaging", "button primary small", () => navigateProject(project.id, "advanced")); }
+  else if (automaticAvailable() && !project.profile && !project.demo && !packages.length) { heading = "Set up automatically"; note = "Investigate the port, prepare your owned files and test a reusable build recipe."; action = button("Set up automatically", "button primary small", () => startAutomaticSetup(project.id), !project.capture_id || busy.has(`automatic-${project.id}`)); }
+  else if (runner === "capture" && !project.demo && !project.autonomous_recipe) { heading = "Add packaging steps"; note = "Portkeeper keeps this game's releases, but doesn't know how to package it yet."; action = button("Investigate packaging", "button primary small", () => navigateProject(project.id, "advanced")); }
   else if (!packages.length && !project.demo) { heading = "Build packages"; note = "Check the latest release and build your selected platforms. Packages stay here; uploading is a separate action unless automatic publishing is enabled."; action = button(working ? "Starting…" : "Build packages", "button primary small", () => setupProject(project.id), working); }
   else if (rommReady() && !project.demo && inRomm.length < packages.length) { heading = "Send to RomM"; note = "These packages are built but aren't in RomM yet."; action = button("Send to RomM", "button primary small", () => packages.filter((artifact) => !inRomm.includes(artifact)).forEach((artifact) => publishToRomM(artifact.id))); }
   else if (untested.length) { heading = "Try it and record how it ran"; note = "A result helps you and others know this exact download works."; action = button("Record test result", "button primary small", () => openReview(project, untested[0], null)); }
@@ -1986,6 +2007,146 @@ function nextStepCard(project) {
   if (note) card.append(el("p", "field-help", note));
   if (action) card.append(el("div", "inline-actions", action));
   return card;
+}
+
+function automaticAvailable() {
+  const config = state.automation || {};
+  return Boolean(config.policy?.enabled && config.worker?.ready &&
+    (assistantSettings().configured && config.policy.eligible_providers?.includes(assistantSettings().provider)));
+}
+function renderAutomaticSettings(parent) {
+  const config = state.automation || {}, saved = config.policy || {}, worker = config.worker || {};
+  let card = $("automatic-settings");
+  if (!card) { card = el("section", "settings-card"); card.id = "automatic-settings"; parent.append(card); }
+  // Keep controls while other jobs update; changing the connection rebuilds them.
+  const fingerprint = JSON.stringify([config, assistantSettings().provider, busy.has("automatic-policy")]);
+  if (card.dataset.fingerprint === fingerprint) return;
+  card.dataset.fingerprint = fingerprint;
+  const draft = automaticPolicyDraft || saved;
+  const change = (key, value) => { automaticPolicyDraft = {...saved, ...(automaticPolicyDraft || {}), [key]: value}; };
+  card.replaceChildren(el("h3", "", "Automatic port setup"),
+    el("p", "field-help", "Runs preparation and build scripts in a separate offline worker. Successful recipes replay without a model."),
+    el("p", worker.ready ? "field-help" : "review-notes", worker.ready ? `Worker ready · ${worker.backend} · ${Math.round((worker.limits?.workspace_bytes || 0) / 1024**3)} GiB temporary workspace` : worker.error || "Worker not connected."),
+    externalLink("Worker installation & privacy settings ↗", "https://github.com/Crimson3076/portkeeper/blob/main/docs/AUTOMATION.md"));
+  const enabled = input("automatic-enabled", "checkbox"); enabled.checked = Boolean(draft.enabled);
+  enabled.addEventListener("change", () => change("enabled", enabled.checked));
+  card.append(el("label", "check-label", [enabled, "Enable automatic setup"]));
+  const privacy = el("select"); privacy.id = "automatic-privacy";
+  [["strict", "Keep private build results local"], ["metadata", "Allow bounded private exit-status feedback"]].forEach(([value, label]) => { const option = el("option", "", label); option.value = value; privacy.append(option); });
+  privacy.value = draft.privacy || "strict"; privacy.addEventListener("change", () => change("privacy", privacy.value));
+  field(card, "Private preparation", privacy);
+  card.append(el("p", "field-help", "Strict: cloud models prepare scripts, then private work runs without further cloud feedback. Status feedback allows cloud repair attempts, but even status can carry private information; raw private files and logs stay local."));
+  const local = input("automatic-local", "checkbox"); local.checked = Boolean(draft.private_model_local);
+  local.addEventListener("change", () => change("private_model_local", local.checked));
+  card.append(el("label", "check-label", [local, "My Ollama / compatible endpoint runs locally without forwarding or telemetry; allow private debugging"]));
+  const names = {ollama: "Ollama", openai: "Compatible API", anthropic: "Claude API", codex: "Codex account", claude_code: "Claude Code account", gemini: "Gemini account"};
+  card.append(el("h4", "", "Providers allowed for unattended setup"), el("p", "field-help", "Enable providers after checking their terms and your intended deployment. Existing drafting connections are unchanged."));
+  Object.entries(names).forEach(([provider, label]) => {
+    const check = input(`automatic-provider-${provider}`, "checkbox"); check.checked = (draft.eligible_providers || []).includes(provider);
+    check.addEventListener("change", () => { const selected = new Set((automaticPolicyDraft || draft).eligible_providers || []); if (check.checked) selected.add(provider); else selected.delete(provider); change("eligible_providers", [...selected]); });
+    card.append(el("label", "check-label", [check, label]));
+  });
+  const calls = input("automatic-call-limit", "number"); calls.min = "1"; calls.max = "20"; calls.value = String(draft.max_calls || 20);
+  calls.addEventListener("input", () => change("max_calls", Number(calls.value))); field(card, "Maximum requests per setup", calls);
+  card.append(el("p", "field-help", `Up to ${draft.daily_calls || 100} requests in a rolling day; ${Math.round((draft.worker_seconds || 7200) / 60)} worker minutes per job. One job at a time. Timeouts and retries count toward the limits.`),
+    button("Save automatic setup settings", "button secondary small", async () => {
+      const result = await runAction("automatic-policy", "/api/automation/config", automaticPolicyDraft || draft, "Automatic setup settings saved.");
+      if (result) { automaticPolicyDraft = null; await refresh(); }
+    }, busy.has("automatic-policy")));
+}
+function automaticSetupCard(project) {
+  const id = project.id, recipe = project.autonomous_recipe, config = state.automation || {};
+  const jobs = projectJobs(id).filter(job => job.kind === "automation" && !job.activity_hidden), job = jobs[0];
+  const card = el("section", "detail-card automatic-setup", [el("h2", "", "Automatic setup"),
+    el("p", "detail-note", "Investigate this port, prepare owned data, build and save reusable scripts. Every generated program stays visible below; existing downloads are retained.")]);
+  if (!config.worker?.ready || !config.policy?.enabled) card.append(el("p", "field-help", config.worker?.error || "Enable automatic setup in Advanced settings."), button("Worker & automation settings →", "text-button", () => navigateSettings("storage")));
+  const draft = automaticSetupDrafts.get(id) || {instruction: "", inputs: project.autonomous_inputs || []};
+  const notes = el("textarea", "assistant-prompt"); notes.id = `automatic-notes-${id}`; notes.rows = 2; notes.value = draft.instruction;
+  notes.placeholder = "Optional: data preparation, target requirements or documented input version";
+  notes.addEventListener("input", () => automaticSetupDrafts.set(id, {...draft, ...(automaticSetupDrafts.get(id) || {}), instruction: notes.value}));
+  field(card, "Setup notes", notes);
+  const prepare = input(`automatic-prepare-${id}`, "checkbox"); prepare.checked = draft.prepare_game_files ?? true;
+  prepare.addEventListener("change", () => automaticSetupDrafts.set(id, {...draft, ...(automaticSetupDrafts.get(id) || {}), prepare_game_files: prepare.checked}));
+  card.append(el("label", "check-label", [prepare, "Prepare and include required owned game data"]));
+  const selection = disclosure(`automatic-inputs:${id}`, "diagnostics-list", el("summary", "table-action", "Choose owned files or folders (optional; automatic matching also works)"));
+  let selectedInputs;
+  try { selectedInputs = typeof draft.inputs === "string" ? JSON.parse(draft.inputs) : draft.inputs; if (!Array.isArray(selectedInputs)) selectedInputs = []; }
+  catch (_) { selectedInputs = []; }
+  const selectedList = el("div", "instruction-sections");
+  const setInputs = value => { automaticSetupDrafts.set(id, {...draft, ...(automaticSetupDrafts.get(id) || {}), inputs: value}); lastRender = null; lastProjectRender = null; render(); };
+  selectedInputs.forEach(item => selectedList.append(el("div", "inline-actions", [el("span", "field-help", `${item.role}: ${item.path}`), button("Remove selection", "text-button", () => setInputs(selectedInputs.filter(input => input.role !== item.role)))])));
+  selection.append(selectedList, button("Browse my game collection", "button secondary small", () => browseAutomaticInputs(id, "")));
+  const choices = automaticInputChoices.get(id);
+  if (choices) {
+    const role = el("select"); role.id = `automatic-input-role-${id}`;
+    [...new Set([job?.input_request?.role || "base_game", "base_game", "update"])].forEach(value => { const option = el("option", "", value); option.value = value; role.append(option); });
+    field(selection, "Use the selection as", role);
+    const pick = item => setInputs([...selectedInputs.filter(input => input.role !== role.value), {role: role.value, kind: item.kind, path: item.path}]);
+    selection.append(el("p", "field-help", choices.directory || "Game collection root"));
+    if (choices.parent !== null) selection.append(button("Up one folder", "text-button", () => browseAutomaticInputs(id, choices.parent)));
+    if (choices.directory) selection.append(button("Use this folder", "button secondary small", () => pick({kind: "directory", path: choices.directory})));
+    choices.items.forEach(item => selection.append(el("div", "inline-actions", [el("span", "field-help", item.name),
+      button(item.kind === "directory" ? "Open folder" : "Use this file", "text-button", () => item.kind === "directory" ? browseAutomaticInputs(id, item.path) : pick(item))])));
+    if (choices.truncated) selection.append(el("p", "field-help", "This directory is large; showing the first 200 entries. Navigate into a folder or use a relative path in the JSON editor."));
+  }
+  const inputs = el("textarea", "assistant-prompt"); inputs.id = `automatic-inputs-${id}`; inputs.rows = 5;
+  inputs.value = typeof draft.inputs === "string" ? draft.inputs : JSON.stringify(draft.inputs, null, 2);
+  inputs.addEventListener("input", () => automaticSetupDrafts.set(id, {...draft, ...(automaticSetupDrafts.get(id) || {}), inputs: inputs.value}));
+  field(selection, "Selected inputs (JSON)", inputs);
+  selection.append(el("p", "field-help", `Paths are relative to ${state.settings?.input_root || "/inputs"}. Example: [{"role":"base_game","kind":"file","path":"ps4/base.pkg"},{"role":"update","kind":"file","path":"ps4/update.pkg"}]. Use kind "directory" for an extracted folder. These paths stay local.`));
+  card.append(selection);
+  if (job) {
+    card.append(el("p", "field-help", job.error || (job.logs || []).slice(-1)[0] || job.status));
+    if (jobActive(job)) card.append(button("Cancel setup", "button secondary small", () => runAction(`cancel-automatic-${job.id}`, `/api/jobs/${job.id}/cancel-automation`, {}, "Cancellation requested.")));
+    const record = automaticRecords.get(job.id);
+    const link = el("a", "text-button", "Download local setup record"); link.href = `/api/jobs/${job.id}/automation-record`; link.setAttribute("download", "");
+    card.append(el("div", "inline-actions", [button("View prompts & responses", "button secondary small", async () => {
+      try { automaticRecords.set(job.id, await api(`/api/jobs/${job.id}/automation-record`)); lastRender = null; render(); }
+      catch (error) { toast(error.message, true); }
+    }), link]));
+    if (record) {
+      card.append(el("p", "field-help", `${record.model_calls} model requests · ${Math.ceil(record.worker_seconds / 60)} worker minutes`));
+      (record.attempts || []).forEach((attempt, index) => card.append(disclosure(`automatic-reply:${job.id}:${index}`, "diagnostics-list", [el("summary", "table-action", `Request ${index + 1} · ${attempt.result || "saved"}`), jsonViewer(`automatic-reply-json:${job.id}:${index}`, attempt)])));
+      (record.worker_runs || []).forEach((run, index) => {
+        const detail = disclosure(`automatic-log:${job.id}:${run.operation_id}`, "diagnostics-list", el("summary", "table-action", `Worker command ${index + 1} · ${run.phase} · exit ${run.exit_code}`));
+        const text = automaticLogs.get(run.operation_id);
+        if (text !== undefined) {
+          const copy = button("Copy log", "button secondary small", () => copyJson(text, copy)); const pre = el("pre", "json-preview", text); pre.dataset.jsonKey = `automatic-log:${run.operation_id}`; detail.append(copy, pre);
+        } else detail.append(button("View local log", "button secondary small", async () => {
+          try { const result = await api(`/api/jobs/${job.id}/automation-logs/${run.operation_id}`); automaticLogs.set(run.operation_id, result.log); lastRender = null; lastProjectRender = null; render(); }
+          catch (error) { toast(error.message, true); }
+        })); card.append(detail);
+      });
+    }
+  }
+  card.append(el("div", "inline-actions", [button(recipe ? "Investigate & create a new recipe" : "Set up automatically", "button primary small", () => startAutomaticSetup(id), !automaticAvailable() || Boolean(projectActiveJob(project)) || !project.capture_id),
+    ...(recipe ? [button("Replay saved recipe (no model)", "button secondary small", () => startAutomaticSetup(id, true), !config.worker?.ready || !config.policy?.enabled || Boolean(projectActiveJob(project)))] : [])]));
+  if (recipe) {
+    const scripts = disclosure(`automatic-scripts:${id}`, "diagnostics-list", el("summary", "table-action", `Saved scripts & recipe JSON · version ${recipe.revision}`));
+    recipe.steps.forEach((step, index) => { const copy = button("Copy script", "button secondary small", () => copyJson(step.script, copy)); scripts.append(el("h4", "", `${index + 1}. ${step.phase} · ${targetLabels[step.target] || step.target}`), copy, el("pre", "json-preview", step.script)); });
+    scripts.append(jsonViewer(`script-recipe:${id}`, recipe));
+    const editable = el("textarea", "assistant-prompt"); editable.id = `script-recipe-editor-${id}`; editable.rows = 15;
+    editable.value = scriptRecipeDrafts.get(id) || JSON.stringify({steps: recipe.steps, manifest: recipe.manifest}, null, 2);
+    editable.addEventListener("input", () => scriptRecipeDrafts.set(id, editable.value));
+    field(scripts, "Edit scripts & package manifest", editable);
+    scripts.append(button("Save script changes", "button secondary small", async () => {
+      try { const payload = JSON.parse(editable.value); await api(`/api/projects/${id}/script-recipe`, {method: "POST", body: payload}); scriptRecipeDrafts.delete(id); toast("Scripts saved. Replay to test the new version."); await refresh(); }
+      catch (error) { toast(error.message, true); }
+    }, Boolean(projectActiveJob(project))), el("p", "field-help", "Changes create a recipe revision. Source, downloaded files and environment remain pinned; replay checks new packages before accepting them."));
+    card.append(scripts);
+  }
+  return card;
+}
+function startAutomaticSetup(id, replay = false) {
+  const project = projectById(id), draft = automaticSetupDrafts.get(id) || {instruction: "", inputs: project.autonomous_inputs || []};
+  let inputs;
+  try { inputs = typeof draft.inputs === "string" ? JSON.parse(draft.inputs) : draft.inputs; }
+  catch (error) { toast("Selected inputs must be valid JSON.", true); return; }
+  return runAction(`automatic-${id}`, `/api/projects/${id}/automate`, {instruction: draft.instruction, inputs, replay, publish: false, prepare_game_files: draft.prepare_game_files ?? true}, replay ? "Replaying the saved recipe without a model." : "Automatic setup started. View progress under Updates.");
+}
+async function browseAutomaticInputs(id, directory) {
+  try { automaticInputChoices.set(id, await api(`/api/automation/inputs?path=${encodeURIComponent(directory)}`)); lastRender = null; lastProjectRender = null; render(); }
+  catch (error) { toast(error.message, true); }
 }
 
 // Drafting packaging steps ----------------------------------------------------------

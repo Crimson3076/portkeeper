@@ -1,0 +1,17 @@
+# A public build environment, separate from the app and all account connections.
+# The broker accepts only the immutable digest/ID produced after building/pulling.
+# Retain/export that exact image for replay rather than rebuilding this Dockerfile.
+FROM python:3.13-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       build-essential clang cmake ninja-build meson pkg-config git patch \
+       unzip xz-utils zstd bzip2 file dpkg-dev \
+       zlib1g-dev libsdl2-dev libsdl2-mixer-dev libsdl2-net-dev \
+       libgl1-mesa-dev libogg-dev libvorbis-dev libpng-dev libjpeg-dev \
+       xvfb xauth libgl1-mesa-dri libegl1 libvulkan1 mesa-vulkan-drivers \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /work
+# The broker overrides user, entrypoint, mounts and limits. No credentials,
+# Portkeeper data, game inputs or model CLI sessions are part of this image.
+CMD ["/bin/sh"]

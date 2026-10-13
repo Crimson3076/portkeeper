@@ -156,6 +156,24 @@ class Handler(BaseHTTPRequestHandler):
             elif method == "POST" and path == "/api/assistant/test":
                 self.body()
                 self.json(200, self.engine.assistant.test())
+            elif method == 'POST' and path == '/api/automation/config':
+                self.json(200, self.engine.automation.configure(self.body()))
+            elif method == 'GET' and path == '/api/automation/inputs':
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                self.json(200, self.engine.automation.input_choices(query.get('path', [''])[0]))
+            elif method == 'POST' and re.fullmatch(r'/api/projects/[a-f0-9]{32}/automate', path):
+                self.json(202, self.engine.automation.queue(path.split('/')[3], self.body()))
+            elif re.fullmatch(r'/api/projects/[a-f0-9]{32}/script-recipe', path) and method == 'GET':
+                self.json(200, self.engine.automation.export_recipe(path.split('/')[3]))
+            elif re.fullmatch(r'/api/projects/[a-f0-9]{32}/script-recipe', path) and method == 'POST':
+                self.json(200, self.engine.automation.edit_recipe(path.split('/')[3], self.body()))
+            elif re.fullmatch(r'/api/jobs/[a-f0-9]{32}/automation-record', path) and method == 'GET':
+                self.json(200, self.engine.automation.record(path.split('/')[3]))
+            elif re.fullmatch(r'/api/jobs/[a-f0-9]{32}/automation-logs/[a-f0-9]{32}', path) and method == 'GET':
+                self.json(200, self.engine.automation.worker_log(path.split('/')[3], path.split('/')[5]))
+            elif re.fullmatch(r'/api/jobs/[a-f0-9]{32}/cancel-automation', path) and method == 'POST':
+                self.body()
+                self.json(200, self.engine.automation.cancel(path.split('/')[3]))
             elif method == "GET" and path == "/api/catalog/games":
                 self.json(200, self.engine.catalog_games())
             elif re.fullmatch(r"/api/catalog/games/[a-z0-9][a-z0-9_.-]{0,63}/files", path) and method == "POST":
@@ -210,7 +228,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(200, self.engine.link_metadata(path.split("/")[3], self.body()))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/check", path) and method == "POST":
                 payload = self.body()
-                self.json(202, self.engine.check(path.split("/")[3], release_version=payload.get("version"), draft_after=payload.get("draft") is True))
+                self.json(202, self.engine.check(path.split("/")[3], release_version=payload.get("version"), draft_after=payload.get("draft") is True, automate_after=payload.get('automate') is True))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/build", path) and method == "POST":
                 payload = self.body()
                 self.json(202, self.engine.build(path.split("/")[3], payload.get("targets"), capture_id=payload.get("capture_id"),

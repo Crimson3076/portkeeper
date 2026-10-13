@@ -1,6 +1,7 @@
 .git
 .github
 .data
+.worker
 data
 secrets
 cache

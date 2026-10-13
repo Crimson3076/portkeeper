@@ -53,6 +53,8 @@ def _manage(engine, payload):
                 draft = engine.data / 'drafts' / (job['id'] + '.json')
                 if draft.is_file() and not draft.is_symlink():
                     shutil.move(str(draft), root / draft.name)
+                if job.get('kind') == 'automation':
+                    engine.automation.clear_record(job['id'], root)
                 engine.store.update('jobs', job['id'], logs=[], checkpoints=[], activity_hidden=True, draft_record_available=False)
                 result['jobs_cleared'] += 1
             if not job_id:
@@ -71,7 +73,7 @@ def _manage(engine, payload):
                     if not project_id or notice.get('project_id') == project_id:
                         engine.store.delete('notifications', notice['id'])
         elif action == 'clear_revisions':
-            engine.store.update('projects', project_id, definition_history=[])
+            engine.store.update('projects', project_id, definition_history=[], autonomous_history=[])
         elif action == 'reset_instructions':
             definition = packaging.capture_definition(project, 'Build instructions cleared by the user. Releases and existing packages are retained.')
             history = project.get('definition_history', [])
@@ -79,6 +81,8 @@ def _manage(engine, payload):
                 history = (history + [{'saved_at': now(), 'definition': project['packaging']}])[-20:]
             project.update(packaging=definition, recipe={'version': 1, 'mode': 'capture', 'payload': {'kind': 'source'}}, definition_history=history, input_bindings={}, auto_build=False, auto_publish=False, auto_draft_platforms=False, definition_source=None)
             project.pop('profile', None)
+            if project.get('autonomous_recipe'):
+                project['autonomous_history'] = (project.get('autonomous_history', []) + [project.pop('autonomous_recipe')])[-10:]
             engine.store.put('projects', project)
             for proposal in engine.store.all('proposals'):
                 if proposal.get('project_id') == project_id and proposal.get('status') == 'pending_review':

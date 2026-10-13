@@ -416,7 +416,7 @@ class RecipeAssistant:
         names = sorted({item['id'] for item in data.get('data', []) if isinstance(item, dict) and isinstance(item.get('id'), str) and _MODEL.fullmatch(item['id'])}, key=str.casefold)
         return {'models': names}
 
-    def chat(self, system, messages, config=None, timeout=900, response_schema=None):
+    def chat(self, system, messages, config=None, timeout=900, response_schema=None, max_output_tokens=None, strict_budget=False):
         """Send a conversation to the configured model and return its text reply."""
         config = config or self._config()
         provider = config['provider']
@@ -427,6 +427,8 @@ class RecipeAssistant:
             body = {'model': config['model'], 'stream': False, 'format': 'json',
                     'messages': [{'role': 'system', 'content': system}, *messages],
                     'options': {'temperature': 0.1, 'num_ctx': config.get('context_tokens', 32768)}}
+            if max_output_tokens is not None:
+                body['options']['num_predict'] = max_output_tokens
             reply = self._post(_endpoint(config['endpoint']) + '/api/chat', body, {}, timeout)
             message = reply.get('message') or {}
             text = message.get('content')
@@ -439,14 +441,14 @@ class RecipeAssistant:
                     raise Invalid('Ollama returned reasoning but no final answer. Increase Assistant context size or try another model, then retry. No draft was accepted.')
         elif provider == 'anthropic':
             model = config.get('cloud_model') or ANTHROPIC_DEFAULT_MODEL
-            body = {'model': model, 'max_tokens': 16000, 'system': system, 'messages': messages,
+            body = {'model': model, 'max_tokens': max_output_tokens or 16000, 'system': system, 'messages': messages,
                     'output_config': {'effort': 'high', 'format': {'type': 'json_schema', 'schema': {
                         'type': 'object', 'additionalProperties': False, 'required': ['explanation', 'definition_json'],
                         'properties': {'explanation': {'type': 'string'}, 'definition_json': {'type': 'string'}}}}}}
             if response_schema is not None:
                 body['output_config']['format']['schema'] = response_schema
             headers = {'x-api-key': config['api_key'], 'anthropic-version': '2023-06-01'}
-            if model in ANTHROPIC_FALLBACK_MODELS:
+            if model in ANTHROPIC_FALLBACK_MODELS and not strict_budget:
                 body['fallbacks'] = 'default'
                 headers['anthropic-beta'] = 'server-side-fallback-2026-07-01'
             reply = self._post(ANTHROPIC_URL + '/messages', body, headers, timeout)
@@ -458,11 +460,14 @@ class RecipeAssistant:
         elif provider == 'openai':
             body = {'model': config['cloud_model'], 'messages': [{'role': 'system', 'content': system}, *messages],
                     'response_format': {'type': 'json_object'}}
+            if max_output_tokens is not None:
+                parameter = 'max_completion_tokens' if urllib.parse.urlsplit(config['base_url']).hostname == 'api.openai.com' else 'max_tokens'
+                body[parameter] = max_output_tokens
             headers = {'Authorization': 'Bearer ' + config['api_key']} if config.get('api_key') else {}
             try:
                 reply = self._post(config['base_url'] + '/chat/completions', body, headers, timeout)
             except Invalid as error:
-                if 'HTTP 400' not in str(error):
+                if 'HTTP 400' not in str(error) or strict_budget:
                     raise
                 body.pop('response_format')  # some compatible servers do not support JSON mode
                 reply = self._post(config['base_url'] + '/chat/completions', body, headers, timeout)

@@ -30,6 +30,22 @@ class AllowedHostTests(unittest.TestCase):
 
 
 class HttpIntegrationTests(unittest.TestCase):
+    def test_automation_routes_preserve_origin_and_path_boundaries(self):
+        worker = self.engine.automation
+        with patch.object(worker, 'configure', return_value={'policy': {'enabled': True}}) as configure:
+            self.assertEqual(self.request('POST', '/api/automation/config', {'enabled': True})[0], 200)
+            self.assertEqual(self.request('POST', '/api/automation/config', {'enabled': True}, {'Origin': 'https://other.test'})[0], 400)
+            self.assertEqual(configure.call_count, 1)
+        (self.engine.input_root / 'owned.bin').write_bytes(b'synthetic')
+        status, _, body = self.request('GET', '/api/automation/inputs')
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)['items'][0]['path'], 'owned.bin')
+        self.assertEqual(self.request('GET', '/api/automation/inputs?path=../secrets')[0], 400)
+        job = 'a' * 32
+        with patch.object(worker, 'cancel', return_value={'cancel_requested': True}) as cancel:
+            self.assertEqual(self.request('POST', f'/api/jobs/{job}/cancel-automation', {})[0], 200)
+            cancel.assert_called_once_with(job)
+
     def test_native_agent_sign_in_routes_keep_mutation_origin_checks(self):
         agent = self.engine.assistant.agents
         safe = {'provider': 'codex', 'status': 'waiting', 'url': 'https://auth.openai.com/codex/device', 'code': 'EXAMPLE'}

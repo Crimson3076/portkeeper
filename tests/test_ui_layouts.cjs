@@ -63,6 +63,11 @@ async function create(saved, storageBlocked=false, source=fixture) {
     else if(endpoint.startsWith('/api/catalog/definitions/'))payload=source.catalog_definition||{};
     else if(endpoint.endsWith('/draft-prompt')){requests.push({endpoint,body:JSON.parse(options.body)});payload={prompt:'Fixture prompt'};}
     else if(endpoint.endsWith('/draft-record'))payload=source.draft_record||{attempts:[]};
+    else if(endpoint.endsWith('/automation-record'))payload=source.automation_record||{attempts:[],worker_runs:[],model_calls:0,worker_seconds:0};
+    else if(endpoint.startsWith('/api/automation/inputs'))payload={directory:'',parent:null,items:[{name:'owned.bin',path:'owned.bin',kind:'file'}],truncated:false};
+    else if(endpoint.endsWith('/automate')||endpoint.endsWith('/script-recipe')||endpoint==='/api/automation/config'){
+      const body=JSON.parse(options.body);requests.push({endpoint,body});payload={job:{id:id(501)}};
+    }
     else if(endpoint.endsWith('/draft') && options.method==='POST'){requests.push({endpoint,body:JSON.parse(options.body)});payload={job:{}};}
     else if(endpoint.endsWith('/investigate') && options.method==='POST'){requests.push({endpoint,body:JSON.parse(options.body)});payload={job:{}};}
     else if(options.method==='PATCH'){const body=JSON.parse(options.body);requests.push({endpoint,body});const game=source.projects.find(p=>endpoint.includes(p.id));Object.assign(game,body);payload=game;}
@@ -417,6 +422,28 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   d.getElementById('draft-corrections-'+id(2)).click();
   [...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Draft with Claude default').click();await tick();await tick();assert.equal(requests.at(-1).body.max_calls,3);
   d.getElementById('project-activity-tab').click();await tick();assert(d.querySelector('.job-panel .model-responses'),'Model responses are accessible beside the job logs too');dom.window.close();
+  const automatic=JSON.parse(JSON.stringify(fixture));
+  automatic.projects=[{id:id(22),name:'Unknown engine',repo:'example/unknown',targets:['linux'],recipe:{mode:'capture'},capture_id:id(77),status:'archived',metadata:{}}];automatic.artifacts=[];automatic.romm={};
+  automatic.assistant={provider:'openai',configured:true,drafting_model:'Fixture model'};
+  automatic.automation={policy:{enabled:true,privacy:'strict',eligible_providers:['openai'],max_calls:20},worker:{ready:true,backend:'fixture',limits:{workspace_bytes:2147483648}}};
+  dom=await create(null,false,automatic);w=dom.window;d=w.document;
+  const autoButton=[...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Set up automatically');assert(autoButton,'Automatic setup is offered when the broker/provider are enabled');
+  autoButton.click();await tick();await tick();assert(requests.at(-1).endpoint.endsWith('/automate'));assert.equal(requests.at(-1).body.prepare_game_files,true);assert.equal(requests.at(-1).body.publish,false);
+  d.getElementById('project-advanced-tab').click();await tick();
+  [...d.querySelectorAll('.automatic-setup button')].find(n=>n.textContent==='Browse my game collection').click();await tick();await tick();
+  [...d.querySelectorAll('.automatic-setup button')].find(n=>n.textContent==='Use this file').click();await tick();
+  assert(JSON.parse(d.getElementById('automatic-inputs-'+id(22)).value).some(i=>i.path==='owned.bin'),'File browsing fills the editable selection without requiring typed JSON');
+  const scripts=[{script:'mkdir -p out/linux',phase:'public',target:'linux',timeout:600}];
+  const autoManifest={summary:'Generated fixture',game_files:{required:true,included:true,instructions:'Your owned data is included.'},packages:{linux:{command:'game',instructions:'Run game'}},saves:'Unknown',limitations:['Gameplay untested']};
+  automatic.projects[0].autonomous_recipe={revision:1,targets:['linux'],steps:scripts,manifest:autoManifest};
+  w.pollRefresh();await tick();await tick();
+  const scriptEditor=d.getElementById('script-recipe-editor-'+id(22));assert(scriptEditor);
+  scriptEditor.value=JSON.stringify({steps:scripts,manifest:{...autoManifest,summary:'My edited recipe'}},null,2);scriptEditor.dispatchEvent(new w.Event('input'));scriptEditor.focus();scriptEditor.setSelectionRange(5,20);
+  automatic.jobs=[{id:id(23),project_id:id(22),kind:'automation',target:'capture',status:'running',stage:'building',logs:['Working'],created_at:'2026-10-13T00:00:00Z'}];
+  w.pollRefresh();await tick();await tick();
+  assert.equal(d.activeElement.id,'script-recipe-editor-'+id(22));assert.equal(d.activeElement.selectionStart,5);assert.equal(d.activeElement.selectionEnd,20);assert(d.activeElement.value.includes('My edited recipe'));
+  automatic.jobs[0].status='ready';automatic.jobs[0].stage='complete';w.pollRefresh();await tick();await tick();
+  [...d.querySelectorAll('.automatic-setup button')].find(n=>n.textContent==='Save script changes').click();await tick();await tick();assert(requests.at(-1).endpoint.endsWith('/script-recipe'));assert.equal(requests.at(-1).body.manifest.summary,'My edited recipe');dom.window.close();
   dom=await create(null,false,{...fixture,projects:[],artifacts:[]});assert(dom.window.document.getElementById('project-grid').textContent.includes('first game'));dom.window.close();
   console.log('UI layouts passed: add a game, next step, drafting settings, default workspace, saved preferences, collection/list switching, grouped platforms, RomM imports, correct counts, game selection, deep links, filters, empty state and blocked storage.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
