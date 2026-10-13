@@ -47,7 +47,15 @@ jobs:
           PORTKEEPER_TEST_OPENLARA_ZIP="$RUNNER_TEMP/openlara-win.zip"
           export PORTKEEPER_TEST_OPENLARA_ZIP
           export PORTKEEPER_TEST_WORKER_IMAGE PORTKEEPER_TEST_ROOTLESS=1
-          python -W error -m unittest discover -s tests -p test_real_workers.py -v
+          set +e
+          python -W error -m unittest discover -s tests -p test_real_workers.py -v > "$RUNNER_TEMP/worker-tests.log" 2>&1
+          worker_status=$?
+          set -e
+          cat "$RUNNER_TEMP/worker-tests.log"
+          if [ "$worker_status" -ne 0 ]; then
+            python -c 'import os,pathlib; text=pathlib.Path(os.environ["RUNNER_TEMP"],"worker-tests.log").read_text()[-12000:]; print("::error::"+text.replace("%","%25").replace("\r","%0D").replace("\n","%0A"))'
+          fi
+          exit "$worker_status"
 
   ps4_extraction:
     name: Real PS4 extraction (synthetic files)
