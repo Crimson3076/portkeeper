@@ -118,6 +118,149 @@ class AutonomousTests(unittest.TestCase):
         return [reply('run', {'script': 'build', 'phase': 'public'}),
                 reply('add_private_step', {'script': 'stage', 'target': 'linux'}), reply('finish', manifest())]
 
+    def wait_status(self, job, status):
+        for _ in range(300):
+            current = self.engine.store.get('jobs', job)
+            if current['status'] == status:
+                return current
+            if current['status'] in ('failed', 'cancelled') and status != current['status']:
+                self.fail(current.get('error', current['status']))
+            threading.Event().wait(.01)
+        self.fail(f'Job did not reach {status}')
+
+    def pause_for_input(self):
+        (self.engine.input_root / 'another.bin').write_bytes(b'another owned input')
+        responses = [reply('run', {'script': 'build'}),
+                     reply('find_input', {'role': 'base_game', 'kind': 'file', 'name_glob': '*.bin'})]
+        with patch.object(self.engine.assistant, 'chat', side_effect=responses) as chat:
+            result = self.engine.automation.queue(self.project['id'], {'inputs': []})
+            job = self.wait_status(result['job']['id'], 'waiting_user')
+            self.assertEqual(chat.call_count, 2)
+            return job, chat
+
+    def input_answer(self, job, path='private.bin'):
+        return {'request_id': job['user_request']['id'],
+                'input': {'role': 'base_game', 'kind': 'file', 'path': path}}
+
+    def test_ambiguous_input_pauses_then_continues_same_work_and_budget(self):
+        job, first_chat = self.pause_for_input()
+        record = self.engine.automation.record(job['id'])
+        self.assertEqual(len(job['user_request']['candidates']), 2)
+        self.assertEqual(len(record['steps']), 1)
+        self.assertIn(self.project['id'], self.engine.busy)
+        self.assertFalse(any(op == 'cancel' for op, _ in self.broker.calls))
+        original_deadline = record['deadline']
+        self.engine.store.update('automation', job['id'], paused_epoch=record['paused_epoch'] - 60)
+        with patch.object(self.engine.assistant, 'chat', side_effect=self.strict_responses()[1:]) as chat:
+            result = self.engine.automation.resume(job['id'], self.input_answer(job))
+            self.assertEqual(result['job']['id'], job['id'])
+            self.wait_status(job['id'], 'ready')
+            self.assertEqual(chat.call_count, 2)
+            self.assertNotIn('private.bin', str(chat.call_args_list))
+            self.assertNotIn('another.bin', str(chat.call_args_list))
+        record = self.engine.automation.record(job['id'])
+        self.assertEqual(record['model_calls'], 4)
+        self.assertEqual(len(self.engine.get_setting('automation_usage')), 4)
+        self.assertGreaterEqual(record['deadline'], original_deadline + 60)
+        self.assertEqual(len(self.engine.store.all('jobs')), 1)
+        public_runs = [p for op, p in self.broker.calls if op == 'run' and p['phase'] == 'public']
+        self.assertEqual(len(public_runs), 2, 'Public build runs once initially and once for clean replay')
+        with self.assertRaises(Invalid):
+            self.engine.automation.resume(job['id'], self.input_answer(job))
+
+    def test_missing_input_pauses_and_can_be_selected_after_becoming_available(self):
+        with patch.object(self.engine.assistant, 'chat', return_value=reply('find_input', {
+                'role': 'base_game', 'kind': 'file', 'name_glob': '*.gba'})) as chat:
+            job = self.engine.automation.queue(self.project['id'], {'inputs': []})['job']
+            job = self.wait_status(job['id'], 'waiting_user')
+            self.assertEqual(job['user_request']['candidates'], [])
+            self.assertEqual(chat.call_count, 1)
+        (self.engine.input_root / 'owned.gba').write_bytes(b'owned fixture')
+        with patch.object(self.engine.assistant, 'chat', side_effect=self.strict_responses()):
+            self.engine.automation.resume(job['id'], self.input_answer(job, 'owned.gba'))
+            self.wait_status(job['id'], 'ready')
+
+    def test_question_reply_preserves_context_and_survives_app_restart(self):
+        with patch.object(self.engine.assistant, 'chat', return_value=reply('ask_user', {
+                'question': 'Which runtime variant should be packaged?', 'choices': ['Standard', 'Experimental']})):
+            job = self.engine.automation.queue(self.project['id'], {'inputs': [
+                {'role': 'base_game', 'kind': 'file', 'path': 'private.bin'}]})['job']
+            job = self.wait_status(job['id'], 'waiting_user')
+        data, inputs, library = self.engine.data, self.engine.input_root, self.engine.library_root
+        self.engine.close()
+        self.connected.stop(); self.config.stop(); self.material.stop()
+        self.engine = Engine(data, inputs, library)
+        self.engine.automation = Automation(self.engine, self.broker)
+        self.connected = patch.object(self.engine.assistant, 'connected', return_value=True)
+        self.config = patch.object(self.engine.assistant, '_config', return_value={'provider': 'openai'})
+        self.material = patch.object(self.engine, '_draft_material', return_value=(self.capture, {'material': {}, 'release': {}}))
+        self.connected.start(); self.config.start(); self.material.start()
+        self.assertIn(self.project['id'], self.engine.busy)
+        with patch.object(self.engine.assistant, 'chat', side_effect=self.strict_responses()) as chat:
+            self.engine.automation.resume(job['id'], {'request_id': job['user_request']['id'], 'reply': 'Standard'})
+            self.wait_status(job['id'], 'ready')
+            self.assertIn('Standard', str(chat.call_args_list[0]))
+            self.assertEqual(self.engine.automation.record(job['id'])['model_calls'], 4)
+
+    def test_paused_job_rejects_stale_or_escaping_selection_and_can_cancel(self):
+        job, _ = self.pause_for_input()
+        for payload in ({**self.input_answer(job), 'request_id': 'stale'},
+                        self.input_answer(job, '../data/portkeeper.sqlite3'),
+                        {**self.input_answer(job), 'input': {'role': 'update', 'kind': 'file', 'path': 'private.bin'}}):
+            with self.assertRaises(Invalid): self.engine.automation.resume(job['id'], payload)
+        self.assertEqual(self.engine.automation.record(job['id'])['model_calls'], 2)
+        with self.assertRaises(Invalid): self.engine.automation.queue(self.project['id'])
+        self.engine.automation.cancel(job['id'])
+        self.assertEqual(self.engine.store.get('jobs', job['id'])['status'], 'cancelled')
+        self.assertNotIn(self.project['id'], self.engine.busy)
+        self.assertFalse(list((self.broker.root / 'jobs' / job['id']).glob('snapshot-*')))
+        with self.assertRaises(Invalid): self.engine.automation.resume(job['id'], self.input_answer(job))
+
+    def test_paused_workspace_or_provider_changes_are_not_silently_accepted(self):
+        job, _ = self.pause_for_input()
+        with patch.object(self.engine.assistant, '_config', return_value={'provider': 'openai', 'base_url': 'https://new.example/v1'}):
+            with self.assertRaisesRegex(Invalid, 'original connected model'):
+                self.engine.automation.resume(job['id'], self.input_answer(job))
+        checkpoint = self.engine.automation.record(job['id'])['checkpoint']
+        (self.engine.automation.job_root(job['id']) / checkpoint['seed'] / 'out/linux/game').write_text('changed')
+        with self.assertRaisesRegex(Invalid, 'workspace changed'):
+            self.engine.automation.resume(job['id'], self.input_answer(job))
+        self.engine.automation.cancel(job['id'])
+
+    def test_reply_never_resets_an_exhausted_request_budget(self):
+        self.engine.automation.configure({'max_calls': 2})
+        job, _ = self.pause_for_input()
+        with patch.object(self.engine.assistant, 'chat') as chat:
+            self.engine.automation.resume(job['id'], self.input_answer(job))
+            for _ in range(300):
+                current = self.engine.store.get('jobs', job['id'])
+                if current['status'] == 'failed': break
+                threading.Event().wait(.01)
+            self.assertIn('model-request budget', current.get('error', ''))
+            chat.assert_not_called()
+
+    def test_cancellation_during_input_search_does_not_leave_a_waiting_claim(self):
+        (self.engine.input_root / 'another.bin').write_bytes(b'another')
+        def response(*args, **kwargs):
+            job = self.engine.store.all('jobs')[0]
+            self.engine.automation.cancel(job['id'])
+            return reply('find_input', {'role': 'base_game', 'kind': 'file', 'name_glob': '*.bin'})
+        with patch.object(self.engine.assistant, 'chat', side_effect=response):
+            result = self.engine.automation.queue(self.project['id'], {'inputs': []})
+            self.wait_status(result['job']['id'], 'cancelled')
+            for _ in range(100):
+                if self.project['id'] not in self.engine.busy: break
+                threading.Event().wait(.01)
+            self.assertNotIn(self.project['id'], self.engine.busy)
+            self.assertIsNone(self.engine.automation.record(result['job']['id']).get('checkpoint'))
+
+    def test_reply_cannot_restore_withdrawn_private_debugging_permission(self):
+        job, _ = self.pause_for_input()
+        self.engine.automation.configure({'private_model_local': True})
+        with self.assertRaisesRegex(Invalid, 'Privacy settings changed'):
+            self.engine.automation.resume(job['id'], self.input_answer(job))
+        self.engine.automation.cancel(job['id'])
+
     def test_strict_cloud_setup_and_model_free_replay_keep_owned_data_local(self):
         job, chat = self.run_setup(self.strict_responses())
         self.assertEqual(job['status'], 'ready', job.get('error'))

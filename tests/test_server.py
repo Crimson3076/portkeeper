@@ -45,6 +45,13 @@ class HttpIntegrationTests(unittest.TestCase):
         with patch.object(worker, 'cancel', return_value={'cancel_requested': True}) as cancel:
             self.assertEqual(self.request('POST', f'/api/jobs/{job}/cancel-automation', {})[0], 200)
             cancel.assert_called_once_with(job)
+        with patch.object(worker, 'resume', return_value={'job': {'id': job}}) as resume:
+            answer = {'request_id': 'pending', 'reply': 'Use the standard build'}
+            self.assertEqual(self.request('POST', f'/api/jobs/{job}/reply-automation', answer)[0], 202)
+            resume.assert_called_once_with(job, answer)
+            self.assertEqual(self.request('POST', f'/api/jobs/{job}/reply-automation', answer,
+                                          {'Origin': 'https://other.test'})[0], 400)
+            self.assertEqual(resume.call_count, 1)
 
     def test_native_agent_sign_in_routes_keep_mutation_origin_checks(self):
         agent = self.engine.assistant.agents

@@ -63,6 +63,7 @@ class RealWorkers(unittest.TestCase):
             'version': 'v1', 'commit': 'a' * 40, 'source': {'file': 'source.zip', 'sha256': checksum(capture_root / 'source.zip')}, 'assets': []})
         project = self.engine.store.update('projects', project['id'], capture_id=capture['id'])
         owned = self.engine.input_root / 'owned.bin'; owned.write_bytes(b'synthetic-owned-data'); owned.chmod(0o644)
+        (self.engine.input_root / 'other.bin').write_bytes(b'another synthetic input')
         build = '''mkdir -p out/linux
 gcc -Wl,--build-id=none -ffile-prefix-map=/work=. source/game.c -o out/linux/game
 python3 -I -c "import os,socket; assert 'PORTKEEPER_WORKER_CANARY' not in os.environ; assert not os.path.exists('/var/run/docker.sock'); assert os.statvfs('/work').f_blocks*os.statvfs('/work').f_frsize == 2147483648"
@@ -79,6 +80,7 @@ cd out/linux
                     'saves': 'Not applicable to the fixture', 'limitations': ['This is a test fixture, not a commercial game'],
                     'evidence': [{'path': 'source/README.md', 'quote': 'This engine needs owned game data.'}]}
         responses = [json.dumps({'action': 'run', 'payload': {'script': build, 'timeout': 90}}),
+                     json.dumps({'action': 'find_input', 'payload': {'role': 'game', 'kind': 'file', 'name_glob': '*.bin'}}),
                      json.dumps({'action': 'add_private_step', 'payload': {'script': stage, 'timeout': 90}}),
                      json.dumps({'action': 'finish', 'payload': manifest})]
         with patch.object(self.engine.automation, 'status', return_value={'worker': health}), \
@@ -87,14 +89,26 @@ cd out/linux
              patch.object(self.engine.assistant, 'chat', side_effect=responses) as model, \
              patch.object(self.engine, '_draft_material', return_value=(capture, {'material': {}, 'release': {}})), \
              patch.dict(os.environ, {'PORTKEEPER_WORKER_CANARY': 'controller-only'}):
-            result = self.engine.automation.queue(project['id'], {'inputs': [{'role': 'game', 'kind': 'file', 'path': 'owned.bin'}]})
+            result = self.engine.automation.queue(project['id'], {'inputs': []})
+            deadline = time.monotonic() + 240
+            while time.monotonic() < deadline:
+                job = self.engine.store.get('jobs', result['job']['id'])
+                if job['status'] not in ('queued', 'running'):
+                    break
+                threading.Event().wait(.1)
+            self.assertEqual(job['status'], 'waiting_user', job.get('error'))
+            self.assertEqual(model.call_count, 2)
+            self.assertFalse(self.broker.active_names, 'A paused setup must not retain a running container')
+            self.engine.automation.resume(job['id'], {'request_id': job['user_request']['id'],
+                'input': {'role': 'game', 'kind': 'file', 'path': 'owned.bin'}})
             deadline = time.monotonic() + 240
             while project['id'] in self.engine.busy and time.monotonic() < deadline:
                 threading.Event().wait(.1)
             job = self.engine.store.get('jobs', result['job']['id'])
             self.assertEqual(job['status'], 'ready', job.get('error'))
-            self.assertEqual(model.call_count, 3)
+            self.assertEqual(model.call_count, 4)
             self.assertNotIn('synthetic-owned-data', str(model.call_args_list))
+            self.assertNotIn('owned.bin', str(model.call_args_list))
             artifact = self.engine.store.get('artifacts', job['artifact_id'])
             with zipfile.ZipFile(artifact['file']) as bundle:
                 self.assertEqual(bundle.read('data.bin'), b'synthetic-owned-data')

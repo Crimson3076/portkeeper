@@ -126,7 +126,11 @@ images or changed public seed files stop replay instead of fetching replacements
    choice; no undocumented API-key fallback or account-token proxy is introduced.
 3. Add a port and preserve its source. Choose **Set up automatically**. A unique
    matching local input can be selected automatically; ambiguous/missing matches
-   stop with a request to select the file, rather than taking a guess.
+   pause the job with a **Waiting for you** question, rather than taking a guess.
+   Choose a match in the dropdown or browse your collection, then click
+   **Continue setup**. Models can also ask a short question with suggested answers
+   or a free-text reply. Questions appear beside the Updates logs and under
+   Advanced → Automatic setup; the main next-step card points to the answer.
 4. **Advanced → Automatic setup** exposes input selection, notes, prompts/responses,
    downloaded records, scripts and editable recipe JSON. Input selections use paths
    relative to the configured library and stay local. For example:
@@ -141,6 +145,28 @@ images or changed public seed files stop replay instead of fetching replacements
 5. Download and try the package; record the actual startup/gameplay result. **Replay
    saved recipe** makes no model calls. Edit the script JSON when you want to tinker;
    old packages remain available while those changes are tested.
+
+### Answering a paused setup
+
+A reply continues the **same job**, preserving its public investigation, completed
+scripts, dependencies, workspace and remaining request/time budgets. Waiting does
+not consume model requests, worker minutes or the job's elapsed-time allowance.
+No container or executor thread runs while waiting. A paused job survives an app
+restart and retains its project claim; cancel it to release that claim and remove
+its workspace before starting another setup. Only one automatic setup, including
+a paused setup, is allowed at a time.
+
+Input candidate names and paths are shown only in the local interface. The model
+receives the selected input's opaque ID, role and file/folder kind. Text deliberately
+entered in the reply box is sent to the job's model: do not paste credentials, keys
+or private file contents. The original provider/model and immutable worker image
+must still be configured, and retained workspace checksums must match before a
+reply is accepted. Replies cannot reset exhausted budgets or replace previously
+selected inputs. Changed source, targets or instructions require a new setup.
+
+Jobs that already failed before this feature was installed have no resumable
+checkpoint. Select their inputs and start a new setup once; future ambiguous-input
+requests will pause instead of failing.
 
 ## Privacy
 
@@ -190,7 +216,8 @@ downloads are local, not automatically published as public recipes.
 - Workers are Linux. They can assemble verified-format Windows binaries or attempt
   cross-compilation, but native Windows/MSVC execution needs a future Windows backend.
   There is no claim that Wine or file checks establish native Windows startup.
-- Service restarts cancel/quarantine interrupted jobs. Operation IDs are durable;
+- Service restarts cancel/quarantine executing jobs; explicitly paused jobs retain
+  their checkpoint for a user reply. Operation IDs are durable;
   retrying the same acknowledged broker operation returns its result, not a second
   execution. App retries start a fresh job. There is no unsafe mid-script resume or
   automatic restart of an inference request whose acknowledgement was lost.

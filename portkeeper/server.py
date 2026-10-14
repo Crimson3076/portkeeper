@@ -174,6 +174,8 @@ class Handler(BaseHTTPRequestHandler):
             elif re.fullmatch(r'/api/jobs/[a-f0-9]{32}/cancel-automation', path) and method == 'POST':
                 self.body()
                 self.json(200, self.engine.automation.cancel(path.split('/')[3]))
+            elif re.fullmatch(r'/api/jobs/[a-f0-9]{32}/reply-automation', path) and method == 'POST':
+                self.json(202, self.engine.automation.resume(path.split('/')[3], self.body()))
             elif method == "GET" and path == "/api/catalog/games":
                 self.json(200, self.engine.catalog_games())
             elif re.fullmatch(r"/api/catalog/games/[a-z0-9][a-z0-9_.-]{0,63}/files", path) and method == "POST":

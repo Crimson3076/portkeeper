@@ -174,7 +174,8 @@ class Engine:
             except (OSError, subprocess.TimeoutExpired):
                 self.docker_error = "Docker daemon is unavailable."
         self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="portkeeper")
-        self.busy = set()
+        # Paused automation retains its project claim without occupying a thread.
+        self.busy = {r['project_id'] for r in self.store.all('automation') if r.get('status') == 'waiting_user'}
         self.scheduler = None
         self.identity_scheduler = None
         for job in self.store.all("jobs"):

@@ -35,6 +35,8 @@ const draftCorrectionLimits = new Map();
 const modelResponses = new Map(), modelResponsesLoading = new Set();
 const investigationLimits = new Map(), investigationInputs = new Map();
 const automaticSetupDrafts = new Map(), scriptRecipeDrafts = new Map(), automaticRecords = new Map();
+const automaticReplies = new Map();
+activeStatuses.add("waiting_user");
 const automaticInputChoices = new Map(), automaticLogs = new Map();
 let automaticPolicyDraft = null;
 const projectDisclosures = new Map();
@@ -190,7 +192,8 @@ function statusBadge(status, override) {
   if (["failed", "error", "needs_attention", "blocked"].includes(value)) tone = "bad";
   if (["needs_rom", "missing_inputs", "capture_only", "unsupported_version"].includes(value)) tone = "warn";
   if (activeStatuses.has(value)) tone = "active";
-  const node = el("span", `status-badge ${tone}`, override || labels[value] || value.replace(/_/g, " "));
+  if (value === "waiting_user") tone = "warn";
+  const node = el("span", `status-badge ${tone}`, override || (value === "waiting_user" ? "Waiting for you" : labels[value]) || value.replace(/_/g, " "));
   if (tone === "active") node.prepend(el("span", "spinner"));
   return node;
 }
@@ -298,6 +301,7 @@ function missingGameFiles(project) {
   });
 }
 function gameAvailability(project) {
+  if (projectActiveJob(project)?.status === "waiting_user") return "Waiting for you";
   if (projectActiveJob(project)) return "Working…";
   if (gameNeedsAttention(project)) return "Needs attention";
   if (hasDownloads(project)) {
@@ -1255,6 +1259,7 @@ function renderAdvanced(project, content, openJobs) {
 function renderBuildDiagnostics(project, content, openJobs) {
   const diagnostic = el("section", "detail-card", [el("h2", "", "Build progress & logs"), el("p", "detail-note", "Detailed logs and errors for troubleshooting a game step.")]);
   const jobs = projectJobs(project.id); const logs = el("div", "diagnostics-list");
+  jobs.filter(job => job.status === "waiting_user").forEach(job => { const reply = automaticReplyCard(project, job); if (reply) diagnostic.append(reply); });
   jobs.forEach((job) => { const details = disclosure(`job:${job.id}`, "job-panel"); details.dataset.jobId = job.id; details.open = openJobs.has(String(job.id)) || String(job.id) === String(selectedJobId); details.append(el("summary", "", [targetPill(job.target || "capture"), el("span", "", job.version || "Update check"), statusBadge(jobStage(job)), el("span", "job-date", dateLabel(job.created_at))]), el("pre", "", (Array.isArray(job.logs) ? job.logs.join("\n") : String(job.logs || "Waiting for log output…")) + (job.error ? `\n\nError: ${job.error}` : ""))); if (job.status === "failed") details.append(button("Retry failed step", "button secondary small", () => retryJob(job.id), busy.has(`retry-${job.id}`))); if (["draft","investigation"].includes(job.kind) && job.draft_record_available) details.append(draftingRecordLink(job.id)); logs.append(details); });
   diagnostic.append(jobs.length ? logs : el("p", "detail-empty", "No diagnostics yet.")); content.append(diagnostic);
 
@@ -1992,7 +1997,8 @@ function nextStepCard(project) {
   if (packages.length) parts.push(packages.map((artifact) => targetLabels[artifact.target] || artifact.target).join(" & "), inRomm.length === packages.length ? "in RomM" : inRomm.length ? "partly in RomM" : "not in RomM", untested.length ? "not tested yet" : "tested");
   let heading, note = "", action = null;
   const working = busy.has(`setup-${project.id}`);
-  if (active) { heading = "Working on it"; note = `${String(jobStage(active)).replaceAll("_", " ")}…`; action = button("View build progress", "button primary small", () => navigateProject(project.id, "activity", active.id)); }
+  if (active?.status === "waiting_user") { heading = "Setup needs your answer"; note = active.user_request?.question || "Answer the pending question to continue the same setup."; action = button("Answer & continue", "button primary small", () => navigateProject(project.id, "advanced")); }
+  else if (active) { heading = "Working on it"; note = `${String(jobStage(active)).replaceAll("_", " ")}…`; action = button("View build progress", "button primary small", () => navigateProject(project.id, "activity", active.id)); }
   else if (projectJobs(project.id)[0]?.status === "failed") { heading = "A build needs your attention"; note = projectJobs(project.id)[0].error || "Review the failed step and retry when the cause is resolved."; action = button("View failure & logs", "button primary small", () => navigateProject(project.id, "activity", projectJobs(project.id)[0].id)); }
   else if (missingGameFiles(project).length && runner === "operations") { heading = "Choose your game files"; note = "Select the required files before building packages."; action = button("Choose game files", "button primary small", () => navigateProject(project.id, "advanced")); }
   else if (proposal) { heading = "Review the drafted packaging steps"; note = "Approve these steps before they replace your saved instructions. Optional test builds use a temporary workspace."; action = button("Review draft", "button primary small", () => navigateProject(project.id, "advanced")); }
@@ -2054,12 +2060,60 @@ function renderAutomaticSettings(parent) {
       if (result) { automaticPolicyDraft = null; await refresh(); }
     }, busy.has("automatic-policy")));
 }
+function automaticReplyCard(project, job) {
+  const request = job.user_request;
+  if (job.status !== "waiting_user" || !request) return null;
+  const card = el("section", "detail-card automatic-question", [el("h3", "", "Waiting for you"), el("p", "", request.question),
+    el("p", "field-help", "Your completed steps and remaining budget are saved. Answer here to continue this setup; waiting does not use model requests or worker time.")]);
+  const draft = automaticSetupDrafts.get(project.id) || {instruction: "", inputs: project.autonomous_inputs || []};
+  let inputs;
+  try { inputs = typeof draft.inputs === "string" ? JSON.parse(draft.inputs) : draft.inputs; if (!Array.isArray(inputs)) inputs = []; }
+  catch (_) { inputs = []; }
+  const selected = inputs.find(item => item.role === request.role && item.kind === request.input_kind);
+  if (request.kind === "input") {
+    const picker = el("select"); picker.id = `automatic-answer-input-${job.id}`;
+    const empty = el("option", "", "Choose your game file or folder…"); empty.value = ""; picker.append(empty);
+    const candidates = [...(request.candidates || [])];
+    if (selected && !candidates.some(item => item.path === selected.path)) candidates.push(selected);
+    candidates.forEach((item, index) => { const option = el("option", "", item.path); option.value = String(index); picker.append(option); });
+    picker.value = selected ? String(candidates.findIndex(item => item.path === selected.path)) : "";
+    picker.addEventListener("change", () => {
+      const next = picker.value === "" ? [] : [candidates[Number(picker.value)]];
+      automaticSetupDrafts.set(project.id, {...draft, inputs: [...inputs.filter(item => item.role !== request.role), ...next]});
+      lastRender = null; lastProjectRender = null; render();
+    });
+    field(card, request.input_kind === "directory" ? "Game folder" : "Game file", picker);
+    card.append(button("Browse my game collection", "button secondary small", async () => { await browseAutomaticInputs(project.id, ""); navigateProject(project.id, "advanced"); }));
+    if (request.truncated) card.append(el("p", "field-help", "Showing a bounded selection. Browse your collection to choose another match."));
+  }
+  const answer = el("textarea", "assistant-prompt"); answer.id = `automatic-answer-${job.id}`; answer.rows = 3;
+  answer.value = automaticReplies.get(request.id) || "";
+  answer.placeholder = request.kind === "input" ? "Optional note for the model" : "Your answer";
+  field(card, request.kind === "input" ? "Reply (optional)" : "Your reply", answer);
+  const continueButton = button("Continue setup", "button primary small", async () => {
+    const payload = {request_id: request.id, reply: automaticReplies.get(request.id) || ""};
+    if (request.kind === "input") payload.input = selected;
+    const result = await runAction(`reply-automatic-${job.id}`, `/api/jobs/${job.id}/reply-automation`, payload, "Answer saved. Continuing the same setup.");
+    if (result) { automaticReplies.delete(request.id); automaticRecords.delete(job.id); await refresh(); }
+  }, busy.has(`reply-automatic-${job.id}`) || (request.kind === "input" ? !selected : !answer.value.trim()));
+  answer.addEventListener("input", () => {
+    automaticReplies.set(request.id, answer.value);
+    continueButton.disabled = busy.has(`reply-automatic-${job.id}`) || (request.kind === "input" ? !selected : !answer.value.trim());
+  });
+  if (request.kind === "question") (request.choices || []).forEach(choice => card.append(button(choice, "button secondary small", () => {
+    answer.value = choice; answer.dispatchEvent(new Event("input")); answer.focus();
+  })));
+  card.append(el("p", "field-help", "Reply text is sent to the model used by this job. File selections stay local; the model receives only an input ID and role. Keep passwords, keys and private file contents out of replies."), continueButton);
+  return card;
+}
 function automaticSetupCard(project) {
   const id = project.id, recipe = project.autonomous_recipe, config = state.automation || {};
   const jobs = projectJobs(id).filter(job => job.kind === "automation" && !job.activity_hidden), job = jobs[0];
   const card = el("section", "detail-card automatic-setup", [el("h2", "", "Automatic setup"),
     el("p", "detail-note", "Investigate this port, prepare owned data, build and save reusable scripts. Every generated program stays visible below; existing downloads are retained.")]);
   if (!config.worker?.ready || !config.policy?.enabled) card.append(el("p", "field-help", config.worker?.error || "Enable automatic setup in Advanced settings."), button("Worker & automation settings →", "text-button", () => navigateSettings("storage")));
+  const question = job && automaticReplyCard(project, job);
+  if (question) card.append(question);
   const draft = automaticSetupDrafts.get(id) || {instruction: "", inputs: project.autonomous_inputs || []};
   const notes = el("textarea", "assistant-prompt"); notes.id = `automatic-notes-${id}`; notes.rows = 2; notes.value = draft.instruction;
   notes.placeholder = "Optional: data preparation, target requirements or documented input version";
@@ -2068,7 +2122,7 @@ function automaticSetupCard(project) {
   const prepare = input(`automatic-prepare-${id}`, "checkbox"); prepare.checked = draft.prepare_game_files ?? true;
   prepare.addEventListener("change", () => automaticSetupDrafts.set(id, {...draft, ...(automaticSetupDrafts.get(id) || {}), prepare_game_files: prepare.checked}));
   card.append(el("label", "check-label", [prepare, "Prepare and include required owned game data"]));
-  const selection = disclosure(`automatic-inputs:${id}`, "diagnostics-list", el("summary", "table-action", "Choose owned files or folders (optional; automatic matching also works)"));
+  const selection = el("section", "diagnostics-list", el("h3", "", "Your game files (automatic matching also works)"));
   let selectedInputs;
   try { selectedInputs = typeof draft.inputs === "string" ? JSON.parse(draft.inputs) : draft.inputs; if (!Array.isArray(selectedInputs)) selectedInputs = []; }
   catch (_) { selectedInputs = []; }
@@ -2079,7 +2133,7 @@ function automaticSetupCard(project) {
   const choices = automaticInputChoices.get(id);
   if (choices) {
     const role = el("select"); role.id = `automatic-input-role-${id}`;
-    [...new Set([job?.input_request?.role || "base_game", "base_game", "update"])].forEach(value => { const option = el("option", "", value); option.value = value; role.append(option); });
+    [...new Set([job?.user_request?.role || job?.input_request?.role || "base_game", "base_game", "update"])].forEach(value => { const option = el("option", "", value); option.value = value; role.append(option); });
     field(selection, "Use the selection as", role);
     const pick = item => setInputs([...selectedInputs.filter(input => input.role !== role.value), {role: role.value, kind: item.kind, path: item.path}]);
     selection.append(el("p", "field-help", choices.directory || "Game collection root"));

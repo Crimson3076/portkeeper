@@ -65,7 +65,7 @@ async function create(saved, storageBlocked=false, source=fixture) {
     else if(endpoint.endsWith('/draft-record'))payload=source.draft_record||{attempts:[]};
     else if(endpoint.endsWith('/automation-record'))payload=source.automation_record||{attempts:[],worker_runs:[],model_calls:0,worker_seconds:0};
     else if(endpoint.startsWith('/api/automation/inputs'))payload={directory:'',parent:null,items:[{name:'owned.bin',path:'owned.bin',kind:'file'}],truncated:false};
-    else if(endpoint.endsWith('/automate')||endpoint.endsWith('/script-recipe')||endpoint==='/api/automation/config'){
+    else if(endpoint.endsWith('/automate')||endpoint.endsWith('/script-recipe')||endpoint.endsWith('/reply-automation')||endpoint==='/api/automation/config'){
       const body=JSON.parse(options.body);requests.push({endpoint,body});payload={job:{id:id(501)}};
     }
     else if(endpoint.endsWith('/draft') && options.method==='POST'){requests.push({endpoint,body:JSON.parse(options.body)});payload={job:{}};}
@@ -443,7 +443,28 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   w.pollRefresh();await tick();await tick();
   assert.equal(d.activeElement.id,'script-recipe-editor-'+id(22));assert.equal(d.activeElement.selectionStart,5);assert.equal(d.activeElement.selectionEnd,20);assert(d.activeElement.value.includes('My edited recipe'));
   automatic.jobs[0].status='ready';automatic.jobs[0].stage='complete';w.pollRefresh();await tick();await tick();
-  [...d.querySelectorAll('.automatic-setup button')].find(n=>n.textContent==='Save script changes').click();await tick();await tick();assert(requests.at(-1).endpoint.endsWith('/script-recipe'));assert.equal(requests.at(-1).body.manifest.summary,'My edited recipe');dom.window.close();
+  [...d.querySelectorAll('.automatic-setup button')].find(n=>n.textContent==='Save script changes').click();await tick();await tick();assert(requests.at(-1).endpoint.endsWith('/script-recipe'));assert.equal(requests.at(-1).body.manifest.summary,'My edited recipe');
+  automatic.jobs[0]={...automatic.jobs[0],status:'waiting_user',stage:'waiting_user',user_request:{id:'question-one',kind:'input',role:'base_game',input_kind:'file',question:'Choose your Minish Cap ROM',candidates:[{role:'base_game',kind:'file',path:'gba/Minish Cap.gba'},{role:'base_game',kind:'file',path:'gba/Other Game.gba'}]}};
+  w.pollRefresh();await tick();await tick();
+  assert(d.querySelector('.automatic-question').textContent.includes('Choose your Minish Cap ROM'));
+  d.getElementById('project-overview-tab').click();await tick();
+  assert(d.querySelector('.next-step-card').textContent.includes('Answer & continue'),'The main next step points to a waiting question');
+  [...d.querySelectorAll('.next-step-card button')].find(n=>n.textContent==='Answer & continue').click();await tick();
+  let picker=d.getElementById('automatic-answer-input-'+id(23));assert(picker);assert([...picker.options].some(option=>option.textContent==='gba/Minish Cap.gba'));
+  picker.value='0';picker.dispatchEvent(new w.Event('change'));await tick();
+  let answer=d.getElementById('automatic-answer-'+id(23));answer.value='Use the US version';answer.dispatchEvent(new w.Event('input'));answer.focus();answer.setSelectionRange(4,10);
+  automatic.jobs[0].logs=['Waiting for your selection'];w.pollRefresh();await tick();await tick();
+  assert.equal(d.activeElement.id,'automatic-answer-'+id(23));assert.equal(d.activeElement.selectionStart,4);assert.equal(d.activeElement.selectionEnd,10);assert.equal(d.activeElement.value,'Use the US version');
+  [...d.querySelectorAll('.automatic-question button')].find(n=>n.textContent==='Continue setup').click();await tick();await tick();
+  assert(requests.at(-1).endpoint.endsWith('/reply-automation'));assert.deepEqual(requests.at(-1).body,{request_id:'question-one',reply:'Use the US version',input:{role:'base_game',kind:'file',path:'gba/Minish Cap.gba'}});
+  automatic.jobs[0].user_request={id:'question-two',kind:'question',question:'Which build variant?',choices:['Standard','Experimental']};
+  w.pollRefresh();await tick();await tick();
+  assert([...d.querySelectorAll('.automatic-question button')].find(n=>n.textContent==='Continue setup').disabled);
+  [...d.querySelectorAll('.automatic-question button')].find(n=>n.textContent==='Standard').click();await tick();
+  [...d.querySelectorAll('.automatic-question button')].find(n=>n.textContent==='Continue setup').click();await tick();await tick();
+  assert.deepEqual(requests.at(-1).body,{request_id:'question-two',reply:'Standard'});
+  d.getElementById('project-activity-tab').click();await tick();assert(d.querySelector('.automatic-question'),'Questions are answerable beside the progress logs');
+  dom.window.close();
   dom=await create(null,false,{...fixture,projects:[],artifacts:[]});assert(dom.window.document.getElementById('project-grid').textContent.includes('first game'));dom.window.close();
   console.log('UI layouts passed: add a game, next step, drafting settings, default workspace, saved preferences, collection/list switching, grouped platforms, RomM imports, correct counts, game selection, deep links, filters, empty state and blocked storage.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
