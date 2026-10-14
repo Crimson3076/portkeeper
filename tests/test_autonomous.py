@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import io
 import json
 import os
@@ -19,6 +20,8 @@ from portkeeper.worker_broker import WorkerBroker, fetch_public, tree_identity, 
 
 
 def reply(action, payload):
+    if action == 'blocked':
+        payload = {'category': 'other', **payload}
     return json.dumps({'action': action, 'payload': payload})
 
 
@@ -260,6 +263,57 @@ class AutonomousTests(unittest.TestCase):
         with self.assertRaisesRegex(Invalid, 'Privacy settings changed'):
             self.engine.automation.resume(job['id'], self.input_answer(job))
         self.engine.automation.cancel(job['id'])
+
+    def test_model_input_blocker_is_corrected_into_a_file_choice(self):
+        (self.engine.input_root / 'another.bin').write_bytes(b'another')
+        responses = [json.dumps({'action': 'blocked', 'payload': {'reason': 'Multiple .bin files match; select your game file'}}),
+                     reply('find_input', {'role': 'base_game', 'kind': 'file', 'name_glob': '*.bin', 'label': 'Owned game data'})]
+        with patch.object(self.engine.assistant, 'chat', side_effect=responses) as chat:
+            job = self.engine.automation.queue(self.project['id'], {'inputs': []})['job']
+            job = self.wait_status(job['id'], 'waiting_user')
+            self.assertEqual(chat.call_count, 2)
+            self.assertEqual(len(job['user_request']['candidates']), 2)
+            self.assertIn('find_input', str(chat.call_args_list[1]))
+        self.engine.automation.cancel(job['id'])
+
+    def test_structured_input_blocker_uses_the_same_picker_without_another_call(self):
+        (self.engine.input_root / 'another.bin').write_bytes(b'another')
+        response = reply('blocked', {'category': 'input', 'reason': 'Choose your file', 'input': {
+            'role': 'base_game', 'kind': 'file', 'name_glob': '*.bin', 'label': 'Game data'}})
+        with patch.object(self.engine.assistant, 'chat', return_value=response) as chat:
+            job = self.engine.automation.queue(self.project['id'], {'inputs': []})['job']
+            job = self.wait_status(job['id'], 'waiting_user')
+            self.assertEqual(chat.call_count, 1)
+            self.assertEqual(job['user_request']['kind'], 'input')
+        with patch.object(self.engine.assistant, 'chat', side_effect=self.strict_responses()):
+            self.engine.automation.resume(job['id'], self.input_answer(job))
+            self.wait_status(job['id'], 'ready')
+
+    def test_documented_sha1_distinguishes_roms_with_the_same_extension(self):
+        (self.engine.input_root / 'owned.gba').write_bytes(b'correct fixture ROM')
+        (self.engine.input_root / 'other.gba').write_bytes(b'another game')
+        sha1 = hashlib.sha1(b'correct fixture ROM', usedforsecurity=False).hexdigest()
+        responses = [reply('find_input', {'role': 'base_game', 'kind': 'file', 'name_glob': '*.gba',
+                                        'label': 'Game ROM', 'sha1s': [sha1.upper()]})] + self.strict_responses()
+        job, chat = self.run_setup(responses, inputs=[])
+        self.assertEqual(job['status'], 'ready', job.get('error'))
+        self.assertEqual(self.engine.automation.record(job['id'])['inputs'][0]['path'], 'owned.gba')
+        self.assertNotIn('owned.gba', str(chat.call_args_list))
+
+    def test_manual_choice_is_checked_against_supported_sha1_identities(self):
+        (self.engine.input_root / 'one.gba').write_bytes(b'correct fixture ROM')
+        (self.engine.input_root / 'two.gba').write_bytes(b'correct fixture ROM')
+        sha1 = hashlib.sha1(b'correct fixture ROM', usedforsecurity=False).hexdigest()
+        with patch.object(self.engine.assistant, 'chat', return_value=reply('find_input', {
+                'role': 'base_game', 'kind': 'file', 'name_glob': '*.gba', 'sha1s': [sha1]})):
+            job = self.engine.automation.queue(self.project['id'], {'inputs': []})['job']
+            job = self.wait_status(job['id'], 'waiting_user')
+        self.assertTrue(job['user_request']['checksum_matched'])
+        with self.assertRaisesRegex(Invalid, 'supported ROM identity'):
+            self.engine.automation.resume(job['id'], self.input_answer(job, 'private.bin'))
+        with patch.object(self.engine.assistant, 'chat', side_effect=self.strict_responses()):
+            self.engine.automation.resume(job['id'], self.input_answer(job, 'two.gba'))
+            self.wait_status(job['id'], 'ready')
 
     def test_strict_cloud_setup_and_model_free_replay_keep_owned_data_local(self):
         job, chat = self.run_setup(self.strict_responses())

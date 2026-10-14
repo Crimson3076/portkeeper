@@ -127,10 +127,13 @@ images or changed public seed files stop replay instead of fetching replacements
 3. Add a port and preserve its source. Choose **Set up automatically**. A unique
    matching local input can be selected automatically; ambiguous/missing matches
    pause the job with a **Waiting for you** question, rather than taking a guess.
-   Choose a match in the dropdown or browse your collection, then click
-   **Continue setup**. Models can also ask a short question with suggested answers
-   or a free-text reply. Questions appear beside the Updates logs and under
-   Advanced → Automatic setup; the main next-step card points to the answer.
+   Select a detected file and click **Continue setup**, directly on the current
+   game tab. Filenames and their folders appear as selectable rows; large lists
+   have a filter. **Choose another file or folder** opens a browser in the same
+   panel, without navigating to Advanced. Optional notes are collapsed by default.
+   Models can also ask a short question with suggested answers or a free-text reply.
+   The same answer panel appears on Play, Updates and Advanced; no tab switch is
+   required. Manual overrides and JSON remain available under Advanced.
 4. **Advanced → Automatic setup** exposes input selection, notes, prompts/responses,
    downloaded records, scripts and editable recipe JSON. Input selections use paths
    relative to the configured library and stay local. For example:
@@ -163,6 +166,14 @@ or private file contents. The original provider/model and immutable worker image
 must still be configured, and retained workspace checksums must match before a
 reply is accepted. Replies cannot reset exhausted budgets or replace previously
 selected inputs. Changed source, targets or instructions require a new setup.
+
+Input searches can use a documented SHA-256 or a list of supported SHA-1 ROM
+identities to distinguish different games/variants with the same extension. Hashes
+are checked locally; choosing another file still checks any declared identity.
+SHA-1 is only an upstream identification convention; replay integrity uses SHA-256.
+Models must distinguish terminal environment/upstream blockers from input choices.
+A structured input blocker goes through the same picker; an unclassified blocker
+is returned to the model for a concrete action instead of immediately stopping.
 
 Jobs that already failed before this feature was installed have no resumable
 checkpoint. Select their inputs and start a new setup once; future ambiguous-input

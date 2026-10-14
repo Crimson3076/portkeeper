@@ -1,0 +1,35 @@
+.automatic-question {
+  border-color: var(--cyan);
+  margin-bottom: 24px;
+}
+.automatic-question > h2 { margin-bottom: 10px; }
+.automatic-question > p { line-height: 1.6; }
+.automatic-matches { border: 0; padding: 0; margin: 20px 0 16px; min-width: 0; }
+.automatic-matches legend { margin-bottom: 12px; }
+.automatic-match-list { display: grid; gap: 8px; padding: 3px; }
+.automatic-match-list.many-matches { max-height: 300px; overflow: auto; }
+#project-content .automatic-match {
+  display: flex; align-items: center; gap: 14px; padding: 14px 16px;
+  margin: 0; border: 1px solid var(--border); border-radius: 9px; background: var(--bg); cursor: pointer;
+}
+.automatic-match:hover { background: var(--raised); }
+.automatic-match:has(input:checked) { border-color: var(--cyan); background: var(--raised); }
+#project-content .automatic-match[hidden] { display: none; }
+.automatic-question .automatic-match input { flex: 0 0 auto; width: 18px; height: 18px; accent-color: var(--cyan); margin: 0; padding: 0; }
+.automatic-match-description { display: grid; gap: 4px; min-width: 0; }
+.automatic-match-description strong { font-size: 14px; line-height: 1.35; overflow-wrap: anywhere; }
+.automatic-match-description small { font-size: 12px; line-height: 1.3; color: var(--muted); overflow-wrap: anywhere; }
+.automatic-file-fallback { margin-top: 14px; }
+.automatic-file-fallback > summary { color: var(--muted); font-size: 13px; padding: 8px 0; }
+.automatic-file-fallback > label { display: block; margin-top: 12px; }
+.automatic-browser-path { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin: 12px 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.automatic-browser-items { display: grid; gap: 4px; max-height: 260px; overflow: auto; }
+.automatic-browser-item { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 11px 12px; text-align: left; color: var(--text); cursor: pointer; overflow-wrap: anywhere; }
+.automatic-browser-item:hover { border-color: var(--cyan); background: var(--raised); }
+.automatic-answer-actions { margin-top: 20px; }
+.automatic-answer-actions .button.primary { min-height: 44px; padding: 12px 18px; font-size: 13px; }
+@media (max-width: 600px) {
+  #project-content .automatic-match { padding: 12px; gap: 10px; }
+  .automatic-question input[type=search] { font-size: 16px; }
+  .automatic-answer-actions .button.primary { width: 100%; }
+}
