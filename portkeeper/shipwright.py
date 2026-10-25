@@ -40,7 +40,7 @@ def packager():
 class ShipwrightRunner:
     def __init__(self, engine):
         self.engine = engine
-        self.root = engine.data / "cache/shipwright" / VERSION
+        self.root = engine.cache_root / "shipwright" / VERSION
         self.root.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
         self.helper = packager()

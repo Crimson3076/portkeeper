@@ -138,10 +138,10 @@ def _cloud_url(value):
 
 
 class RecipeAssistant:
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, work_root=None, cache_root=None):
         self.path = Path(data_dir) / 'secrets' / 'assistant.json'
         from .subscription_agents import SubscriptionAgents
-        self.agents = SubscriptionAgents(data_dir)
+        self.agents = SubscriptionAgents(data_dir, work_root=work_root, cache_root=cache_root)
 
     def _config(self):
         if not self.path.exists():

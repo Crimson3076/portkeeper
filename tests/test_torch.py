@@ -29,7 +29,7 @@ class TorchTests(unittest.TestCase):
         rom.write_bytes(b'owned fixture')
         binary = root / 'torch'
         binary.write_bytes(b'fixture tool')
-        runner = OperationRunner(SimpleNamespace(data=root))
+        runner = OperationRunner(SimpleNamespace(data=root, cache_root=root / 'cache', prepared_root=root / 'prepared'))
         ctx = SimpleNamespace(workspace=root, path=lambda _: rom, stage=lambda *a: None,
                               log=lambda *a: None, provenance={'tools': []})
         def unpack(ctx, key, work):

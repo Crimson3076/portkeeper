@@ -550,7 +550,9 @@ function renderSettings() {
   }
   renderMcpSettings();
   const settings = state.settings || {};
-  $("storage-grid").replaceChildren(...[["Original game files", settings.input_root], ["Preservation archive", settings.archive_root], ["Local library output", settings.library_root]].map(([label, path]) => el("div", "storage-item", [el("h3", "", label), el("code", "", path || "Not configured")])));
+  $("storage-grid").replaceChildren(...[["Small app state", settings.data_root], ["Bulk storage", settings.storage_root], ["Original game files", settings.input_root], ["Preservation archive", settings.archive_root], ["Local library output", settings.library_root]].filter(([, path]) => path).map(([label, path]) => el("div", "storage-item", [el("h3", "", label), el("code", "", path)])));
+  if (settings.storage_separated === false) $("storage-grid").append(el("p", "field-help", "Legacy layout: bulk paths use the state directory. Check the actual mounts and follow the storage migration guide before changing them. State snapshots include metadata only; preserve upstream archives and exact replay files separately."));
+  if (settings.backup_keep) $("storage-grid").append(el("p", "field-help", `Built-in state backups keep the latest ${settings.backup_keep} snapshots of the database, configuration and recipes. Game files are excluded. Legacy migration backups are left for manual review.`));
   const docker = state.runner?.docker_available && settings.docker_enabled;
   $("runner-state").replaceWith(Object.assign(statusBadge(docker ? "ready" : "watching", docker ? "Docker available" : "Local assembly"), { id: "runner-state" }));
   const detail = $("runner-details"); detail.replaceChildren();
@@ -973,9 +975,9 @@ function inputsSection(project) {
     const node = el("div", "instruction-input", [el("h4", "", item.label + (requiredForBase ? " (needed for the selected base)" : item.required === false ? " (optional)" : "")),
       el("p", "field-help", item.accepted?.length ? `Accepted: ${item.accepted.map((entry) => entry.label).join(", ")}${item.normalize ? " (checked after byte-order normalization)" : ""}` : "Validated after extraction; see the build steps."),
       ...(item.notes ? [el("p", "field-help", item.notes)] : []),
-      el("p", "field-help", binding ? `Selected: ${binding.source === "prepared" ? "app data prepared/" : ""}${binding.path}${binding.accepted ? " · verified as " + binding.accepted : ""}` : item.required === false ? "Not selected." : "Not selected yet. Portkeeper searches your game files folder when a build starts.")]);
+      el("p", "field-help", binding ? `Selected: ${binding.source === "prepared" ? "prepared/" : ""}${binding.path}${binding.accepted ? " · verified as " + binding.accepted : ""}` : item.required === false ? "Not selected." : "Not selected yet. Portkeeper searches your game files folder when a build starts.")]);
     const path = input(`input-path-${project.id}-${item.id}`, "text", inputDrafts.get(`${project.id}-${item.id}`) ?? binding?.path ?? "");
-    path.placeholder = item.kind === "directory" ? "Folder under the app data prepared/ folder" : item.platform_hint === "ps4" ? "Path below your game files folder, such as ps4/roms/base.pkg" : "Path below your game files folder, such as n64/roms/game.z64";
+    path.placeholder = item.kind === "directory" ? "Folder under the prepared/ folder" : item.platform_hint === "ps4" ? "Path below your game files folder, such as ps4/roms/base.pkg" : "Path below your game files folder, such as n64/roms/game.z64";
     path.setAttribute("aria-label", `${item.label} path`);
     node.append(el("div", "inline-actions input-binding", [path, button("Save path", "button secondary small", () => bindInput(project.id, item.id, { path: path.value.trim(), source: item.kind === "directory" ? "prepared" : "inputs" }), busy.has(key) || !path.value), button("Find automatically", "button secondary small", () => bindInput(project.id, item.id, {}), busy.has(key)), ...(binding ? [button("Clear", "text-button", () => bindInput(project.id, item.id, { clear: true }), busy.has(key))] : [])]));
     path.addEventListener("input", () => { inputDrafts.set(`${project.id}-${item.id}`, path.value); node.querySelector(".input-binding button").disabled = !path.value.trim(); });
@@ -1716,6 +1718,7 @@ async function refreshAssistantModels() {
 function renderToolchain() {
   const saved = state.settings?.toolchain || {};
   const content = $("toolchain-current"); content.replaceChildren();
+  if (state.settings?.toolchain_root) content.append(el("p", "field-help", `Toolchain storage: ${state.settings.toolchain_root}`));
   if (saved.material) content.append(el("div", "detail-facts", [meta("Preserved toolchain", saved.identity || "Registered archive", true), meta("Archive", saved.material, true)]), statusBadge("ready", "Toolchain archived"));
   else content.append(el("p", "compact-note", "No toolchain archive is registered yet. Source and dependency preservation remains available."));
   const docker = Boolean(state.runner?.docker_available);

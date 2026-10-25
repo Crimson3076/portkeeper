@@ -96,15 +96,16 @@ other recognized header files such as icons and change information.
 Portkeeper hashes the complete selected PKGs, checks its private copies, and keys
 the extraction cache by ordered content hashes, pinned tool hash and required game
 checks. Changed PKG contents cannot reuse that extraction entry. A cached folder
-is checked again before use. A previously prepared folder under `/data/prepared/`
+is checked again before use. A previously prepared folder under the configured bulk
+`prepared/` directory (`/storage/prepared/` in new installs)
 can also be selected explicitly if it passes the same checks.
 
-Allow roughly **twice the combined PKG size free in app data**, plus room for
+Allow roughly **twice the combined PKG size free in bulk storage**, plus room for
 existing archives. Actual extraction size can vary; the preflight estimate is not
 a guarantee. The process needs space for a private PKG copy, extracted files and
 the final ZIP. `include_tree` streams cached game files into that ZIP without a
 second full folder copy. Originals stay in your ROMs share; cached extraction and
-build artifacts live in app data. Failed work is removed; validated cache entries
+build artifacts live in bulk storage. Failed work is removed; validated cache entries
 are retained for reuse. Old extraction entries are not automatically pruned.
 
 Encrypted retail PKGs are not universally extractable. This workflow cannot

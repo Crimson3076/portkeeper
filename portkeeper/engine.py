@@ -119,20 +119,35 @@ CAPTURE_RECIPE = {"version": 1, "mode": "capture", "payload": {"kind": "source"}
 
 
 class Engine:
-    def __init__(self, data_dir, input_root=None, library_root=None, enable_docker=False, github=None, enable_profile_builds=False):
+    def __init__(self, data_dir, input_root=None, library_root=None, enable_docker=False, github=None, enable_profile_builds=False, storage_dir=None):
         self.data = Path(data_dir).resolve()
-        self.data.mkdir(parents=True, exist_ok=True)
-        self.input_root = Path(input_root or self.data / "inputs").resolve()
-        self.library_root = Path(library_root or self.data / "library").resolve()
-        self.archive_root = self.data / "archive"
-        self.work_root = self.data / "work"
-        for path in (self.input_root, self.library_root, self.archive_root, self.work_root):
-            path.mkdir(parents=True, exist_ok=True)
+        self.storage = Path(storage_dir).resolve() if storage_dir is not None else self.data
+        self.input_root = Path(input_root or self.storage / "inputs").resolve()
+        self.library_root = Path(library_root or self.storage / "library").resolve()
+        self.archive_root = self.storage / "archive"
+        self.work_root = self.storage / "work"
+        self.cache_root = self.storage / "cache"
+        self.prepared_root = self.storage / "prepared"
+        self.replay_root = self.storage / "automation-recipes"
+        self.toolchain_root = self.storage / "toolchains"
+        if self.storage != self.data and (self.storage.is_relative_to(self.data) or self.data.is_relative_to(self.storage)):
+            raise Invalid('State and bulk storage must be separate directories, not nested inside each other')
         if self.input_root == self.library_root or self.input_root.is_relative_to(self.library_root) or self.library_root.is_relative_to(self.input_root):
             raise Invalid("Input and library directories must not overlap")
         if self.data.is_relative_to(self.input_root):
             raise Invalid('The input collection must not contain Portkeeper data or credentials')
+        bulk = (self.archive_root, self.work_root, self.cache_root, self.prepared_root, self.replay_root,
+                self.toolchain_root, self.storage / 'agent-workspaces', self.storage / 'demo-inputs')
+        if any(path.is_relative_to(self.input_root) or self.input_root.is_relative_to(path) for path in bulk):
+            raise Invalid('Bulk storage must not overlap the read-only game input collection')
+        self.data.mkdir(parents=True, exist_ok=True)
+        from .backups import keep_count
+        self.backup_keep = keep_count()
         self.store = Store(self.data / "portkeeper.sqlite3")
+        from .storage_layout import check_layout
+        check_layout(self)
+        for path in (self.input_root, self.library_root, self.archive_root, self.work_root, self.cache_root):
+            path.mkdir(parents=True, exist_ok=True)
         self.github = github or Github()
         self.lock = threading.RLock()
         self.stop = threading.Event()
@@ -142,12 +157,12 @@ class Engine:
         from .preservation import Preservation
         from .shipwright import ShipwrightRunner
         from .assistant import RecipeAssistant
-        self.romm = RomM(self.data)
+        self.romm = RomM(self.data, cache_root=self.cache_root / 'romm')
         self.match_lock = threading.Lock()
         self.lifecycle = Lifecycle(self)
         self.preservation = Preservation(self)
         self.shipwright = ShipwrightRunner(self)
-        self.assistant = RecipeAssistant(self.data)
+        self.assistant = RecipeAssistant(self.data, work_root=self.storage / 'agent-workspaces', cache_root=self.cache_root / 'agents')
         from .reviews import Reviews
         self.reviews = Reviews(self)
         from .runner import OperationRunner
@@ -279,6 +294,10 @@ class Engine:
         proposals = [p for p in self.store.all("proposals") if p.get("kind") in ('definition', 'investigation') and p.get("status") == "pending_review"]
         return {"projects": projects, "jobs": jobs, "artifacts": artifacts, "proposals": proposals, "activity": self.reviews.activity(), "activity_cutoffs": self.get_setting("activity_cutoffs", {"projects": {}}), "playtests": self.store.all("playtests")[:1000],
                 "settings": {"input_root": str(self.input_root), "library_root": str(self.library_root),
+                             "storage_root": str(self.storage), "data_root": str(self.data),
+                             "toolchain_root": str(self.toolchain_root),
+                             "storage_separated": self.storage != self.data,
+                             "backup_keep": self.backup_keep,
                              "archive_root": str(self.archive_root), "docker_enabled": self.enable_docker,
                              "toolchain": self.get_setting("toolchain", {})},
                 "runner": {"docker_available": self.docker_available, "docker_error": self.docker_error,
@@ -1331,7 +1350,7 @@ class Engine:
         toolchain_valid, toolchain_error = False, None
         if toolchain.get("material"):
             try:
-                path = confined(self.data / "toolchains", toolchain["material"], must_exist=True)
+                path = confined(self.toolchain_root, toolchain["material"], must_exist=True)
                 if checksum(path) != toolchain.get("sha256"):
                     raise Invalid("Registered toolchain checksum changed; register the archive again before exporting")
                 toolchain_valid = True
@@ -1375,7 +1394,7 @@ class Engine:
                     required[required.index(name)] = alias
         toolchain = self.get_setting("toolchain", {})
         if toolchain.get("material"):
-            path = confined(self.data / "toolchains", toolchain["material"], must_exist=True)
+            path = confined(self.toolchain_root, toolchain["material"], must_exist=True)
             if checksum(path) != toolchain.get("sha256"):
                 raise Invalid("Registered toolchain checksum changed; register the archive again before exporting")
             materials["toolchain"] = {"path": str(path), "revision": toolchain.get("identity")}
@@ -1541,7 +1560,7 @@ class Engine:
             return None
         from .assistant import redact_text
         replacements = [(str(root), '[private-workspace]') for root in
-                        (self.data, self.work_root, self.input_root, self.library_root) if root]
+                        (self.data, self.storage, self.work_root, self.input_root, self.library_root) if root]
         for input_id, binding in (project.get('input_bindings') or {}).items():
             if isinstance(binding, dict) and isinstance(binding.get('path'), str) and binding['path']:
                 path = binding['path']
@@ -1866,9 +1885,9 @@ class Engine:
 
     def configure_toolchain(self, payload):
         if not isinstance(payload, dict) or not isinstance(payload.get("identity"), str) or not payload["identity"].strip():
-            raise Invalid("Provide the toolchain identity and an archive beneath the data/toolchains directory")
+            raise Invalid(f'Provide the toolchain identity and an archive beneath {self.toolchain_root}')
         material = payload.get("material")
-        path = confined(self.data / "toolchains", material, must_exist=True)
+        path = confined(self.toolchain_root, material, must_exist=True)
         if path.stat().st_size > MAX_FILE:
             raise Invalid("Toolchain archive exceeds 1 GiB")
         if not zipfile.is_zipfile(path):
@@ -1882,7 +1901,7 @@ class Engine:
         if not isinstance(image, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._/:\-]*@sha256:[a-f0-9]{64}", image):
             raise Invalid("Choose an already installed toolchain image pinned by digest")
         if not shutil.which("docker"):
-            raise Invalid("Docker is unavailable; place an existing toolchain archive under data/toolchains and register it instead")
+            raise Invalid(f'Docker is unavailable; place an existing toolchain archive under {self.toolchain_root} and register it instead')
         try:
             probe = subprocess.run(["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", image],
                                    capture_output=True, text=True, timeout=10)
@@ -1890,7 +1909,7 @@ class Engine:
                 raise Invalid("Pinned toolchain image is not installed or the Docker daemon is inaccessible")
         except (OSError, ValueError, subprocess.TimeoutExpired):
             raise Invalid("Could not inspect the local Docker toolchain image") from None
-        root = self.data / "toolchains"
+        root = self.toolchain_root
         root.mkdir(exist_ok=True)
         name = "toolchain-" + image.rsplit(":", 1)[-1] + ".tar"
         output = confined(root, name)
@@ -1944,9 +1963,9 @@ class Engine:
             return self.store.update("artifacts", artifact_id, published=True, published_at=now(), published_path=str(output))
 
     def demo(self):
-        # Synthetic input belongs under our data directory; never write into a user's input mount.
+        # Synthetic input belongs in our own bulk storage, never in the input mount.
         demo_input = b"PORTKEEPER SYNTHETIC FIXTURE - NOT A ROM\n"
-        fixture_root = self.data / "demo-inputs"
+        fixture_root = self.storage / "demo-inputs"
         fixture_root.mkdir(exist_ok=True)
         (fixture_root / "demo-assets.bin").write_bytes(demo_input)
         recipe = {"version": 1, "mode": "assemble", "payload": {"kind": "source"}, "inputs": [],

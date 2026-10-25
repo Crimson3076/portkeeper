@@ -118,8 +118,8 @@ class Context:
 class OperationRunner:
     def __init__(self, engine):
         self.engine = engine
-        self.cache = engine.data / "cache" / "dependencies"
-        self.prepared = engine.data / "prepared"
+        self.cache = engine.cache_root / "dependencies"
+        self.prepared = engine.prepared_root
         self.lock = threading.RLock()
         self.pkg_metadata_cache = {}
 
@@ -901,7 +901,7 @@ class OperationRunner:
             finally:
                 probe.unlink(missing_ok=True)
         except PermissionError:
-            raise Invalid('PS4 preparation cache is not writable. Give the Portkeeper service user write access to /data/prepared/ps4 in the app-data mount, then retry; original PKGs remain read-only.') from None
+            raise Invalid(f'PS4 preparation cache is not writable. Give the Portkeeper service user write access to {cache_root}, then retry; original PKGs remain read-only.') from None
         selected = [(key, self.resolve_input(ctx, key)) for key in op['packages']]
         selected = [(key, package) for key, package in selected if package is not None]
         if not selected or selected[0][0] != op['packages'][0]:
@@ -958,7 +958,7 @@ class OperationRunner:
         required_space = sum(p['size'] for p in packages) * 2 + 256 * 1024 * 1024
         self.prepared.mkdir(parents=True, exist_ok=True)
         if shutil.disk_usage(self.prepared).free < required_space:
-            raise Invalid(f"Not enough space in app data for extraction and packaging. Allow roughly {required_space / packaging.GIB:.1f} GB free for these PKGs; actual extracted size can vary.")
+            raise Invalid(f"Not enough space in bulk storage for extraction and packaging. Allow roughly {required_space / packaging.GIB:.1f} GB free for these PKGs; actual extracted size can vary.")
         work = cache.with_name(cache.name + ".work")
         shutil.rmtree(work, ignore_errors=True)
         (work / "pkgs").mkdir(parents=True)

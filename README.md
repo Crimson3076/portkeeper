@@ -25,7 +25,11 @@ To enable the reviewed Shipwright extractor build, supply a Linux build host wit
   --enable-profile-builds
 ```
 
-`start.sh` forwards flags to `python3 -m portkeeper`. Without flags, data lives in `.data`, local inputs in `.data/inputs`, and published packages in `.data/library`. The original input directory is read without modifying its files.
+`start.sh` forwards flags to `python3 -m portkeeper`. New installations keep small
+state in `.data` and bulky files in `.data-storage`; use `--storage-dir` to choose
+another location. Existing databases keep their old paths until explicitly migrated.
+The original input directory is read without modifying its files. See
+[storage and small backups](docs/STORAGE.md) before migrating an existing installation.
 
 For PS4 ports, [prepare your base and update PKGs automatically](docs/PS4_GAME_FILES.md)
 with checked extraction and editable packaging steps. The GOW3 Windows candidate
@@ -39,7 +43,15 @@ mkdir -p game-inputs
 docker compose up --build
 ```
 
-Compose binds the web service to `127.0.0.1:8787`, mounts `game-inputs` read-only, persists application data and the local library, and enables the fixed reviewed profile runner. The image includes its build tools and runs as UID 10001; local input files must be readable by that user. Replace `portkeeper-library:/library` in `compose.yaml` with your writable RomM ports directory when ready; that directory must be writable by UID 10001.
+Compose binds the web service to `127.0.0.1:8787`, mounts `game-inputs` read-only,
+and persists small state, bulk storage and the local library in separate volumes.
+`PORTKEEPER_STORAGE_DIR=/storage` keeps archives, prepared games and caches out of
+appdata. Existing installations must follow the [migration guide](docs/STORAGE.md)
+before adding this setting. Built-in metadata snapshots keep the latest three;
+`PORTKEEPER_BACKUP_KEEP` configures 1–20. No full-folder backup task is installed.
+The image includes its build tools and runs as UID 10001; local input files must be
+readable by that user. Replace `portkeeper-library:/library` with your writable RomM
+ports directory when ready; that directory must be writable by UID 10001.
 
 The input bind uses the shared SELinux label option `z` (`:ro,z`). On SELinux hosts, use shared `:z` for a RomM library bind too, such as `/srv/romm/ports:/library:z`, so other containers sharing that directory remain able to access it. The private label option `Z` is inappropriate for a directory shared with RomM. See [Docker's SELinux mount guidance](https://docs.docker.com/engine/storage/bind-mounts/#configure-the-selinux-label).
 
@@ -53,6 +65,12 @@ The image is published to `ghcr.io/crimson3076/portkeeper:latest` on every push 
 2. In **Docker → Add Container**, pick the `portkeeper` template.
 3. Set **Allowed hosts** to every address you type into the browser, such as `192.168.1.20,tower,tower.local`. Any other address is refused with `403 Unrecognized Host header`; this protects the unauthenticated UI from DNS-rebinding attacks.
 4. Point **Library** at your RomM ports folder when ready. Apply, then open the WebUI.
+
+The new template keeps small state at `/mnt/user/appdata/portkeeper`, bulk files at
+`/mnt/user/data/Emulation/portkeeper`, and published packages beneath that bulk
+directory. Game inputs default to `/mnt/user/data/media/roms` and are mounted
+read-only. Image updates do not rewrite an existing saved template or migrate data.
+See [storage layout, migration and backup coverage](docs/STORAGE.md).
 
 Unraid starts containers as root. The entrypoint takes ownership of the app-data folder for `PUID`/`PGID` (default `99:100`, nobody:users), then drops to that user. A non-empty library folder is never re-owned; it must already be writable by that user.
 

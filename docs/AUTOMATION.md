@@ -33,10 +33,12 @@ does not create a secure general-purpose worker or install a rootless daemon.
    replacement does not delete previous downloads. Publication remains a separate
    action or follows the existing per-game automatic publication policy.
 
-Successful recipes live in the project’s `autonomous_recipe`, with a distinct
+Successful recipe definitions live in the project’s `autonomous_recipe`, with a distinct
 `schema: 1`, `runner: isolated_scripts` contract. They do not reinterpret the
-schema-2 packaging definition. Public replay files are checksummed beneath
-`data/automation-recipes/`. Script edits increment the recipe revision and require
+schema-2 packaging definition. Public replay files are checksummed beneath the bulk
+storage's `automation-recipes/` (`/storage/automation-recipes` for new installs).
+These payloads need separate backup coverage; JSON alone cannot recreate unavailable
+upstream files. See [storage](STORAGE.md). Script edits increment the recipe revision and require
 another replay before accepting a new package. Updates can replay the same capture
 or use the model to investigate a new preserved capture under the saved policy.
 
@@ -71,19 +73,28 @@ PORTKEEPER_WORKER_IMAGE_ID=$(docker image inspect --format '{{.Id}}' ghcr.io/cri
 
 export PORTKEEPER_BROKER_DIRECTORY="$PWD/.worker"
 export PORTKEEPER_OWNED_DIRECTORY="/srv/owned-game-files"
+export PORTKEEPER_STATE_DIRECTORY="$PWD/.data"
+export PORTKEEPER_STORAGE_DIRECTORY="/srv/portkeeper-bulk"
+export PORTKEEPER_LIBRARY_DIRECTORY="$PORTKEEPER_STORAGE_DIRECTORY/library"
+# These paths must already be on the intended filesystems and writable by this
+# rootless account. In a VM, use that VM's mounted NAS path for bulk storage.
+mkdir -p "$PORTKEEPER_STATE_DIRECTORY" "$PORTKEEPER_STORAGE_DIRECTORY" "$PORTKEEPER_LIBRARY_DIRECTORY"
 mkdir -p "$PORTKEEPER_BROKER_DIRECTORY/exchange"
+chmod 700 "$PORTKEEPER_STATE_DIRECTORY"
 chmod 700 "$PORTKEEPER_BROKER_DIRECTORY"
 
 python3 -m portkeeper.worker_broker \
   --root "$PORTKEEPER_BROKER_DIRECTORY/exchange" \
   --input-root "$PORTKEEPER_OWNED_DIRECTORY" \
   --socket "$PORTKEEPER_BROKER_DIRECTORY/broker.sock" \
-  --protected-root "$PWD/.data" \
+  --protected-root "$PORTKEEPER_STATE_DIRECTORY" \
   --image "$PORTKEEPER_WORKER_IMAGE_ID"
 ```
 
 Keep the broker running under the host’s service manager. In another shell with the
-same exported directory settings, start the app using the optional rootless override:
+same exported directory settings, start the app using the optional rootless override.
+Its state/bulk/library bind mounts must be owned/writable by the daemon account;
+the default image-owned named volumes are not suitable for this mapped UID:
 
 ```bash
 docker compose -f compose.yaml -f compose.automation.yaml up -d --build
@@ -96,6 +107,8 @@ folder containing it. The exchange directory cannot overlap the input collection
 
 Inside this **rootless** Compose deployment, UID 0 maps to the unprivileged host
 account and lets the app reach the same owner-only socket/files. This override is
+accepted by the entrypoint only when the kernel UID map confirms a non-root parent
+ID; ordinary host-root execution is still refused. This override is
 for a new deployment on that host; migrating existing Unraid data also requires a
 private backup and deliberate ownership/mount configuration. Do not copy secrets
 into the worker image. Existing Unraid images/settings are unchanged by deployment

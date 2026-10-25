@@ -32,7 +32,7 @@ class MaintenanceTests(unittest.TestCase):
         result = manage(self.engine, {'action': 'clear_activity'})
         self.assertEqual(result['jobs_cleared'], 1)
         self.assertTrue((Path(result['backup']) / 'portkeeper.sqlite3').is_file())
-        self.assertTrue((Path(result['backup']) / ('b'*32+'.json')).is_file())
+        self.assertTrue((Path(result['backup']) / 'drafts' / ('b'*32+'.json')).is_file())
         self.assertEqual(self.engine.store.get('jobs', 'b'*32)['logs'], [])
         self.assertEqual(self.engine.store.get('artifacts', 'c'*32)['validation_level'], 'launch_checked')
         self.assertEqual(self.archive.read_bytes(), b'owned assets')

@@ -1,12 +1,9 @@
 """Explicit housekeeping with private backups; never removes game/archive files."""
-import json
 import re
-import shutil
-import sqlite3
-from contextlib import closing
 from . import packaging
+from .backups import create_backup
 from .safety import Invalid
-from .storage import identifier, now
+from .storage import now
 
 
 def manage(engine, payload):
@@ -40,11 +37,8 @@ def _manage(engine, payload):
     if job_id and active(jobs[0]):
         raise Invalid('Running activity cannot be cleared')
     with engine.lock:
-        root = engine.data / 'maintenance-backups' / identifier()
-        root.mkdir(parents=True, mode=0o700)
-        # SQLite backup includes a consistent snapshot of WAL transactions.
-        with engine.store.connect() as source, closing(sqlite3.connect(root / 'portkeeper.sqlite3')) as target:
-            source.backup(target)
+        root = create_backup(engine.store, engine.data, reason=action,
+                             context={'project_id': project_id, 'job_id': job_id})
         result = {'action': action, 'backup': str(root), 'jobs_cleared': 0, 'trials_cleared': 0, 'files_deleted': 0}
         if action == 'clear_activity':
             for job in jobs:
@@ -52,7 +46,7 @@ def _manage(engine, payload):
                     continue
                 draft = engine.data / 'drafts' / (job['id'] + '.json')
                 if draft.is_file() and not draft.is_symlink():
-                    shutil.move(str(draft), root / draft.name)
+                    draft.unlink()  # Already preserved under drafts/ in the state snapshot.
                 if job.get('kind') == 'automation':
                     engine.automation.clear_record(job['id'], root)
                 engine.store.update('jobs', job['id'], logs=[], checkpoints=[], activity_hidden=True, draft_record_available=False)
@@ -95,5 +89,4 @@ def _manage(engine, payload):
                     if record.get('project_id') == project_id:
                         engine.store.delete(table, record['id'])
             engine.store.delete('projects', project_id)
-        (root / 'action.json').write_text(json.dumps({**result, 'project_id': project_id, 'job_id': job_id, 'created_at': now()}, indent=2))
         return result

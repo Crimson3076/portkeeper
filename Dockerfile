@@ -36,8 +36,8 @@ RUN apt-get update \
     && python -c 'import re, subprocess; v = re.search(r"cmake version (\d+)\.(\d+)", subprocess.check_output(["cmake", "--version"], text=True)); assert v and tuple(map(int, v.groups())) >= (3, 26), "The profile runner needs CMake 3.26+"' \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 10001 --create-home portkeeper \
-    && mkdir /data /inputs /library \
-    && chown portkeeper:portkeeper /data /library
+    && mkdir /data /storage /inputs /library \
+    && chown portkeeper:portkeeper /data /storage /library
 
 COPY --from=compat-ssl /compat/ /opt/portkeeper/compat-ssl/
 COPY --from=subscription-clis /usr/local/bin/node /usr/local/bin/node

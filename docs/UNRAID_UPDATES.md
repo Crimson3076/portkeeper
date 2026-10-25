@@ -6,13 +6,16 @@ and push step succeeds; pushing source alone does not mean the image is availabl
 
 1. Wait for the commit's **Tests** and **Docker** workflows to finish at
    <https://github.com/Crimson3076/portkeeper/actions>.
-2. Stop Portkeeper in Unraid's **Docker** tab. Back up the host folder mapped to
-   `/data` (normally `/mnt/user/appdata/portkeeper`) while the container is stopped.
-   Keep this backup private: it can include credentials and game material. Record
+2. Create a small state snapshot with `python -m portkeeper.backups --data-dir /data`
+   under the service account, or use a verified Appdata Backup snapshot with the
+   appropriate coverage. Do not recursively copy a legacy `/data` containing game
+   payloads. Stop Portkeeper in the Docker context where it actually runs.
+   Keep state snapshots private: they include credentials. Record
    the current image ID or digest if you want a rollback option.
 3. Edit the container and confirm **Repository** is
-   `ghcr.io/crimson3076/portkeeper:latest`. Keep the existing `/data`, `/inputs`, and
-   `/library` mappings, allowed hosts, port, PUID and PGID settings.
+   `ghcr.io/crimson3076/portkeeper:latest`. Keep the existing `/data`, `/inputs`,
+   `/library`, and configured `/storage` mappings, allowed hosts, port, PUID and PGID
+   settings. Adding `/storage` to a legacy install requires the migration below.
 4. On the **Docker** tab, choose **Check for Updates**, then update Portkeeper.
    If Unraid does not detect the new image, enable **Advanced View**, open the
    container's menu and choose **Force Update**.
@@ -20,6 +23,13 @@ and push step succeeds; pushing source alone does not mean the image is availabl
    (Ctrl+Shift+R, or Cmd+Shift+R on macOS) to load the new interface.
 6. Confirm your games and settings remain present. Each game now has **Play**,
    **Updates**, and **Advanced** tabs. Check the container logs if startup fails.
+
+New templates separate `/data` and `/storage`. An image update retains legacy paths;
+it does not move files or change your saved template. Follow [storage migration](STORAGE.md)
+before enabling `PORTKEEPER_STORAGE_DIR=/storage` on an existing installation. The
+helper verifies copies and rewrites paths without deleting originals. Review old
+backup deletions separately; unique acceptance artifacts and worker images are not
+automatic retention targets.
 
 An update recreates the container using the image and retained template settings.
 Persistent data survives through the host mounts; files stored only inside the
@@ -83,4 +93,8 @@ docker inspect --format='{{.Image}}' portkeeper
 docker image inspect <that-image-id> --format='{{index .Config.Labels "org.opencontainers.image.revision"}}'
 ```
 
-Also compare the served browser assets/API capabilities with the expected release. Updating an image does not replace a saved runtime-only project definition: review and save the PKG preset separately. The service user must be able to write `/data/prepared/ps4`; keep `/inputs` read-only.
+Also compare the served browser assets/API capabilities with the expected release.
+Updating an image does not replace a saved runtime-only project definition: review
+and save the PKG preset separately. The service user must be able to write the
+configured bulk `prepared/ps4` directory (`/storage/prepared/ps4` in new installs);
+keep `/inputs` read-only.

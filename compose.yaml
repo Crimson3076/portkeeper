@@ -2,6 +2,9 @@ services:
   portkeeper:
     build: .
     user: "10001:10001"
+    environment:
+      PORTKEEPER_STORAGE_DIR: /storage
+      PORTKEEPER_BACKUP_KEEP: "3"
     ports:
       - "127.0.0.1:8787:8787"
     # To open the UI from another machine, publish the port on the LAN and list
@@ -10,6 +13,7 @@ services:
     #   PORTKEEPER_ALLOWED_HOSTS: ""
     volumes:
       - portkeeper-data:/data
+      - portkeeper-storage:/storage
       - ./game-inputs:/inputs:ro,z
       - portkeeper-library:/library
     init: true
@@ -29,4 +33,5 @@ services:
     # Arbitrary Docker recipes stay disabled; no Docker socket is mounted.
 volumes:
   portkeeper-data:
+  portkeeper-storage:
   portkeeper-library:

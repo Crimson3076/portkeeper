@@ -184,10 +184,11 @@ class _IO:
 
 
 class SubscriptionAgents:
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, work_root=None, cache_root=None):
         self.data_dir = Path(data_dir).absolute()
         self.homes = self.data_dir / 'secrets' / 'agents'
-        self.workspaces = self.data_dir / 'agent-workspaces'
+        self.workspaces = Path(work_root).absolute() if work_root is not None else self.data_dir / 'agent-workspaces'
+        self.cache_root = Path(cache_root).absolute() if cache_root is not None else None
         self._lock = threading.RLock()
         self._auth_cache, self._help_cache, self._logins = {}, {}, {}
         self._models_cache = {}
@@ -233,8 +234,10 @@ class SubscriptionAgents:
         self._dir(self.data_dir / 'secrets')
         self._dir(self.homes)
         home = self._dir(self.homes / provider)
-        self._dir(home / 'tmp')
-        for name in ('.config', '.cache', '.local/share'):
+        cache = self._dir(self.cache_root / provider) if self.cache_root is not None else home
+        self._dir(cache / 'tmp')
+        self._dir(cache / '.cache')
+        for name in ('.config', '.local/share'):
             self._dir(home / name)
         if provider == 'codex':
             self._write(home / '.codex/config.toml', _CODEX_CONFIG)
@@ -256,11 +259,12 @@ class SubscriptionAgents:
 
     def _env(self, provider):
         home = self._home(provider)
+        cache = self.cache_root / provider if self.cache_root is not None else home
         # An allowlist removes every API key, cloud credential, custom endpoint,
         # NODE_OPTIONS injection, proxy, inherited agent configuration and hook.
         env = {name: os.environ[name] for name in ('PATH', 'LANG', 'LC_ALL', 'SYSTEMROOT', 'WINDIR') if name in os.environ}
-        env.update(HOME=str(home), USERPROFILE=str(home), TMPDIR=str(home / 'tmp'),
-                   XDG_CONFIG_HOME=str(home / '.config'), XDG_CACHE_HOME=str(home / '.cache'),
+        env.update(HOME=str(home), USERPROFILE=str(home), TMPDIR=str(cache / 'tmp'),
+                   XDG_CONFIG_HOME=str(home / '.config'), XDG_CACHE_HOME=str(cache / '.cache'),
                    XDG_DATA_HOME=str(home / '.local/share'), NO_COLOR='1', TERM='dumb', NO_BROWSER='true',
                    DISABLE_AUTOUPDATER='1', DISABLE_UPDATES='1')
         if provider == 'codex':

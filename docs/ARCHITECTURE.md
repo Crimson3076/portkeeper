@@ -46,7 +46,13 @@ The scheduler ticks every 15 seconds and checks projects whose `poll_minutes` in
   <frozen-project-basename>-<target>.zip
 ```
 
-The input root is separate and treated as read-only. RomM inputs use a private local cache. Generic workspaces are removed after builds; reusable profile extractor/assets remain in the profile cache. Back up the full data directory privately.
+The input root is separate and treated as read-only. RomM inputs use a private local
+cache. Generic workspaces are removed after builds; reusable profile extractor/assets
+remain in the profile cache. New installations separate small state (`/data`) from
+bulk storage (`/storage`). Built-in snapshots allowlist metadata and keep the latest
+three by default; never recursively back up a legacy data directory containing game
+payloads. Preserve irreplaceable upstream captures, replay seeds and worker images
+separately. See [storage](STORAGE.md).
 
 Packages have immutable IDs, manifests, recipe/input hashes, and ZIP checksums. Publishing verifies the archived ZIP, copies it to a temporary file in the library directory, verifies that copy, and atomically renames it into place. A failed target leaves its previous publication intact. `auto_publish` is disabled by default and requires `auto_build`; manual rollback republishes any retained artifact. The publication basename freezes on first publish, so later project renames do not leave duplicate current filenames.
 

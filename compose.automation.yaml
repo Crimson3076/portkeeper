@@ -13,5 +13,11 @@ services:
       PORTKEEPER_WORKER_SOCKET: /worker/broker.sock
       PORTKEEPER_WORKER_EXCHANGE: /worker/exchange
     volumes:
+      # Bind directories owned by this rootless daemon account. Image-owned
+      # named volumes use UID 10001 and are not writable by mapped UID 0 once
+      # capabilities are dropped.
+      - ${PORTKEEPER_STATE_DIRECTORY:?Set the small private state directory}:/data
+      - ${PORTKEEPER_STORAGE_DIRECTORY:?Set the bulk storage directory}:/storage
+      - ${PORTKEEPER_LIBRARY_DIRECTORY:?Set the published library directory}:/library
       - ${PORTKEEPER_BROKER_DIRECTORY:?Set the private broker directory}:/worker
       - ${PORTKEEPER_OWNED_DIRECTORY:?Set the broker input directory}:/inputs:ro

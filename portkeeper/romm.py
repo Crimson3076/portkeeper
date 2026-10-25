@@ -201,10 +201,10 @@ def _cover_url(server_url, path):
 
 
 class RomM:
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, cache_root=None):
         self.data_dir = Path(data_dir)
         self.secrets = self.data_dir / 'secrets' / 'romm.json'
-        self.cache = self.data_dir / 'cache' / 'romm'
+        self.cache = Path(cache_root) if cache_root is not None else self.data_dir / 'cache' / 'romm'
         self.lock = threading.RLock()
         self.cover_cache = {}
         self.offered_art = {}

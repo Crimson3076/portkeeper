@@ -29,7 +29,7 @@ class RealWorkers(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix='portkeeper-real-workers-')
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.engine = Engine(self.root / 'data', self.root / 'owned', self.root / 'library')
+        self.engine = Engine(self.root / 'data', self.root / 'owned', self.root / 'library', storage_dir=self.root / 'bulk')
         self.addCleanup(self.engine.close)
         self.broker = WorkerBroker(self.root / 'exchange', self.engine.input_root,
                                    os.environ['PORTKEEPER_TEST_WORKER_IMAGE'], allow_rootful_test=os.environ.get('PORTKEEPER_TEST_ROOTLESS') != '1')
@@ -45,6 +45,27 @@ class RealWorkers(unittest.TestCase):
         self.engine.close()
         self.server.shutdown(); self.server.server_close(); self.thread.join(timeout=5)
         self.temp.cleanup()
+
+    def test_entrypoint_rootless_owner_can_write_state_but_host_root_is_refused(self):
+        entrypoint = Path(__file__).resolve().parent.parent / 'docker-entrypoint.sh'
+        script = self.root / 'entrypoint.sh'
+        shutil.copyfile(entrypoint, script)
+        script.chmod(0o444)  # Checkouts can have private modes; the image COPY sets 0755.
+        result = subprocess.run(['docker', 'run', '--rm', '--network', 'none', '--read-only',
+            '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true', '--user', '0:0',
+            '--mount', f'type=bind,src={script},dst=/entrypoint.sh,readonly',
+            '--mount', f'type=bind,src={self.engine.data},dst=/data',
+            '--env', 'PUID=0', '--env', 'PGID=0', '--entrypoint', '/bin/sh',
+            os.environ['PORTKEEPER_TEST_WORKER_IMAGE'], '/entrypoint.sh', 'python3', '-c',
+            'from pathlib import Path; Path("/data/entrypoint-check").write_text("ok")'],
+            text=True, capture_output=True, timeout=60)
+        if self.broker.test_mode:
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('host root', result.stderr)
+            self.assertFalse((self.engine.data / 'entrypoint-check').exists())
+        else:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((self.engine.data / 'entrypoint-check').read_text(), 'ok')
 
     def test_source_compile_private_preparation_and_clean_replay(self):
         if self.broker.test_mode:

@@ -619,7 +619,7 @@ class Automation:
     def preserve_seed(self, job):
         seed = self.job_root(job) / 'seed'
         identity = tree_identity(seed)
-        root = self.engine.data / 'automation-recipes' / identity['sha256']
+        root = self.engine.replay_root / identity['sha256']
         root.parent.mkdir(parents=True, exist_ok=True)
         if not root.exists():
             if shutil.disk_usage(root.parent).free < identity['bytes'] + 256 * 1024**2:
@@ -636,7 +636,7 @@ class Automation:
         return identity['sha256']
 
     def restore_seed(self, job, recipe, name='seed'):
-        root = self.engine.data / 'automation-recipes' / recipe['seed_sha256']
+        root = self.engine.replay_root / recipe['seed_sha256']
         if not root.is_dir() or root.is_symlink() or tree_identity(root)['sha256'] != recipe['seed_sha256']:
             raise Invalid('Saved public environment is missing or changed; restore the preserved files before replay')
         destination = self.job_root(job) / name
@@ -1129,7 +1129,9 @@ class Automation:
             if self.broker:
                 path = confined(self.job_root(job), run['log'])
                 if path.is_file() and not path.is_symlink():
-                    shutil.move(str(path), Path(backup) / (job + '-' + path.name))
+                    # Clearing diagnostics never pulls private worker output into
+                    # appdata backups. The pre-clear DB snapshot retains records.
+                    path.unlink()
         self.store.update('automation', job, attempts=[], worker_runs=[], steps=[], inputs=[], instruction='',
                           recipe=None, input_identity=None, checkpoint=None, user_request=None,
                           project_snapshot=None, model_identity=None)
