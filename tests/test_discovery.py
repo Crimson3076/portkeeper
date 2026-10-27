@@ -80,7 +80,9 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(repository('https://github.com/Owner/Port.git/releases/tag/v1'), 'Owner/Port')
         for url in ('https://github.com/owner', 'https://github.com/topics/recompilation',
                     'https://user:pass@github.com/owner/port', 'http://github.com/owner/port',
-                    'https://github.com.evil.test/owner/port', 'https://github.com/../bad', None):
+                    'https://github.com.evil.test/owner/port', 'https://github.com/../bad',
+                    'https://github.com/owner/' + 'x' * 201,
+                    'https://github.com/owner/port?' + 'x' * 2048, None):
             self.assertIsNone(repository(url), url)
         self.assertIsNone(repository('https://github.com/owner/.git'))
 

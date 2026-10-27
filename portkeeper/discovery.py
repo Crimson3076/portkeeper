@@ -46,6 +46,8 @@ def site_url(value, base=SOURCE):
 
 def repository(value):
     """Normalize only explicit GitHub repository links, never guess from a title."""
+    if not isinstance(value, str) or len(value) > 2048:
+        return None
     try:
         url = urllib.parse.urlsplit(value)
         if (url.scheme != 'https' or url.hostname != 'github.com' or url.username or url.password
@@ -57,7 +59,8 @@ def repository(value):
         if parts[0].lower() in {'features', 'topics', 'collections', 'marketplace', 'orgs', 'users', 'settings', 'sponsors'}:
             return None
         name = parts[1].removesuffix('.git')
-        return parts[0] + '/' + name if name else None
+        repo = parts[0] + '/' + name
+        return repo if name and len(repo) <= 200 else None
     except (TypeError, ValueError):
         return None
 

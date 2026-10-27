@@ -39,6 +39,8 @@ migration or backup deletion is part of this change.
   updates. Site outages do not block normal catalog setup.
 - Final parser review added handling for valueless HTML class attributes, so
   malformed third-party markup does not terminate a refresh without feedback.
+- Final storage review bounded GitHub URL/repository lengths as well as record
+  counts, preventing oversized third-party links from inflating catalog backups.
 - Documented the user flow, JSON records, limits and unverified live markup in
   [DISCOVERY.md](DISCOVERY.md).
 
