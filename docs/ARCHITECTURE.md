@@ -90,6 +90,13 @@ Retention defaults to keep all packages. Preview/apply keeps the latest N per ta
 
 The inbox stores deduplicated ready, failed-build, missing-input, and unavailable-upstream events. Read/dismissed events stay quiet when repeated. Browser notifications are optional and require a browser permission grant; they are not a separate push service.
 
+Optional Home Assistant delivery is configured under Settings → Notifications.
+Its long-lived token is held in the private `secrets/home-assistant.json` file;
+public state contains only connection status. Newly created inbox notices enter
+a bounded, single-worker delivery queue and call Home Assistant's persistent
+notification service. This runs independently of the browser and build workers.
+Delivery errors leave the local inbox intact. See [HOME_ASSISTANT.md](HOME_ASSISTANT.md).
+
 ## Preservation completeness
 
 Exports bundle captured source/assets, available reviewed dependency archives, the extractor patch/provenance, and an optional registered toolchain archive. ROMs, extracted game assets, user input paths, and credentials are excluded. Source declarations are inventoried conservatively; this is not a CMake interpreter or recursive package-registry mirror.

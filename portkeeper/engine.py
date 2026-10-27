@@ -158,6 +158,8 @@ class Engine:
         from .shipwright import ShipwrightRunner
         from .assistant import RecipeAssistant
         self.romm = RomM(self.data, cache_root=self.cache_root / 'romm')
+        from .home_assistant import HomeAssistant
+        self.home_assistant = HomeAssistant(self)
         self.match_lock = threading.Lock()
         self.lifecycle = Lifecycle(self)
         self.preservation = Preservation(self)
@@ -230,6 +232,7 @@ class Engine:
         self._closed = True
         self.stop.set()
         self.discovery.close()
+        self.home_assistant.close()
         if self.automation.broker and self.store.path.exists():
             for record in self.store.all('automation'):
                 if record.get('status') in ('queued', 'running'):
@@ -307,7 +310,8 @@ class Engine:
                            "profile_builds_enabled": self.enable_profile_builds, "profile_runner": self.shipwright.availability(),
                            "packaging_runner": {**self.packager.availability(), "runner_version": packaging.RUNNER_VERSION}},
                 "catalog": self.catalog.status(),
-                "romm": public_romm, "profiles": catalog(), "notifications": self.lifecycle.notifications(),
+                "romm": public_romm, "home_assistant": self.home_assistant.public_config(),
+                "profiles": catalog(), "notifications": self.lifecycle.notifications(),
                 "assistant": assistant, "mcp": self.mcp.public_config(), "automation": self.automation.status(),
                 "summary": {"projects": len(projects), "artifacts": len(artifacts),
                             "needs_attention": sum(p["status"] == "needs_attention" for p in projects)}}

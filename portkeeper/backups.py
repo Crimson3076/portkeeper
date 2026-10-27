@@ -18,7 +18,7 @@ MAX_METADATA = 64 * 1024**2
 METADATA_DIRS = ('catalog', 'drafts', 'recipes', 'definitions', 'build-definitions')
 EXTENSIONS = {'.json', '.toml', '.yaml', '.yml', '.py', '.sh', '.cmd', '.bat', '.ps1', '.txt', '.md'}
 FILES = ('romm-import-identities.json', 'romm-artwork-receipts.json',
-         'secrets/assistant.json', 'secrets/romm.json',
+         'secrets/assistant.json', 'secrets/romm.json', 'secrets/home-assistant.json',
          'secrets/agents/codex/.codex/auth.json',
          'secrets/agents/claude_code/.claude/.credentials.json',
          'secrets/agents/claude_code/.claude.json',

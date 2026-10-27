@@ -79,7 +79,7 @@ function jsonViewer(key, value, className = "json-preview") {
   const copy = button("Copy JSON", "button secondary small", () => copyJson(preview.textContent, copy));
   return el("div", "json-viewer", [el("div", "inline-actions", copy), preview]);
 }
-async function copyJson(text, control) {
+async function copyJson(text, control, failureMessage = "Clipboard access is unavailable. Select the JSON and copy it with your browser, or use Export JSON.") {
   const active = document.activeElement, selection = window.getSelection();
   const range = selection?.rangeCount ? selection.getRangeAt(0).cloneRange() : null;
   const caret = active && typeof active.selectionStart === "number" ? {start:active.selectionStart, end:active.selectionEnd, direction:active.selectionDirection, top:active.scrollTop, left:active.scrollLeft} : null;
@@ -98,7 +98,7 @@ async function copyJson(text, control) {
     }
   }
   if (copied) { const label = control.textContent; control.textContent = "Copied!"; setTimeout(() => { control.textContent = label; }, 2000); }
-  else toast("Clipboard access is unavailable. Select the JSON and copy it with your browser, or use Export JSON.", true);
+  else toast(failureMessage, true);
 }
 function jsonReadingState(content) {
   const panes = [...content.querySelectorAll("pre[data-json-key]")].map(node => ({key:node.dataset.jsonKey, text:node.textContent, top:node.scrollTop, left:node.scrollLeft}));
@@ -549,6 +549,7 @@ function renderSettings() {
     formConfigFingerprint = fingerprint;
   }
   renderMcpSettings();
+  renderHomeAssistantSettings();
   const settings = state.settings || {};
   $("storage-grid").replaceChildren(...[["Small app state", settings.data_root], ["Bulk storage", settings.storage_root], ["Original game files", settings.input_root], ["Preservation archive", settings.archive_root], ["Local library output", settings.library_root]].filter(([, path]) => path).map(([label, path]) => el("div", "storage-item", [el("h3", "", label), el("code", "", path)])));
   if (settings.storage_separated === false) $("storage-grid").append(el("p", "field-help", "Legacy layout: bulk paths use the state directory. Check the actual mounts and follow the storage migration guide before changing them. State snapshots include metadata only; preserve upstream archives and exact replay files separately."));
@@ -571,6 +572,39 @@ function renderNotificationPreference() {
   $("browser-notifications").textContent = desktopNotifications && allowed ? "Disable desktop notifications" : "Enable desktop notifications";
   $("browser-notifications").disabled = !supported || (supported && Notification.permission === "denied");
   $("browser-notification-state").textContent = !supported ? "This browser does not support desktop notifications. The in-app inbox is available." : Notification.permission === "denied" ? "Browser permission is blocked. Enable it in your browser’s site settings if you want desktop notifications." : desktopNotifications && allowed ? "Enabled for this browser while Portkeeper is open." : "Disabled for this browser. Your inbox still records updates.";
+}
+function renderHomeAssistantSettings() {
+  const config = state.home_assistant || {}, working = busy.has("home-assistant");
+  if (!$("ha-url").dataset.dirty) $("ha-url").value = config.url || "";
+  if (!$("ha-enabled").dataset.dirty) $("ha-enabled").checked = Boolean(config.enabled);
+  $("ha-token").placeholder = config.has_token ? "Saved token · leave blank to keep" : "Paste your Home Assistant token";
+  $("ha-token-help").textContent = config.has_token ? "A token is saved privately on this server. Leave this field empty to keep it, or paste a replacement." : "In Home Assistant, open your profile → Security → Long-lived access tokens → Create token. The token is stored privately on the Portkeeper server.";
+  $("ha-connection-status").replaceWith(Object.assign(statusBadge(config.connected ? "ready" : config.configured ? "watching" : "needs_rom", config.connected ? "Connection verified" : config.configured ? "Token saved" : "Not connected"), {id: "ha-connection-status"}));
+  ["ha-save", "ha-url", "ha-token", "ha-enabled"].forEach(id => { $(id).disabled = working; });
+  $("ha-test").disabled = working || !config.configured; $("ha-send-test").disabled = working || !config.configured; $("ha-clear").disabled = working || !config.has_token;
+  $("ha-delivery-status").textContent = config.last_error || (config.last_sent_at ? `Last notification sent ${new Date(config.last_sent_at).toLocaleString()}.` : config.enabled ? "New inbox events will be sent to Home Assistant." : "Home Assistant delivery is off. Your Portkeeper inbox remains available.");
+}
+async function homeAssistantAction(action, event) {
+  event?.preventDefault();
+  if (busy.has("home-assistant")) return;
+  const result = $("ha-form-result"); result.textContent = action === "save" ? "Saving and testing…" : "Working…"; result.classList.remove("error");
+  busy.add("home-assistant"); renderHomeAssistantSettings();
+  let saved = false;
+  try {
+    let response;
+    if (action === "save") {
+      const config = await api("/api/home-assistant/config", {method: "POST", body: {url: $("ha-url").value.trim(), token: $("ha-token").value, enabled: $("ha-enabled").checked}});
+      state.home_assistant = config; $("ha-token").value = ""; $("ha-url").dataset.dirty = ""; $("ha-enabled").dataset.dirty = "";
+      saved = true;
+      response = await api("/api/home-assistant/test", {method: "POST", body: {}});
+    } else if (action === "clear") {
+      state.home_assistant = await api("/api/home-assistant/config", {method: "POST", body: {clear_token: true}});
+      $("ha-token").value = ""; $("ha-url").dataset.dirty = ""; $("ha-enabled").dataset.dirty = "";
+      response = {message: "Home Assistant token removed. Delivery is off."};
+    } else response = await api(action === "notification" ? "/api/home-assistant/test-notification" : "/api/home-assistant/test", {method: "POST", body: {}});
+    result.textContent = response.message;
+  } catch (error) { result.textContent = (saved ? "Settings saved. " : "") + error.message; result.classList.add("error"); }
+  finally { busy.delete("home-assistant"); renderHomeAssistantSettings(); await refresh(); }
 }
 function render() {
   const fingerprint = JSON.stringify([state, [...busy], route, activityView, settingsView, libraryLayout, [...gameFileChoices], [...gameFileChoiceLoading], [...draftGameFileChoices]]);
@@ -2733,6 +2767,12 @@ $("validation-form").addEventListener("submit", submitValidation);
 $("romm-form").addEventListener("submit", submitRomM);
 $("romm-test").addEventListener("click", testSavedRomM);
 $("romm-clear").addEventListener("click", clearRomMToken);
+$("ha-form").addEventListener("submit", event => homeAssistantAction("save", event));
+$("ha-test").addEventListener("click", () => homeAssistantAction("test"));
+$("ha-send-test").addEventListener("click", () => homeAssistantAction("notification"));
+$("ha-clear").addEventListener("click", () => homeAssistantAction("clear"));
+$("unraid-icon-copy").addEventListener("click", event => copyJson($("unraid-icon-url").value, event.currentTarget, "Select the icon URL and copy it with your browser."));
+["ha-url", "ha-enabled"].forEach(id => $(id).addEventListener("input", () => { $(id).dataset.dirty = "true"; }));
 $("assistant-form").addEventListener("submit", submitAssistant);
 $("toolchain-image-form").addEventListener("submit", submitToolchainImage);
 $("toolchain-material-form").addEventListener("submit", submitToolchainMaterial);
