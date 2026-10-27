@@ -37,6 +37,8 @@ migration or backup deletion is part of this change.
   lookup before a game can be added.
 - Preserved discovery search text, selection and list scroll during background
   updates. Site outages do not block normal catalog setup.
+- Final parser review added handling for valueless HTML class attributes, so
+  malformed third-party markup does not terminate a refresh without feedback.
 - Documented the user flow, JSON records, limits and unverified live markup in
   [DISCOVERY.md](DISCOVERY.md).
 

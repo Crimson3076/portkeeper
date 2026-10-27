@@ -136,7 +136,7 @@ def card_for(node):
     for ancestor in Page.ancestors(node):
         if ancestor.tag in ('body', 'main', 'section'):
             break
-        if ancestor.tag in ('article', 'li') or re.search(r'(?:^|[\s_-])(?:card|game|project|recomp)(?:$|[\s_-])', ancestor.attrs.get('class', ''), re.I):
+        if ancestor.tag in ('article', 'li') or re.search(r'(?:^|[\s_-])(?:card|game|project|recomp)(?:$|[\s_-])', ancestor.attrs.get('class') or '', re.I):
             return ancestor
     return node
 

@@ -42,8 +42,9 @@ class ParserTests(unittest.TestCase):
         self.assertTrue(all(set(e) == {'id', 'name', 'url', 'repository'} for e in entries))
 
     def test_card_link_with_nested_markup_and_no_specific_route(self):
-        entries = parse_index('<div class="project-card"><a href="/zelda"><h3>Zelda</h3></a></div>')
+        entries = parse_index('<div class><div class="project-card"><a href="/zelda"><h3>Zelda</h3></a></div></div>')
         self.assertEqual(entries[0]['name'], 'Zelda')
+        self.assertEqual(parse_index('<div class><a href="/games/zelda"><h3>Zelda</h3></a></div>')[0]['name'], 'Zelda')
 
     def test_multiple_repositories_on_a_card_are_not_silently_selected(self):
         html = '<article><a href="https://github.com/example/tool">Extractor</a><h3>Port</h3><a href="/games/port">Details</a><a href="https://github.com/example/port">Source</a></article>'
