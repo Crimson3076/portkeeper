@@ -30,26 +30,6 @@ class AllowedHostTests(unittest.TestCase):
 
 
 class HttpIntegrationTests(unittest.TestCase):
-    def test_home_assistant_tokens_are_configured_in_app_and_never_returned(self):
-        token = 'synthetic-private-home-assistant-token'
-        status, _, body = self.request('POST', '/api/home-assistant/config',
-                                      {'url': 'http://homeassistant.local:8123', 'token': token})
-        self.assertEqual(status, 200)
-        self.assertTrue(json.loads(body)['has_token'])
-        self.assertNotIn(token.encode(), body)
-        self.assertNotIn(token.encode(), self.request('GET', '/api/state')[2])
-        ha = self.engine.home_assistant
-        for action, method in (('test', 'test'), ('test-notification', 'send_test')):
-            with self.subTest(action=action), patch.object(ha, method, return_value={'ok': True}) as test:
-                self.assertEqual(self.request('POST', '/api/home-assistant/' + action, {})[0], 200)
-                test.assert_called_once_with()
-                self.assertEqual(self.request('POST', '/api/home-assistant/' + action, {}, {'Origin': 'https://other.test'})[0], 400)
-                self.assertEqual(test.call_count, 1)
-        self.assertEqual(self.request('POST', '/api/home-assistant/config', {'clear_token': True}, {'Origin': 'https://other.test'})[0], 400)
-        self.assertTrue(ha.public_config()['has_token'])
-        self.assertEqual(self.request('POST', '/api/home-assistant/config', {'clear_token': True})[0], 200)
-        self.assertFalse(ha.public_config()['has_token'])
-
     def test_discovery_routes_are_read_only_until_explicit_refresh_and_check_origin(self):
         with patch.object(self.engine.discovery, 'fetch') as fetch:
             status, _, body = self.request('GET', '/api/discovery')

@@ -166,14 +166,10 @@ class Lifecycle:
                 return self.store.get("notifications", event_id)
             except KeyError:
                 pass
-            notice = self.store.put("notifications", {
+            return self.store.put("notifications", {
                 "id": event_id, "project_id": project_id, "project_name": project["name"], "kind": kind,
                 "message": message.strip(), "artifact_id": artifactid, "job_id": jobid,
                 "created_at": now(), "read": False, "dismissed": False})
-        destination = getattr(self.engine, 'home_assistant', None)
-        if destination:
-            destination.enqueue(notice)
-        return notice
 
     def notifications(self, project_id=None, unread_only=False):
         records = [n for n in self.store.all("notifications") if not n.get("dismissed")

@@ -24,16 +24,6 @@ async function create(saved, storageBlocked=false, source=fixture) {
   w.fetch=async (endpoint, options={})=>{
     let payload={};
     if(endpoint==='/api/state')payload=source;
-    else if(endpoint==='/api/home-assistant/config'){
-      const body=JSON.parse(options.body);requests.push({endpoint,body});
-      const old=source.home_assistant||{};
-      source.home_assistant={url:body.url??old.url,has_token:body.clear_token?false:Boolean(body.token||old.has_token),configured:!body.clear_token&&Boolean(body.token||old.has_token),enabled:body.clear_token?false:body.enabled??old.enabled??false,connected:false};payload=source.home_assistant;
-    }
-    else if(endpoint==='/api/home-assistant/test'||endpoint==='/api/home-assistant/test-notification'){
-      requests.push({endpoint,body:JSON.parse(options.body)});
-      if(source.ha_test_error)return {ok:false,status:400,json:async()=>({error:source.ha_test_error})};
-      source.home_assistant.connected=true;payload={ok:true,message:endpoint.endsWith('test-notification')?'Test notification sent to Home Assistant.':'Home Assistant connection verified.'};
-    }
     else if(endpoint==='/api/assistant/models'){const body=JSON.parse(options.body);requests.push({endpoint,body});payload={models:source.agent_model_choices?.[body.provider] || ['provider-model-a','provider-model-b']};}
     else if(endpoint==='/api/assistant/provider'){
       const body=JSON.parse(options.body);requests.push({endpoint,body});source.assistant||={};source.assistant.provider=body.provider;
@@ -496,31 +486,6 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   assert.deepEqual(requests.at(-1).body,{request_id:'question-two',reply:'Standard'});
   d.getElementById('project-activity-tab').click();await tick();assert(d.querySelector('.automatic-question'),'Questions are answerable beside the progress logs');
   dom.window.close();
-  const homeAssistantFixture=JSON.parse(JSON.stringify(fixture));
-  dom=await create(null,false,homeAssistantFixture);w=dom.window;d=w.document;
-  w.location.hash='settings';await tick();d.getElementById('settings-notifications-tab').click();
-  assert(!d.getElementById('settings-notifications').hidden);
-  assert.equal(d.getElementById('ha-token').type,'password');assert(d.getElementById('ha-send-test').disabled);
-  const haUrl=d.getElementById('ha-url'),haToken=d.getElementById('ha-token');
-  haUrl.value='http://homeassistant.local:8123';haUrl.dispatchEvent(new w.Event('input'));haToken.value='synthetic-private-HA-token';d.getElementById('ha-enabled').click();
-  w.pollRefresh();await tick();await tick();
-  assert.equal(haUrl.value,'http://homeassistant.local:8123');assert.equal(haToken.value,'synthetic-private-HA-token');assert(d.getElementById('ha-enabled').checked,'Polling preserves unsaved HA settings');
-  d.getElementById('ha-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));await tick();await tick();
-  assert.equal(requests.at(-2).endpoint,'/api/home-assistant/config');assert.deepEqual(requests.at(-2).body,{url:'http://homeassistant.local:8123',token:'synthetic-private-HA-token',enabled:true});
-  assert.equal(requests.at(-1).endpoint,'/api/home-assistant/test');assert.equal(haToken.value,'');assert(d.getElementById('ha-token-help').textContent.includes('saved privately'));
-  assert(!d.getElementById('settings-notifications').textContent.includes('synthetic-private-HA-token'));assert(!d.getElementById('ha-send-test').disabled);
-  d.getElementById('ha-send-test').click();await tick();await tick();assert.equal(requests.at(-1).endpoint,'/api/home-assistant/test-notification');
-  d.getElementById('ha-clear').click();await tick();await tick();assert.deepEqual(requests.at(-1).body,{clear_token:true});assert(d.getElementById('ha-test').disabled);assert(!d.getElementById('ha-enabled').checked);
-  d.getElementById('settings-appearance-tab').click();
-  let iconCopied='';w.navigator.clipboard={writeText:async text=>{iconCopied=text;}};d.getElementById('unraid-icon-copy').click();await tick();
-  assert.equal(iconCopied,'https://raw.githubusercontent.com/Crimson3076/portkeeper/main/static/portkeeper-fruit.png');
-  assert(d.querySelector('.app-icon-preview img').src.endsWith('/static/portkeeper-fruit.png'));
-  dom.window.close();
-  homeAssistantFixture.ha_test_error='Home Assistant rejected the token.';
-  dom=await create(null,false,homeAssistantFixture);w=dom.window;d=w.document;w.location.hash='settings';await tick();d.getElementById('settings-notifications-tab').click();
-  d.getElementById('ha-token').value='synthetic-replacement';d.getElementById('ha-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));await tick();await tick();
-  assert(d.getElementById('ha-form-result').textContent.includes('Settings saved. Home Assistant rejected'));
-  assert.equal(d.getElementById('ha-token').value,'','The token is cleared after saving even if its connection test fails');dom.window.close();
   const discoveryFixture=JSON.parse(JSON.stringify(fixture));
   discoveryFixture.catalog_games=[{id:'banjo-recompiled',name:'Banjo Recompiled',repository:'BanjoRecomp/BanjoRecomp',targets:['linux','windows'],runner:'operations',needs:[{label:'Banjo-Kazooie (USA) 1.0 N64 ROM'}],first_run:{mode:'preloaded'},in_library:null}];
   discoveryFixture.discovery={source:'Recomp Launcher',fetched_at:'2026-10-27T00:00:00Z',stale:false,refreshing:false,entries:[

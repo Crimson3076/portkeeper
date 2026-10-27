@@ -105,14 +105,6 @@ class Handler(BaseHTTPRequestHandler):
             elif method == "GET" and path == "/api/profiles":
                 from .profiles import catalog
                 self.json(200, {"profiles": catalog()})
-            elif method == 'POST' and path == '/api/home-assistant/config':
-                self.json(200, self.engine.home_assistant.configure(self.body()))
-            elif method == 'POST' and path == '/api/home-assistant/test':
-                self.body()
-                self.json(200, self.engine.home_assistant.test())
-            elif method == 'POST' and path == '/api/home-assistant/test-notification':
-                self.body()
-                self.json(200, self.engine.home_assistant.send_test())
             elif method == "POST" and path == "/api/romm/config":
                 payload = self.body()
                 self.json(200, self.engine.configure_romm(payload))

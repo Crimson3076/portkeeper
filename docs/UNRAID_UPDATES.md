@@ -79,18 +79,10 @@ resume normal updates.
 New installs using `unraid/portkeeper.xml` include the Portkeeper icon. For an existing container, set its Icon URL in the Unraid template to:
 
 ```text
-https://raw.githubusercontent.com/Crimson3076/portkeeper/main/static/portkeeper-fruit.png
+https://raw.githubusercontent.com/Crimson3076/portkeeper/main/unraid/portkeeper.png
 ```
 
 Image updates do not replace an existing container's saved icon setting.
-The application image also advertises the URL through `net.unraid.docker.icon`;
-an existing template or container label can override that image default.
-The glossy fruit icon also appears in **Portkeeper Settings → Appearance**,
-where **Copy icon URL** works on local HTTP connections. In Unraid, edit the
-container, enable **Advanced View**, replace **Icon URL** and apply. The new
-filename helps avoid retaining the previous icon URL. If the dashboard still
-shows a cached icon, refresh the page or clear Unraid's cached icon for this
-container. The old `unraid/portkeeper.png` URL also serves the new artwork.
 
 ### Check image labels separately from container labels
 

@@ -54,8 +54,6 @@ They never copy the state directory recursively. A snapshot includes:
   test records and automation history).
 - Catalog/draft/recipe/definition text files from explicit metadata directories.
 - RomM identity/artwork receipts and known account/configuration credential files.
-  This includes the optional Home Assistant long-lived token in
-  `secrets/home-assistant.json`; keep that file covered by your private backups.
 
 Archives, ROMs, game data, packages, prepared folders, dependency archives, worker
 logs, agent caches, replay payloads and worker images are excluded even when an

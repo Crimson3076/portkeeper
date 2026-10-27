@@ -23,8 +23,6 @@ RUN npm ci --ignore-scripts --include=optional --omit=dev --no-audit --no-fund \
 
 FROM python:3.13-slim
 
-LABEL net.unraid.docker.icon="https://raw.githubusercontent.com/Crimson3076/portkeeper/main/static/portkeeper-fruit.png"
-
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 ENV PATH="/opt/portkeeper/agents/node_modules/.bin:${PATH}" DISABLE_AUTOUPDATER=1 DISABLE_UPDATES=1
 WORKDIR /app
