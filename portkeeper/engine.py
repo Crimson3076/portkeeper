@@ -175,6 +175,8 @@ class Engine:
         self.mcp = MCP(self)
         self.publisher = Publisher(self)
         self.catalog = Catalog(self)
+        from .discovery import Discovery
+        self.discovery = Discovery(self)
         from .autonomous import Automation
         self.automation = Automation(self)
         self.automation.recover()
@@ -227,6 +229,7 @@ class Engine:
             return
         self._closed = True
         self.stop.set()
+        self.discovery.close()
         if self.automation.broker and self.store.path.exists():
             for record in self.store.all('automation'):
                 if record.get('status') in ('queued', 'running'):
@@ -514,6 +517,12 @@ class Engine:
             from .romm_identity import validate_identity
             metadata = validate_identity(metadata)
         checked["metadata"] = metadata
+        reference = config.get('discovery_source')
+        if reference is not None:
+            from .discovery import site_url
+            if not isinstance(reference, dict) or reference.get('kind') != 'recomp_launcher':
+                raise Invalid('Unknown game discovery source')
+            checked['discovery_source'] = {'kind': 'recomp_launcher', 'url': site_url(reference.get('url'))}
         if profile_id:
             checked.update(profile=profile_id, rom_source=config.get("rom_source"))
         return checked

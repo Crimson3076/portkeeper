@@ -30,6 +30,26 @@ class AllowedHostTests(unittest.TestCase):
 
 
 class HttpIntegrationTests(unittest.TestCase):
+    def test_discovery_routes_are_read_only_until_explicit_refresh_and_check_origin(self):
+        with patch.object(self.engine.discovery, 'fetch') as fetch:
+            status, _, body = self.request('GET', '/api/discovery')
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)['entries'], [])
+            fetch.assert_not_called()
+        with patch.object(self.engine.discovery, 'start_refresh', return_value={'refreshing': True}) as refresh:
+            self.assertEqual(self.request('POST', '/api/discovery/refresh', {})[0], 202)
+            refresh.assert_called_once_with(force=False)
+            self.assertEqual(self.request('POST', '/api/discovery/refresh', {'force': 'yes'})[0], 400)
+            self.assertEqual(self.request('POST', '/api/discovery/refresh', {}, {'Origin': 'https://other.test'})[0], 400)
+            self.assertEqual(refresh.call_count, 1)
+        with patch.object(self.engine.discovery, 'resolve', return_value={'repositories': []}) as resolve:
+            self.assertEqual(self.request('POST', '/api/discovery/resolve', {'url': '/games/zelda'})[0], 200)
+            resolve.assert_called_once_with({'url': '/games/zelda'})
+            self.assertEqual(self.request('POST', '/api/discovery/resolve', {}, {'Origin': 'https://other.test'})[0], 400)
+            self.assertEqual(resolve.call_count, 1)
+        self.assertEqual(self.request('POST', '/api/discovery/resolve', {'url': 'http://localhost/secrets'})[0], 400)
+        self.assertEqual(self.engine.store.all('projects'), [])
+
     def test_automation_routes_preserve_origin_and_path_boundaries(self):
         worker = self.engine.automation
         with patch.object(worker, 'configure', return_value={'policy': {'enabled': True}}) as configure:

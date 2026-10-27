@@ -240,6 +240,14 @@ or to the local library folder.
 
 ## Catalog
 
+For more projects, **Add a game → Discover more ports** reads references from
+[Recomp Launcher](https://recomplauncher.com/top). You can also paste one of its
+game pages into Custom game. Existing packaging steps are reused when a
+repository matches; unfamiliar projects go through upstream investigation and
+your chosen setup method. Reference listings do not establish platform support
+or packaging verification. See [discovery behavior, local JSON records and
+current limitations](DISCOVERY.md).
+
 The GitHub catalog (`catalog/projects.json` and `catalog/definitions/`) is fetched daily from
 `raw.githubusercontent.com` and cached under `<data-dir>/catalog/`. Invalid or unavailable
 data keeps the last valid cache; on first use the catalog bundled in the image is used.

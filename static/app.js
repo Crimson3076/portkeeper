@@ -1223,6 +1223,7 @@ function renderAdvanced(project, content, openJobs) {
   const configuration = el("section", "detail-card", [el("h2", "", project.autonomous_recipe ? "Previous fixed packaging instructions" : project.packaging ? "Your build instructions" : "Saved configuration & automation"), el("p", "detail-note", project.autonomous_recipe ? "The active script recipe is shown above. Saving changes to these fixed instructions switches back to the fixed runner and keeps the script recipe in history." : project.packaging ? "The readable instructions above are generated from this definition. Editing it creates a new definition revision, so new packages and their tests are never confused with older ones." + (project.profile ? " The reviewed profile's build commands stay fixed." : "") : project.profile ? "This game uses fixed, reviewed build instructions for its supported release. Automation settings are editable; changing trusted build execution requires a profile update. New unsupported releases are preserved for review." : "A custom recipe controls required inputs, outputs, and the build runner.")]);
   if (!project.packaging) configuration.append(el("div", "detail-facts", [meta("Packaging method", project.recipe?.mode || "capture"), meta("Automatic build", project.auto_build ? "Enabled" : "Disabled"), meta("Automatic local library copy", project.auto_publish ? "Enabled" : "Disabled"), meta("Polling interval", `${project.poll_minutes || 60} minutes`)]));
   configuration.append(externalLink("Configuration reference ↗", "https://github.com/Crimson3076/portkeeper/blob/main/docs/PACKAGING.md"));
+  if (project.discovery_source?.kind === "recomp_launcher") configuration.append(externalLink("Discovered on Recomp Launcher ↗", project.discovery_source.url));
   configuration.append(button(project.packaging ? "Edit packaging definition" : "Edit packaging instructions", "button secondary small", () => openRecipe(project.id)));
   const json = disclosure("configuration-json", "diagnostics-list"); json.append(el("summary", "table-action", project.packaging ? "View definition JSON" : "Executable configuration (JSON)"), jsonViewer("configuration", project.packaging || project.recipe || captureRecipe)); configuration.append(json);
   if (project.packaging) {
@@ -1772,6 +1773,7 @@ function assistantSettings() { return state.assistant || {}; }
 function pendingProposal(project) { return (state.proposals || []).find((proposal) => proposal.kind === "definition" && String(proposal.project_id) === String(project.id)); }
 async function openAddGame() {
   addGame = { step: "pick", games: [], loading: true, pick: null, files: null, choices: {}, targets: [], keep: false, publish: false, autoPublish: false, busy: false, rommConnected: rommReady(),
+    discoveryOpen: false, discovery: null, discoveryLoading: false, discoveryQuery: "", discoveryError: "",
     custom: { repo: "", lookup: null, name: "", targets: [], method: automaticAvailable() ? "automatic" : assistantSettings().configured ? "assistant" : "handoff" } };
   $("add-game-error").textContent = ""; renderAddGame(); $("add-game-dialog").showModal();
   try { const result = await api("/api/catalog/games"); const groups = new Map();
@@ -1811,7 +1813,73 @@ function renderGamePicker(content, actions) {
   custom.addEventListener("click", () => { addGame.pick = { id: "custom", name: "a custom game" }; renderAddGame(); });
   grid.append(custom);
   content.append(grid);
+  const discover = button("Discover more ports", "button secondary", () => {
+    addGame.discoveryOpen = !addGame.discoveryOpen; renderAddGame();
+    if (addGame.discoveryOpen && !addGame.discovery) void loadDiscovery();
+  });
+  discover.setAttribute("aria-expanded", String(addGame.discoveryOpen));
+  content.append(el("div", "discovery-heading", [discover, externalLink("Browse Recomp Launcher ↗", "https://recomplauncher.com/top")]));
+  if (addGame.discoveryOpen) { const panel = el("section", "discovery-panel"); panel.id = "game-discovery"; panel.setAttribute("aria-label", "Discover ports on Recomp Launcher"); content.append(panel); renderDiscovery(); }
   actions.append(button(addGame.pick ? `Continue with ${addGame.pick.name}` : "Choose a game", "button primary", continueAddGame, !addGame.pick));
+}
+async function loadDiscovery(refresh = false, poll = false) {
+  const session = addGame;
+  if (!session || session.discoveryLoading) return;
+  session.discoveryLoading = true; session.discoveryError = ""; renderDiscovery();
+  try {
+    let result = await api(refresh ? "/api/discovery/refresh" : "/api/discovery", refresh ? {method: "POST", body: {force: true}} : {});
+    if (addGame !== session) return;
+    if (!refresh && !poll && result.stale && !result.refreshing) result = await api("/api/discovery/refresh", {method: "POST", body: {force: false}});
+    if (addGame !== session) return;
+    session.discovery = result;
+    if (result.refreshing) setTimeout(() => {
+      if (addGame === session && session.discoveryOpen && session.step === "pick" && $("add-game-dialog").open) void loadDiscovery(false, true);
+    }, 1200);
+  } catch (error) { if (addGame === session) session.discoveryError = error.message; }
+  finally { session.discoveryLoading = false; if (addGame === session) renderDiscovery(); }
+}
+function renderDiscovery() {
+  const panel = $("game-discovery"), session = addGame;
+  if (!panel || !session) return;
+  const focused = document.activeElement?.id === "discovery-search", selection = focused ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : [0, 0], scroll = $("discovery-results")?.scrollTop || 0;
+  panel.replaceChildren(el("h3", "", "Discover ports on Recomp Launcher"), el("p", "field-help", "These are project references. Portkeeper checks the upstream repository before suggesting platforms or packaging steps."));
+  const search = input("discovery-search", "search", session.discoveryQuery); search.placeholder = "Search games or repositories"; search.setAttribute("aria-label", "Search discovered ports");
+  search.addEventListener("input", () => { session.discoveryQuery = search.value; renderDiscoveryResults(); });
+  panel.append(search);
+  const record = session.discovery;
+  const status = el("p", "field-help", session.discoveryError || record?.error || (session.discoveryLoading || record?.refreshing ? "Refreshing the project list…" : record?.fetched_at ? `List saved ${new Date(record.fetched_at).toLocaleString()}${record.stale ? " · may be out of date" : ""}` : "Load the project list, or browse the website and paste a game page under Custom game."));
+  status.setAttribute("role", "status");
+  panel.append(el("div", "discovery-heading", [button("Refresh list", "button secondary small", () => void loadDiscovery(true), session.discoveryLoading || record?.refreshing), externalLink("View source list ↗", "https://recomplauncher.com/top")]), status);
+  const results = el("div", "discovery-results"); results.id = "discovery-results"; panel.append(results); renderDiscoveryResults();
+  results.scrollTop = scroll;
+  if (focused) { search.focus(); search.setSelectionRange(...selection); }
+}
+function renderDiscoveryResults() {
+  const results = $("discovery-results"); if (!results || !addGame) return;
+  const query = addGame.discoveryQuery.trim().toLocaleLowerCase();
+  const entries = (addGame.discovery?.entries || []).filter(item => `${item.name} ${item.repository || ""}`.toLocaleLowerCase().includes(query));
+  results.replaceChildren();
+  entries.forEach(item => {
+    const known = addGame.games.flatMap(game => game.variants || [game]).find(game => item.repository && game.repository?.toLowerCase() === item.repository.toLowerCase());
+    const existing = (state.projects || []).find(project => item.repository && project.repo?.toLowerCase() === item.repository.toLowerCase());
+    const row = el("div", "discovery-result", [el("div", "", [el("strong", "", item.name), el("p", "field-help", item.repository || "Choose to find its upstream repository"), el("span", "field-help", existing ? "Already in your library" : known ? "Packaging steps available" : "Packaging setup needed")]), el("div", "inline-actions", [externalLink("Reference ↗", item.url), button(existing ? "Open game" : known ? "Choose game" : "Investigate setup", "button secondary small", () => void chooseDiscovery(item), addGame.busy)])]);
+    results.append(row);
+  });
+  if (!entries.length && !addGame.discoveryLoading && !addGame.discovery?.refreshing) results.append(el("p", "detail-empty", query ? "No matching projects. You can still add any upstream repository with Custom game." : "No saved projects yet. Browse Recomp Launcher or paste a game page under Custom game."));
+}
+async function chooseDiscovery(item) {
+  if (addGame.busy) return;
+  addGame.custom.name = item.name;
+  addGame.custom.reference = item.url.startsWith("https://github.com/") ? "https://recomplauncher.com/top" : item.url;
+  if (item.repository) { await useDiscoveryRepository(item.repository); return; }
+  addGame.step = "custom"; addGame.custom.repo = item.url; renderAddGame(); await lookupCustomGame();
+}
+async function useDiscoveryRepository(repository) {
+  const known = addGame.games.flatMap(game => game.variants || [game]).find(game => game.repository?.toLowerCase() === repository.toLowerCase());
+  const existing = (state.projects || []).find(project => project.repo?.toLowerCase() === repository.toLowerCase());
+  if (existing) { $("add-game-dialog").close(); navigateProject(existing.id); return; }
+  if (known) { addGame.pick = known; continueAddGame(); return; }
+  addGame.custom.repositories = null; addGame.custom.repo = repository; addGame.custom.lookup = null; addGame.step = "custom"; renderAddGame(); await lookupCustomGame();
 }
 function continueAddGame() {
   const pick = addGame.pick; if (!pick) return;
@@ -1915,11 +1983,16 @@ async function submitAddGame() {
 function renderCustomGame(content, actions) {
   const custom = addGame.custom; $("add-game-heading").textContent = "Custom game";
   actions.append(button("← Back", "button subtle left-action", () => { addGame.step = "pick"; renderAddGame(); }, addGame.busy));
-  const where = el("div", "setup-panel", el("h3", "", "Where is it on GitHub?"));
-  const repo = input("custom-repo", "text", custom.repo, "owner/repository or a GitHub link"); repo.setAttribute("aria-label", "GitHub repository");
-  repo.addEventListener("input", () => { custom.repo = repo.value; });
+  const where = el("div", "setup-panel", el("h3", "", "Where is the project?"));
+  const repo = input("custom-repo", "text", custom.repo, "GitHub repository or Recomp Launcher game page"); repo.setAttribute("aria-label", "GitHub repository or Recomp Launcher game page");
+  repo.addEventListener("input", () => { custom.repo = repo.value; custom.reference = null; custom.repositories = null; if (custom.lookup) { custom.lookup = null; $("custom-add-submit")?.setAttribute("disabled", ""); } });
   repo.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); void lookupCustomGame(); } });
   where.append(el("div", "inline-actions", [repo, button(custom.looking ? "Looking up…" : "Look up", "button secondary small", lookupCustomGame, custom.looking)]));
+  if (custom.reference) where.append(externalLink("Found on Recomp Launcher ↗", custom.reference));
+  if (custom.repositories?.length) {
+    where.append(el("p", "field-help", "This page links to several repositories. Choose the game engine or port you want to investigate."));
+    custom.repositories.forEach(item => where.append(button(item.repository, "button secondary small", () => void useDiscoveryRepository(item.repository), custom.looking)));
+  }
   const found = custom.lookup;
   if (found) {
     where.append(el("div", "setup-file", [el("span", "mark ok", "✓"), el("div", "", [el("strong", "", found.repository), el("p", "", `Latest release ${found.version} · ${found.assets.length} release file${found.assets.length === 1 ? "" : "s"}`)])]));
@@ -1960,22 +2033,33 @@ function renderCustomGame(content, actions) {
   content.append(method, el("p", "first-run-note warn", "A custom game is marked as not packaged until its packaging steps are approved and a build succeeds."));
   const submit = button(addGame.busy ? "Adding…" : "Add game", "button primary", submitCustomGame, addGame.busy || !custom.targets.length || !custom.name.trim()); submit.id = "custom-add-submit"; actions.append(submit);
 }
-function syncCustomSubmit() { const submit = $("custom-add-submit"); if (submit && addGame?.custom) submit.disabled = addGame.busy || !addGame.custom.targets.length || !addGame.custom.name.trim(); }
+function syncCustomSubmit() { const submit = $("custom-add-submit"); if (submit && addGame?.custom) submit.disabled = addGame.busy || !addGame.custom.lookup || !addGame.custom.targets.length || !addGame.custom.name.trim(); }
 async function lookupCustomGame() {
-  const custom = addGame.custom; let repo;
-  try { repo = normalizedRepo(custom.repo || ""); } catch (error) { $("add-game-error").textContent = error.message; return; }
+  const session = addGame, custom = session.custom; let repo;
+  if (custom.looking) return;
+  const reference = /^https:\/\/(?:www\.)?recomplauncher\.com(?:\/|$)/i.test(custom.repo.trim());
+  try { if (!reference) repo = normalizedRepo(custom.repo || ""); } catch (error) { $("add-game-error").textContent = error.message; return; }
+  custom.lookup = null; custom.repositories = null;
   custom.looking = true; $("add-game-error").textContent = ""; renderAddGame();
   try {
+    if (reference) {
+      const resolved = await api("/api/discovery/resolve", {method: "POST", body: {url: custom.repo.trim()}});
+      if (addGame !== session) return;
+      custom.reference = resolved.url;
+      if (resolved.repositories.length !== 1) { custom.repositories = resolved.repositories; return; }
+      repo = resolved.repositories[0].repository;
+    }
     const result = await api(`/api/github/lookup?repo=${encodeURIComponent(repo)}`);
+    if (addGame !== session) return;
     custom.lookup = result; custom.repo = result.repository; custom.name = custom.name || result.repository.split("/")[1]; custom.targets = [...result.platforms];
-  } catch (error) { $("add-game-error").textContent = error.message; }
-  finally { custom.looking = false; renderAddGame(); }
+  } catch (error) { if (addGame === session) $("add-game-error").textContent = error.message; }
+  finally { custom.looking = false; if (addGame === session) renderAddGame(); }
 }
 async function submitCustomGame() {
-  const custom = addGame.custom; if (addGame.busy) return;
+  const custom = addGame.custom; if (addGame.busy || custom.looking || !custom.lookup) return;
   addGame.busy = true; $("add-game-error").textContent = ""; renderAddGame();
   try {
-    const result = await api("/api/projects", { method: "POST", body: { name: custom.name.trim(), repo: custom.lookup.repository, targets: custom.targets, poll_minutes: 60, auto_build: false, auto_publish: false, recipe: captureRecipe } });
+    const result = await api("/api/projects", { method: "POST", body: { name: custom.name.trim(), repo: custom.lookup.repository, targets: custom.targets, poll_minutes: 60, auto_build: false, auto_publish: false, recipe: captureRecipe, ...(custom.reference ? {discovery_source: {kind: "recomp_launcher", url: custom.reference}} : {}) } });
     const project = result.project || result;
     await api(`/api/projects/${encodeURIComponent(project.id)}/check`, { method: "POST", body: { draft: custom.method === "assistant", automate: custom.method === "automatic" } });
     $("add-game-dialog").close(); await refresh();

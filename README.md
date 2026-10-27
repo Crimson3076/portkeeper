@@ -94,6 +94,7 @@ Credentials stay in server-side files with mode `0600`; they are not returned to
 - Public GitHub stable-release monitoring, source/release archival, staged jobs, logs, retries, and checksums.
 - Packaging definitions with a fixed operation vocabulary, headless extraction tools (Ship-style `.o2r` generation, OpenGOAL, PS4 PKG), explicit compatibility rules for new releases, and per-release status: preserved, needs review, packaged, in RomM.
 - A cached GitHub project catalog with verification scopes and definition updates.
+- [Recomp Launcher discovery](docs/DISCOVERY.md) inside Add a game, with searchable project references and upstream repository lookup.
 - A reviewed Shipwright 9.3.0 extraction/packaging worker; newer releases are preserved and held for a reviewed profile update.
 - Custom capture, assembly, and optional digest-pinned Docker recipes with per-target overrides.
 - Version pinning, validation history, known-good pointers, and retention previews protecting current, pinned, latest, and known-good packages.

@@ -178,6 +178,16 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(202, self.engine.automation.resume(path.split('/')[3], self.body()))
             elif method == "GET" and path == "/api/catalog/games":
                 self.json(200, self.engine.catalog_games())
+            elif method == 'GET' and path == '/api/discovery':
+                self.json(200, self.engine.discovery.status())
+            elif method == 'POST' and path == '/api/discovery/refresh':
+                payload = self.body()
+                force = payload.get('force', False)
+                if not isinstance(force, bool):
+                    raise Invalid('force must be true or false')
+                self.json(202, self.engine.discovery.start_refresh(force=force))
+            elif method == 'POST' and path == '/api/discovery/resolve':
+                self.json(200, self.engine.discovery.resolve(self.body()))
             elif re.fullmatch(r"/api/catalog/games/[a-z0-9][a-z0-9_.-]{0,63}/files", path) and method == "POST":
                 self.body()
                 self.json(200, self.engine.find_game_files(path.split("/")[4]))
