@@ -123,6 +123,69 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(self.engine.store.get("artifacts", published["id"])["published"])
         self.assertFalse(list(self.engine.library_root.glob("*.part")))
 
+    def run_scheduler_ticks(self, ticks, outcomes, notify_error=None):
+        real_stop = self.engine.stop
+
+        class Ticks:
+            def __init__(self, count):
+                self.count = count
+            def wait(self, seconds):
+                if seconds != 15:
+                    return real_stop.wait(seconds)
+                self.count -= 1
+                return self.count < 0
+            def is_set(self):
+                return False
+            def set(self):
+                real_stop.set()
+
+        calls = []
+        def check(project_id, *args, **kwargs):
+            calls.append(project_id)
+            outcome = outcomes[len(calls) - 1]
+            if outcome == "fail":
+                raise KeyError("Unknown project")
+            return {"job": {}}
+        self.engine.stop = Ticks(ticks)
+        with patch.object(self.engine, "check", side_effect=check), \
+                patch.object(self.engine, "notify", side_effect=notify_error) as notify:
+            self.engine.start_scheduler()
+            self.engine.scheduler.join(5)
+        self.assertFalse(self.engine.scheduler.is_alive())
+        return calls, notify
+
+    def test_scheduler_survives_a_failing_project_and_keeps_polling(self):
+        first = self.create_project()
+        calls, _ = self.run_scheduler_ticks(2, ["fail"] * 2)
+        self.assertEqual(calls, [first["id"], first["id"]], "A failed check must not end the polling thread")
+
+    def test_scheduler_notifies_once_after_three_consecutive_failures(self):
+        project = self.create_project()
+        calls, notify = self.run_scheduler_ticks(4, ["fail"] * 4)
+        self.assertEqual(len(calls), 4)
+        notify.assert_called_once()
+        self.assertEqual(notify.call_args.args[:2], (project["id"], "upstream_unavailable"))
+
+    def test_scheduler_success_resets_the_failure_count(self):
+        self.create_project()
+        calls, notify = self.run_scheduler_ticks(5, ["fail", "fail", "ok", "fail", "fail"])
+        self.assertEqual(len(calls), 5)
+        notify.assert_not_called()
+
+    def test_scheduler_keeps_polling_when_the_notification_fails(self):
+        self.create_project()
+        calls, notify = self.run_scheduler_ticks(4, ["fail"] * 4, notify_error=RuntimeError("down"))
+        self.assertEqual(len(calls), 4)
+        notify.assert_called_once()
+
+    def test_retry_of_automatic_publish_capture_keeps_publish_after(self):
+        project = self.create_project()
+        job = self.engine.job(project, "capture")
+        self.engine.store.update("jobs", job["id"], status="failed", build_after=True, publish_after=True)
+        with patch.object(self.engine, "check", return_value={"job": {}}) as check:
+            self.engine.retry(job["id"])
+        self.assertTrue(check.call_args.kwargs.get("publish_after"))
+
     def test_demo_produces_three_packages_with_honest_manifests(self):
         result = self.engine.demo()
         project = self.wait_project(result["project"]["id"])

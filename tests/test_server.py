@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from portkeeper.engine import Engine
 from portkeeper.server import Handler, make_server
+from portkeeper.safety import checksum
 
 
 class AllowedHostTests(unittest.TestCase):
@@ -210,6 +211,19 @@ class HttpIntegrationTests(unittest.TestCase):
             raw['files'][0]['file_name'] = 'Other-v1-linux.zip'
             self.assertEqual(self.request('GET', route)[0], 400)
             self.assertEqual(stream.call_count, calls)
+
+    def test_artifact_download_filename_is_escaped_in_content_disposition(self):
+        archive = self.engine.archive_root / 'odd.zip'
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        archive.write_bytes(b'PK\x03\x04test')
+        name = 'Gam"e\r\nX-Evil: 1 \u00e9.zip'
+        artifact = {'id': 'b' * 32, 'file': str(archive), 'sha256': checksum(archive), 'filename': name}
+        self.engine.store.put('artifacts', artifact)
+        status, headers, body = self.request('GET', f'/api/artifacts/{artifact["id"]}/download')
+        self.assertEqual(status, 200)
+        self.assertNotIn('X-Evil', headers)
+        self.assertTrue(headers['Content-Disposition'].startswith("attachment; filename*=UTF-8''"))
+        self.assertNotIn('"', headers['Content-Disposition'])
 
     def test_static_assets_and_state_are_served_and_traversal_rejected(self):
         for path, mime in (("/", "text/html"), ("/static/styles.css", "text/css"), ("/static/app.js", "javascript")):

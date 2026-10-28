@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -403,7 +404,7 @@ class Engine:
         project = self.store.get("projects", job["project_id"])
         if job["target"] == "capture":
             return self.check(project["id"], build_after=job.get("build_after", False), release_version=job.get("release_version"),
-                              automate_after=job.get('automate_after', False))
+                              publish_after=job.get("publish_after", False), automate_after=job.get('automate_after', False))
         return self.build(project["id"], [job["target"]], capture_id=job.get("capture_id"))
 
     def validate_project(self, config, script_active=False):
@@ -2002,25 +2003,36 @@ class Engine:
 
     def start_scheduler(self):
         def poll():
+            failures = {}
             while not self.stop.wait(15):
                 for project in self.store.all("projects"):
                     if self.stop.is_set():
                         return
                     if project.get("demo"):
                         continue
-                    with self.lock:
-                        if project["id"] in self.busy:
-                            continue
-                    last = project.get("last_checked")
-                    if last:
-                        from datetime import datetime
-                        elapsed = time.time() - datetime.fromisoformat(last).timestamp()
-                        if elapsed < project["poll_minutes"] * 60:
-                            continue
                     try:
+                        with self.lock:
+                            if project["id"] in self.busy:
+                                continue
+                        last = project.get("last_checked")
+                        if last:
+                            from datetime import datetime
+                            elapsed = time.time() - datetime.fromisoformat(last).timestamp()
+                            if elapsed < project["poll_minutes"] * 60:
+                                continue
                         self.check(project["id"])
+                        failures.pop(project["id"], None)
                     except Busy:
                         pass
+                    except Exception as error:
+                        # One bad project must never end automatic checks for the rest.
+                        count = failures[project["id"]] = failures.get(project["id"], 0) + 1
+                        logging.getLogger(__name__).warning("Automatic check failed for project %s: %s", project.get("id"), error, exc_info=True)
+                        if count == 3:
+                            try:
+                                self.notify(project["id"], "upstream_unavailable", f"Automatic update checks keep failing: {error}")
+                            except Exception:
+                                pass
         if self.scheduler and self.scheduler.is_alive():
             return
         self.scheduler = threading.Thread(target=poll, daemon=True, name="portkeeper-scheduler")
