@@ -436,7 +436,7 @@ class Handler(BaseHTTPRequestHandler):
             raise Invalid("Archive unavailable")
         if checksum(archive) != expected_hash:
             raise Invalid("Archive checksum changed")
-        self.respond_headers(200, "application/zip", archive.stat().st_size, f'attachment; filename="{filename}"')
+        self.respond_headers(200, "application/zip", archive.stat().st_size, "attachment; filename*=UTF-8''" + urllib.parse.quote(filename, safe=''))
         with archive.open("rb") as stream:
             shutil.copyfileobj(stream, self.wfile)
 
