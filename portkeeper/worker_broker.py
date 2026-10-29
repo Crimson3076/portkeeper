@@ -613,23 +613,46 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('--input-root', type=Path, required=True)
-    parser.add_argument('--socket', type=Path, required=True)
+    parser.add_argument('--socket', type=Path, help='Owner-only Unix socket for a same-machine app')
+    parser.add_argument('--listen', metavar='HOST:PORT', help='Also serve the authenticated HTTPS link for a remote app (default port 8788)')
+    parser.add_argument('--pair', action='store_true', help='Print a one-time pairing code for the app and (re)enable pairing')
     parser.add_argument('--image', required=True, help='Pre-pulled immutable image with /bin/sh, Python 3 and any base build tools')
     parser.add_argument('--protected-root', type=Path, action='append', default=[], help='Never expose this controller/credential directory through selected input mounts (repeatable)')
     parser.add_argument('--allow-rootful-test', action='store_true', help='TESTS ONLY: refuse use by the application')
     args = parser.parse_args()
     broker = WorkerBroker(args.root, args.input_root, args.image, allow_rootful_test=args.allow_rootful_test, protected_roots=args.protected_root)
-    server = make_server(broker, args.socket)
+    if not args.socket and not args.listen:
+        parser.error('Provide --socket, --listen or both')
+    servers = []
+    if args.socket:
+        servers.append(make_server(broker, args.socket))
+    if args.listen:
+        from .broker_net import make_net_server, prune_jobs, prune_periodically
+        host, _, port = args.listen.rpartition(':')
+        prune_jobs(args.root)
+
+        threading.Thread(target=prune_periodically, args=(args.root,), daemon=True).start()
+        net = make_net_server(broker, host or '0.0.0.0', int(port or 8788), args.root.parent / 'link')
+        servers.append(net)
+        print('Broker certificate fingerprint (SHA-256):', net.fingerprint, flush=True)
+        if args.pair or not net.link.token_hash:
+            print('One-time pairing code (valid 15 minutes):', net.link.new_code(), flush=True)
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    threads = [threading.Thread(target=s.serve_forever, daemon=True) for s in servers[1:]]
+    for thread in threads:
+        thread.start()
     try:
-        server.serve_forever()
+        servers[0].serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         for job in list(broker.active_names):
             broker.cancel(job)
-        server.server_close()
-        args.socket.unlink(missing_ok=True)
+        for s in servers:
+            s.shutdown() if s is not servers[0] else None
+            s.server_close()
+        if args.socket:
+            args.socket.unlink(missing_ok=True)
 
 
 if __name__ == '__main__':
