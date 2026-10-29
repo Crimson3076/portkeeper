@@ -630,6 +630,12 @@ def main():
         from .broker_net import make_net_server, prune_jobs
         host, _, port = args.listen.rpartition(':')
         prune_jobs(args.root)
+
+        def prune_periodically():
+            while True:
+                time.sleep(3600)
+                prune_jobs(args.root)
+        threading.Thread(target=prune_periodically, daemon=True).start()
         net = make_net_server(broker, host or '0.0.0.0', int(port or 8788), args.root.parent / 'link')
         servers.append(net)
         print('Broker certificate fingerprint (SHA-256):', net.fingerprint, flush=True)

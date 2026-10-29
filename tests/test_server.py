@@ -51,6 +51,14 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(self.request('POST', '/api/discovery/resolve', {'url': 'http://localhost/secrets'})[0], 400)
         self.assertEqual(self.engine.store.all('projects'), [])
 
+    def test_unpair_requires_same_origin_json(self):
+        with patch.object(self.engine.automation, 'unpair', return_value={}) as unpair:
+            self.assertEqual(self.request('POST', '/api/automation/broker/unpair', {}, {'Origin': 'https://other.test'})[0], 400)
+            self.assertEqual(self.request('POST', '/api/automation/broker/unpair', {}, {'Content-Type': 'text/plain'})[0], 400)
+            self.assertEqual(unpair.call_count, 0)
+            self.assertEqual(self.request('POST', '/api/automation/broker/unpair', {})[0], 200)
+            self.assertEqual(unpair.call_count, 1)
+
     def test_automation_routes_preserve_origin_and_path_boundaries(self):
         worker = self.engine.automation
         with patch.object(worker, 'configure', return_value={'policy': {'enabled': True}}) as configure:

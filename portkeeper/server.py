@@ -161,6 +161,7 @@ class Handler(BaseHTTPRequestHandler):
             elif method == 'POST' and path == '/api/automation/broker/pair':
                 self.json(200, self.engine.automation.pair(self.body()))
             elif method == 'POST' and path == '/api/automation/broker/unpair':
+                self.body()
                 self.json(200, self.engine.automation.unpair())
             elif method == 'GET' and path == '/api/automation/inputs':
                 query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
