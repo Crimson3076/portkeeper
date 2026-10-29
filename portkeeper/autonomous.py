@@ -18,8 +18,10 @@ from pathlib import Path
 
 from .assistant import AGENT_PROVIDERS, _lan_host
 from .drafting import extract_json
+from .romm import _atomic_json
 from .safety import Invalid, checksum, confined, relative, safe_extract, slug, verify_tree
 from .storage import identifier, now
+from . import broker_net
 from .worker_broker import BrokerClient, MAX_BYTES, tree_identity
 
 DEFAULT_POLICY = {'enabled': False, 'privacy': 'strict', 'private_model_local': False,
@@ -212,8 +214,35 @@ class Automation:
     def __init__(self, engine, broker=None):
         self.engine, self.store = engine, engine.store
         socket_path, root = os.environ.get('PORTKEEPER_WORKER_SOCKET'), os.environ.get('PORTKEEPER_WORKER_EXCHANGE')
-        self.broker = broker or (BrokerClient(socket_path, root) if socket_path and root else None)
+        self.link_path = engine.data / 'secrets' / 'broker.json'
+        self.exchange = engine.storage / 'automation-exchange'
+        self.broker = broker or (BrokerClient(socket_path, root) if socket_path and root else self.load_link())
         self.health_cache, self.health_at = None, 0
+
+    def load_link(self):
+        try:
+            if self.link_path.is_symlink() or self.link_path.parent.is_symlink():
+                return None
+            return broker_net.RemoteBrokerClient(json.loads(self.link_path.read_text()), self.exchange)
+        except (OSError, ValueError, KeyError, Invalid):
+            return None
+
+    def pair(self, payload):
+        if not isinstance(payload, dict) or set(payload) != {'url', 'code'}:
+            raise Invalid('Enter the broker address and pairing code')
+        if os.environ.get('PORTKEEPER_WORKER_SOCKET'):
+            raise Invalid('This app is configured for a local broker socket; unset it to pair a remote broker')
+        link = broker_net.pair(payload['url'], payload['code'])
+        _atomic_json(self.link_path, link)
+        self.broker, self.health_cache = broker_net.RemoteBrokerClient(link, self.exchange), None
+        return self.status()
+
+    def unpair(self):
+        if os.environ.get('PORTKEEPER_WORKER_SOCKET'):
+            raise Invalid('The local broker socket is configured by environment variables')
+        self.link_path.unlink(missing_ok=True)
+        self.broker, self.health_cache = None, None
+        return self.status()
 
     def policy(self):
         return {**DEFAULT_POLICY, **self.engine.get_setting('automation_policy', {})}
@@ -248,9 +277,11 @@ class Automation:
                 if health.get('test_only'):
                     health = {**health, 'ready': False, 'error': 'Rootful test brokers cannot be used by the application'}
             except Invalid as error:
-                health = {'ready': False, 'error': str(error)}
+                health = {'ready': False, 'error': str(error), 'offline': broker_net.is_offline(error)}
             self.health_cache, self.health_at = health, time.monotonic()
-        return {'policy': self.policy(), 'worker': health}
+        remote = isinstance(self.broker, broker_net.RemoteBrokerClient)
+        return {'policy': self.policy(), 'worker': health, 'remote': remote,
+                'default_broker_url': os.environ.get('PORTKEEPER_BROKER_URL', '')}
 
     def recover(self):
         for record in self.store.all('automation'):
@@ -297,7 +328,8 @@ class Automation:
         if not isinstance(payload, dict) or set(payload) - {'instruction', 'inputs', 'replay', 'publish', 'targets', 'capture_id', 'prepare_game_files'}:
             raise Invalid('Unsupported automatic setup request')
         policy, health = self.policy(), self.status()['worker']
-        if not policy['enabled'] or not health.get('ready'):
+        # A paired remote broker that is merely unreachable keeps the job queued.
+        if not policy['enabled'] or not (health.get('ready') or health.get('offline')):
             raise Invalid(health.get('error') or 'Enable automatic setup in Advanced settings first')
         project = self.store.get('projects', project_id)
         if project.get('demo') or project.get('profile'):
@@ -483,9 +515,28 @@ class Automation:
                     self.engine.release_claim(record['project_id'])
         return {'cancel_requested': True}
 
+    def wait_for_broker(self, job):
+        """Hold a queued job while a remote broker is offline; the budget starts once it is ready."""
+        waited = False
+        while True:
+            self.check_live(job)
+            self.health_cache = None
+            health = self.status()['worker']
+            if health.get('ready') or not health.get('offline'):
+                break
+            waited = True
+            self.store.update('automation', job, queue_note='Waiting for the worker broker to come online')
+            self.engine.stop.wait(self.offline_poll)
+        if waited:
+            policy = self.record(job)['policy']
+            self.store.update('automation', job, queue_note=None, deadline=time.time() + policy['elapsed_seconds'])
+
+    offline_poll = 10
+
     def run(self, project, capture, job, config, publish):
         paused = False
         try:
+            self.wait_for_broker(job)
             self.store.update('automation', job, status='running')
             self.store.update('jobs', job, status='running')
             self.store.update('projects', project['id'], status='building', last_error=None)

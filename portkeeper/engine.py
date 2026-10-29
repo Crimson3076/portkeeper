@@ -1576,7 +1576,7 @@ class Engine:
                 path = binding['path']
                 replacements += [(path, '[private-input:' + input_id + ']'),
                                  (Path(path).name, '[private-input:' + input_id + ']')]
-        for filename in ('assistant.json', 'romm.json'):
+        for filename in ('assistant.json', 'romm.json', 'broker.json'):
             path = self.data / 'secrets' / filename
             if path.is_file() and not path.is_symlink():
                 try:

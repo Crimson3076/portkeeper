@@ -130,6 +130,104 @@ Archive it with `docker image save` on the worker host and restore with
 `docker image load`; rebuilding an unpinned Dockerfile is not equivalent. Missing
 images or changed public seed files stop replay instead of fetching replacements.
 
+## Split deployment: app on Unraid, broker in a VM
+
+Two roles on two machines:
+
+- **App** (UI, catalog, polling, RomM matching, publishing) runs as the normal
+  Unraid container from `ghcr.io/crimson3076/portkeeper` and updates from the Docker
+  tab. It needs no Docker socket and no privileges.
+- **Broker** runs in a dedicated Linux VM exactly as above (rootless Docker, cgroup
+  v2, refuses rootful daemons) and additionally serves an authenticated HTTPS link.
+
+The broker alone decides mounts, network, resources and dependency fetching. Over
+the link the app can only send the same job requests as the Unix socket
+(unknown operations are rejected), upload its public seed tree, and download
+snapshots, logs and fetched dependencies. Downloads and uploads are size-capped on
+both sides (2 GiB trees/dependencies, 1 MiB logs) and artifact names are fixed
+patterns, so the app cannot name arbitrary paths. Game inputs are read by the broker
+from its own **read-only NAS mount** (the same relative paths the app sees under
+`/inputs`); built packages return to the app over the link. The local Unix-socket
+mode (`PORTKEEPER_WORKER_SOCKET`) is unchanged and still supported.
+
+**Security of the link.** The broker creates a self-signed certificate on first
+start. Pairing uses a one-time code (valid 15 minutes, 5 attempts, single use):
+both sides prove knowledge of the code over the certificate fingerprint they
+observed, so a man in the middle presenting another certificate fails. The app then
+pins that fingerprint and sends a 384-bit random bearer token (the broker stores only
+its hash; the app keeps it in `/data/secrets/broker.json`, mode 0600). Pairing again
+replaces the old token. Keep the broker port (8788) reachable only from the Unraid
+host/LAN. App and broker refuse to talk across different protocol versions with a
+message naming both versions. While the broker is offline, Settings shows it as
+offline and automatic setups stay queued; their time budget starts once it returns.
+
+### One-time VM setup (copy-paste)
+
+Run as the rootless Docker account (not root) on Debian/Ubuntu. Install Docker
+rootless first (see above), then:
+
+```bash
+sudo apt-get install -y python3 openssl curl dbus-user-session
+sudo loginctl enable-linger "$USER"        # user services survive logout/reboot
+mkdir -p ~/portkeeper-broker/data ~/.config/systemd/user
+cd ~/portkeeper-broker
+# Bootstrap the first release (later ones are installed by the timer).
+tag=$(curl -fsSL https://api.github.com/repos/Crimson3076/portkeeper/releases/latest | python3 -c 'import json,sys;print(json.load(sys.stdin)["tag_name"])')
+mkdir -p releases/$tag && curl -fsSL https://github.com/Crimson3076/portkeeper/archive/refs/tags/$tag.tar.gz | tar -xz -C releases/$tag --strip-components=1
+ln -sfn "$PWD/releases/$tag" current
+cp current/deploy/broker/portkeeper-broker-update.sh update.sh && chmod +x update.sh
+cp current/deploy/broker/*.service current/deploy/broker/*.timer ~/.config/systemd/user/
+
+docker pull ghcr.io/crimson3076/portkeeper:worker-latest
+cat > broker.env <<EOF2
+PORTKEEPER_OWNED_DIRECTORY=/srv/owned-game-files
+PORTKEEPER_WORKER_IMAGE_ID=$(docker image inspect --format '{{.Id}}' ghcr.io/crimson3076/portkeeper:worker-latest)
+EOF2
+chmod 600 broker.env
+chmod 700 ~/portkeeper-broker
+
+systemctl --user daemon-reload
+systemctl --user enable --now portkeeper-broker.service portkeeper-broker-update.timer
+journalctl --user -u portkeeper-broker -n 20 --no-pager   # shows the one-time pairing code
+```
+
+`/srv/owned-game-files` is the VM's read-only mount of the NAS game collection.
+Re-print a pairing code later with
+`systemctl --user stop portkeeper-broker && cd ~/portkeeper-broker/current && python3 -m portkeeper.worker_broker --root ~/portkeeper-broker/data/exchange --input-root /srv/owned-game-files --listen 0.0.0.0:8788 --pair --image "$IMAGE_ID"`
+(or add `--pair` to `ExecStart` temporarily).
+
+On Unraid, install the template, set **Broker URL** (e.g. `https://broker-vm:8788`),
+open **Settings → Automatic port setup → Pair a remote broker** and enter the URL
+and code. Status shows connected, broker version, protocol, certificate fingerprint
+and whether the rootless check passed.
+
+### Broker self-update
+
+`portkeeper-broker-update.timer` runs `update.sh` hourly. It reads the latest GitHub
+release, downloads it, runs `python3 -W error -m unittest discover -s tests`, and
+only if that passes switches `current` to it, restarts the broker and waits for
+`/v1/health`. If the new release fails its tests or does not become healthy it is
+marked rejected (`rejected-<tag>`), `current` is switched back and the broker is
+restarted. Check with `systemctl --user list-timers` and
+`journalctl --user -u portkeeper-broker-update`. Releases are fetched over HTTPS
+from GitHub; trust in the update path is trust in the repository's release process.
+
+### Migrating an existing all-in-one VM install
+
+1. In the VM, stop the app: `docker compose -f compose.yaml -f compose.automation.yaml down`.
+2. Export app data from the VM (database, config, secrets, catalog): archive the
+   state directory (`$PORTKEEPER_STATE_DIRECTORY`, default `.data`) and, if bulk
+   storage lived on VM disk, `$PORTKEEPER_STORAGE_DIRECTORY` too (`tar -C .data -czf
+   portkeeper-data.tgz .`). The archive contains credentials; keep it private.
+3. On Unraid, unpack it into the template’s App data path (`/mnt/user/appdata/portkeeper`),
+   then `chown -R 99:100` it. If bulk storage moved, point the **Bulk storage** path at
+   it (see [storage](STORAGE.md)). Start the container from the template.
+4. In the VM keep only the broker: follow the setup above. Delete the VM's copy of
+   the app data only after a build has worked end to end. The local socket variables
+   are no longer needed.
+5. Pair in Settings. Existing recipes keep their exact worker image ID; keep the same
+   `PORTKEEPER_WORKER_IMAGE_ID` on the broker so replay stays valid.
+
 ## Enable and use it
 
 1. Connect your model in **Settings → Drafting assistant**.

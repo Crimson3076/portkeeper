@@ -2125,6 +2125,7 @@ function renderAutomaticSettings(parent) {
     el("p", "field-help", "Runs preparation and build scripts in a separate offline worker. Successful recipes replay without a model."),
     el("p", worker.ready ? "field-help" : "review-notes", worker.ready ? `Worker ready · ${worker.backend} · ${Math.round((worker.limits?.workspace_bytes || 0) / 1024**3)} GiB temporary workspace` : worker.error || "Worker not connected."),
     externalLink("Worker installation & privacy settings ↗", "https://github.com/Crimson3076/portkeeper/blob/main/docs/AUTOMATION.md"));
+  brokerLinkControls(card, config, worker);
   const enabled = input("automatic-enabled", "checkbox"); enabled.checked = Boolean(draft.enabled);
   enabled.addEventListener("change", () => change("enabled", enabled.checked));
   card.append(el("label", "check-label", [enabled, "Enable automatic setup"]));
@@ -2150,6 +2151,23 @@ function renderAutomaticSettings(parent) {
       const result = await runAction("automatic-policy", "/api/automation/config", automaticPolicyDraft || draft, "Automatic setup settings saved.");
       if (result) { automaticPolicyDraft = null; await refresh(); }
     }, busy.has("automatic-policy")));
+}
+const brokerPairDraft = {url: "", code: ""};
+function brokerLinkControls(card, config, worker) {
+  if (worker.link) card.append(el("p", "field-help", `Remote broker ${worker.link.url} · ${worker.version ? "v" + worker.version + " · " : ""}protocol ${worker.protocol} · ${worker.ready ? "rootless check passed" : "not ready"} · certificate ${worker.link.fingerprint}…`));
+  else if (worker.offline) card.append(el("p", "review-notes", "Broker offline: automatic setups stay queued until it reconnects."));
+  const url = input("broker-url", "text", brokerPairDraft.url || config.default_broker_url || "", "https://broker-vm:8788");
+  const code = input("broker-code", "text", brokerPairDraft.code, "1234-5678-9012");
+  url.addEventListener("input", () => { brokerPairDraft.url = url.value; }); code.addEventListener("input", () => { brokerPairDraft.code = code.value; });
+  const details = el("details", "settings-disclosure", el("summary", "table-action", config.remote ? "Re-pair or remove the remote broker" : "Pair a remote broker"));
+  field(details, "Broker URL", url, "Run the broker with --listen and --pair in its VM; it prints a one-time code.");
+  field(details, "Pairing code", code);
+  details.append(button("Pair", "button secondary small", async () => {
+    const result = await runAction("broker-pair", "/api/automation/broker/pair", {url: url.value, code: code.value}, "Paired with the broker.");
+    if (result) { brokerPairDraft.code = ""; }
+  }, busy.has("broker-pair")));
+  if (config.remote) details.append(button("Remove pairing", "button secondary small", () => runAction("broker-unpair", "/api/automation/broker/unpair", {}, "Broker pairing removed."), busy.has("broker-unpair")));
+  card.append(details);
 }
 function automaticInputDraft(project) {
   const draft = automaticSetupDrafts.get(project.id) || {instruction: "", inputs: project.autonomous_inputs || []};
