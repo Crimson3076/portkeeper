@@ -438,6 +438,15 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   automatic.assistant={provider:'openai',configured:true,drafting_model:'Fixture model'};
   automatic.automation={policy:{enabled:true,privacy:'strict',eligible_providers:['openai'],max_calls:20},worker:{ready:true,backend:'fixture',limits:{workspace_bytes:2147483648}}};
   dom=await create(null,false,automatic);w=dom.window;d=w.document;
+  automatic.automation.worker={ready:false,offline:true};w.pollRefresh();await tick();await tick();
+  const offlineButton=[...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Set up automatically');
+  assert(offlineButton && !offlineButton.disabled,'A paired offline broker still permits queuing automatic setup');
+  d.getElementById('project-advanced-tab').click();await tick();
+  const offlineSubmit=[...d.querySelectorAll('.automatic-setup button')].find(n=>n.textContent==='Set up automatically');
+  assert(offlineSubmit && !offlineSubmit.disabled,'Advanced setup also permits offline submission');
+  offlineSubmit.click();await tick();await tick();assert(requests.at(-1).endpoint.endsWith('/automate'));
+  automatic.automation.worker={ready:true};w.pollRefresh();await tick();await tick();
+  d.getElementById('project-overview-tab').click();await tick();
   const autoButton=[...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Set up automatically');assert(autoButton,'Automatic setup is offered when the broker/provider are enabled');
   autoButton.click();await tick();await tick();assert(requests.at(-1).endpoint.endsWith('/automate'));assert.equal(requests.at(-1).body.prepare_game_files,true);assert.equal(requests.at(-1).body.publish,false);
   d.getElementById('project-advanced-tab').click();await tick();

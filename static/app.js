@@ -2108,7 +2108,7 @@ function nextStepCard(project) {
 
 function automaticAvailable() {
   const config = state.automation || {};
-  return Boolean(config.policy?.enabled && config.worker?.ready &&
+  return Boolean(config.policy?.enabled && (config.worker?.ready || config.worker?.offline) &&
     (assistantSettings().configured && config.policy.eligible_providers?.includes(assistantSettings().provider)));
 }
 function renderAutomaticSettings(parent) {

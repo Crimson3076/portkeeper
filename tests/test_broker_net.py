@@ -387,6 +387,25 @@ class OfflineQueueTests(unittest.TestCase):
             finally:
                 server.shutdown(); server.server_close(); engine.close()
 
+    def test_pairing_does_not_replace_broker_when_job_starts_during_handshake(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            engine = Engine(root / 'data', root / 'inputs', root / 'library')
+            try:
+                automation = engine.automation
+                original = automation.broker = unittest.mock.MagicMock()
+                def handshake(*args):
+                    with engine.lock:
+                        engine.store.put('automation', {'id': '9' * 32, 'project_id': 'p', 'status': 'running'})
+                    return {'url': 'https://broker:8788', 'fingerprint': 'a' * 64, 'token': 'private-token'}
+                with patch.object(broker_net, 'pair', side_effect=handshake):
+                    with self.assertRaisesRegex(Invalid, 'active'):
+                        automation.pair({'url': 'https://broker:8788', 'code': '1234-5678-9012', 'fingerprint': 'a' * 64})
+                self.assertIs(automation.broker, original)
+                self.assertFalse(automation.link_path.exists())
+            finally:
+                engine.close()
+
     def test_pair_and_unpair_are_refused_while_a_job_is_active(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
