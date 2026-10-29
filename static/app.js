@@ -548,6 +548,7 @@ function renderSettings() {
     renderAssistantSettings();
     formConfigFingerprint = fingerprint;
   }
+  renderRomMMatching();
   renderMcpSettings();
   const settings = state.settings || {};
   $("storage-grid").replaceChildren(...[["Small app state", settings.data_root], ["Bulk storage", settings.storage_root], ["Original game files", settings.input_root], ["Preservation archive", settings.archive_root], ["Local library output", settings.library_root]].filter(([, path]) => path).map(([label, path]) => el("div", "storage-item", [el("h3", "", label), el("code", "", path)])));
@@ -1346,7 +1347,7 @@ async function saveMetadata(event) {
       if (!optional && (!Number.isSafeInteger(igdb_id) || igdb_id < 1)) throw new Error("Link a matched RomM entry or enter its IGDB game ID.");
       await api(`/api/projects/${metadataProjectId}`, {method: "PATCH", body: {metadata: optional ? identity : {...identity, igdb_id}}});
     }
-    $("metadata-dialog").close(); await refresh(); toast("Metadata linked. Imports are checked every minute after RomM scans them.");
+    $("metadata-dialog").close(); await refresh(); toast("Metadata linked. Imports are matched on the RomM check schedule in Settings.");
   } catch (error) { $("metadata-error").textContent = error.message; }
   finally { $("metadata-save").disabled = false; }
 }
@@ -1679,6 +1680,23 @@ async function submitRomM(event) {
   try { await saveRomMConnection($("romm-url").value, $("romm-token").value); $("romm-url").dataset.dirty = ""; $("romm-form-result").classList.remove("error"); $("romm-form-result").textContent = "Connection verified. You can now select game files in game setup."; }
   catch (error) { $("romm-form-result").classList.add("error"); $("romm-form-result").textContent = error.message; }
   finally { $("romm-token").value = ""; busy.delete("romm-settings"); $("romm-save").disabled = false; $("romm-save").textContent = "Save & test connection"; await refresh(); }
+}
+function renderRomMMatching() {
+  const matching = rommConfig().matching || {}, select = $("romm-match-mode");
+  if (select.options.length !== Object.keys(matching.modes || {}).length) select.replaceChildren(...Object.entries(matching.modes || {}).map(([value, label]) => Object.assign(document.createElement("option"), { value, textContent: label })));
+  if (document.activeElement !== select) select.value = matching.mode || "event";
+  const when = (value) => value ? new Date(value).toLocaleString() : "never";
+  $("romm-match-status").textContent = `Last check: ${when(matching.last_check)} · Next check: ${matching.next_check ? when(matching.next_check) : "none"} · ${matching.reason || ""}${matching.pending?.length ? " · Waiting for: " + matching.pending.join("; ") : ""}`;
+  $("romm-match-now").disabled = !rommReady() || busy.has("romm-match");
+}
+async function saveMatchMode() {
+  await runAction("romm-match", "/api/romm/matching", { mode: $("romm-match-mode").value }, "RomM check schedule saved.");
+  await refresh();
+}
+async function matchNow() {
+  const result = await runAction("romm-match", "/api/romm/match-now", {}, "");
+  if (result) toast(`RomM checked · ${result.matched} updated`);
+  await refresh();
 }
 async function testSavedRomM() {
   $("romm-form-result").textContent = "Testing saved connection…";
@@ -2732,6 +2750,8 @@ $("activity-type-filter").addEventListener("change", () => { activityTypeFilter 
 $("validation-form").addEventListener("submit", submitValidation);
 $("romm-form").addEventListener("submit", submitRomM);
 $("romm-test").addEventListener("click", testSavedRomM);
+$("romm-match-mode").addEventListener("change", saveMatchMode);
+$("romm-match-now").addEventListener("click", matchNow);
 $("romm-clear").addEventListener("click", clearRomMToken);
 $("assistant-form").addEventListener("submit", submitAssistant);
 $("toolchain-image-form").addEventListener("submit", submitToolchainImage);
