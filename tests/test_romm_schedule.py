@@ -1,3 +1,4 @@
+import hashlib
 import tempfile
 import time
 import unittest
@@ -149,9 +150,68 @@ class ScheduleTests(unittest.TestCase):
 
     def test_publish_and_cover_failure_kick_the_schedule(self):
         self.assertIsNone(self.schedule.pending()[0])
-        self.schedule.kick('x')
+        project = self.engine.create_project({'name': 'Game', 'repo': 'example/game', 'targets': ['linux', 'windows']})
+        with patch.object(self.engine, 'match_imports_now', side_effect=RuntimeError('403')):
+            self.engine.choose_cover(project['id'], {'url_cover': 'https://cdn.example/c.png', 'filename_prefix': 'Game'})
         self.assertTrue(self.schedule.due())
-        self.assertEqual(self.schedule.status()['pending'], ['x'])
+        self.assertIn('Cover change', self.schedule.status()['pending'][0])
+        self.engine.save_setting('romm_match_state', {})
+        self.assertFalse(self.schedule.due())
+        package = Path(self.temp.name, 'Game-1.zip')
+        package.write_bytes(b'zip')
+        digest = hashlib.sha256(b'zip').hexdigest()
+        self.engine.store.put('artifacts', {'id': 'a1', 'project_id': project['id'], 'filename': 'Game-1.zip', 'file': str(package),
+                                            'sha256': digest,
+                                            'size': 3, 'target': 'linux'})
+        romm = self.engine.romm
+        with patch('portkeeper.publishing.checksum', return_value=digest), \
+                patch.object(romm, 'platform_for', return_value={'id': 1, 'fs_slug': 'linux', 'name': 'Linux'}), \
+                patch.object(romm, 'find_file', return_value=None), patch.object(romm, 'upload'), \
+                patch.object(self.engine.publisher, 'check'):
+            self.engine.publisher.publish('a1', lambda message: None)
+        self.assertTrue(self.schedule.due())
+        self.assertEqual(self.engine.get_setting('romm_match_state')['reason'], 'Game-1.zip was published')
+
+    def test_check_romm_now_requires_connection_and_reports_failure(self):
+        with patch.object(self.engine.romm, 'public_config', return_value={'configured': False}):
+            with self.assertRaises(Invalid):
+                self.engine.check_romm_now()
+        self.engine.romm.library_stamp = lambda: 'stamp'
+        with patch('portkeeper.romm_identity.ImportIdentities.sync', side_effect=RuntimeError('boom')):
+            with self.assertRaises(Invalid):
+                self.engine.check_romm_now()
+        with patch('portkeeper.romm_identity.ImportIdentities.sync', return_value={'matched': 3}):
+            result = self.engine.check_romm_now()
+        self.assertEqual(result['matched'], 3)
+        self.assertEqual(result['matching']['mode'], 'event')
+
+    def test_library_stamp_is_stable_and_tolerates_mixed_values(self):
+        entries = [{'id': None, 'rom_count': 'x'}, {'id': 2, 'rom_count': 5, 'updated_at': 't'}, {'id': 1, 'rom_count': None}, 'junk']
+        with patch.object(self.engine.romm, '_json', return_value=entries):
+            first = self.engine.romm.library_stamp()
+        with patch.object(self.engine.romm, '_json', return_value=list(reversed(entries))):
+            self.assertEqual(self.engine.romm.library_stamp(), first)
+        with patch.object(self.engine.romm, '_json', return_value=[{'id': 2, 'rom_count': 6}]):
+            self.assertNotEqual(self.engine.romm.library_stamp(), first)
+        with patch.object(self.engine.romm, '_json', return_value={'items': []}):
+            with self.assertRaises(Invalid):
+                self.engine.romm.library_stamp()
+
+    def test_reviews_imports_with_misses_skips_searches_and_leaves_ui_cache(self):
+        project = self.engine.create_project({'name': 'Game', 'repo': 'example/game', 'targets': ['linux'],
+                                              'metadata': {'filename_prefix': 'Game', 'game': 'Game', 'igdb_id': 5}})
+        searches = []
+        self.engine.romm.search = lambda *a, **k: searches.append(a) or {'items': [], 'total': 0}
+        misses = {}
+        self.engine.reviews.imports(project['id'], misses=misses, at=1000)
+        self.assertEqual(len(searches), 1)
+        self.assertIn('import:game', misses)
+        self.engine.reviews.imports(project['id'], misses=misses, at=1010)
+        self.assertEqual(len(searches), 1)  # known miss skipped
+        self.assertEqual(self.engine.reviews.cache, {})  # incomplete pass is not served to the UI
+        self.engine.reviews.imports(project['id'])
+        self.assertEqual(len(searches), 2)
+        self.assertTrue(self.engine.reviews.cache)
 
     def test_library_stamp_transport_error_does_not_escape_run(self):
         self.engine.romm.library_stamp = Mock(side_effect=TimeoutError('read timed out'))
