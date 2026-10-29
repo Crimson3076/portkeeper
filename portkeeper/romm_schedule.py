@@ -86,7 +86,8 @@ class MatchSchedule:
         if state.get('event_at') and at - state['event_at'] < GIVE_UP:
             anchors.append(state['event_at'])
             notes.append(state.get('reason') or 'Waiting for RomM to match a recent change')
-        return (min(anchors) if anchors else None), notes
+        # The newest event sets the cadence so a fresh upload is not stuck behind an old one's backoff.
+        return (max(anchors) if anchors else None), notes
 
     def next_check(self, at=None):
         """(epoch or None, reason) for the next automatic check."""
@@ -126,7 +127,7 @@ class MatchSchedule:
         misses = engine.get_setting('romm_match_misses', {})
         try:
             library = engine.romm.library_stamp()
-        except Invalid:
+        except Exception:  # a transport error must not end the matching thread
             library = None
         state = self._state()
         failed = False
@@ -167,7 +168,10 @@ class MatchSchedule:
 
     def loop(self):
         while not self.engine.stop.is_set():
-            if self.due():
-                self.run()
+            try:
+                if self.due():
+                    self.run()
+            except Exception:
+                pass  # run() records its own failures; keep the thread alive
             self.wake.wait(15)
             self.wake.clear()

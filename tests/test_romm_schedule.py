@@ -156,3 +156,23 @@ class ScheduleTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+    def test_library_stamp_transport_error_does_not_escape_run(self):
+        self.engine.romm.library_stamp = Mock(side_effect=TimeoutError('read timed out'))
+        with patch.object(self.engine.romm, '_json', return_value={'items': [], 'total': 0}), \
+                patch.object(self.engine.romm, '_config', return_value={'url': 'http://x', 'token': 't'}):
+            self.schedule.run(at=1000)
+        self.assertEqual(self.engine.get_setting('romm_match_state')['last_run'], 1000)
+
+    def test_new_event_is_not_stuck_behind_old_backoff(self):
+        t = 1_000_000.0
+        self.engine.create_project({'name': 'Game', 'repo': 'example/game', 'targets': ['linux']})
+        old = datetime.fromtimestamp(t - 10_000, timezone.utc).isoformat()
+        self.engine.store.put('artifacts', {'id': 'old', 'project_id': 'p', 'filename': 'Old.zip',
+                                            'romm': {'status': 'awaiting_scan', 'uploaded_at': old}})
+        self.engine.save_setting('romm_match_state', {'last_run': t - 5})
+        self.assertEqual(self.schedule.next_check(t)[0], t - 5 + 3600)
+        self.schedule.kick('New upload', at=t)
+        self.assertTrue(self.schedule.due(t + 1))
+        self.engine.save_setting('romm_match_state', {'event_at': t, 'last_run': t + 1})
+        self.assertEqual(self.schedule.next_check(t + 2)[0], t + 1 + 60)
