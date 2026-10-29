@@ -99,6 +99,36 @@ class LinkTests(unittest.TestCase):
             client.request('health')
         self.assertFalse(self.broker.calls)
 
+    def test_rejected_requests_close_the_connection(self):
+        connection = http.client.HTTPSConnection('127.0.0.1', self.port, context=__import__('ssl')._create_unverified_context())
+        connection.request('POST', '/v1', json.dumps({'op': 'health'}), {'X-Portkeeper-Protocol': str(PROTOCOL)})
+        response = connection.getresponse()
+        self.assertEqual(response.status, 401)
+        self.assertEqual(response.getheader('Connection'), 'close')
+        connection.close()
+
+    def test_stalled_clients_are_bounded_and_do_not_block_others(self):
+        import socket
+        stalled = [socket.create_connection(('127.0.0.1', self.port)) for _ in range(3)]  # never handshake
+        try:
+            self.assertEqual(broker_net.NetHandler.timeout, 30)
+            self.assertTrue(self.paired().request('health')['ready'])
+        finally:
+            for sock in stalled:
+                sock.close()
+
+    def test_connection_cap_refuses_excess_connections(self):
+        self.assertEqual(self.server.max_connections, 32)
+        for _ in range(self.server.max_connections):
+            self.assertTrue(self.server.slots.acquire(blocking=False))
+        try:
+            with self.assertRaises(Exception):
+                self.paired()
+        finally:
+            for _ in range(self.server.max_connections):
+                self.server.slots.release()
+        self.assertTrue(self.paired().request('health')['ready'])
+
     def test_certificate_pin_mismatch_is_refused(self):
         client = self.paired()
         client.link = {**client.link, 'fingerprint': '0' * 64}
@@ -198,8 +228,8 @@ class OfflineQueueTests(unittest.TestCase):
                         raise Invalid('Worker broker could not be reached')
                     return {'ready': True, 'protocol': PROTOCOL}
                 automation.broker.request = health
-                with patch.object(automation, 'check_live', return_value=None):
-                    automation.wait_for_broker('7' * 32)
+                # The stored deadline (0) is long past: offline time must not count against it.
+                automation.wait_for_broker('7' * 32)
                 self.assertGreaterEqual(len(calls), 3)
                 self.assertGreater(engine.store.get('automation', '7' * 32)['deadline'], 0)
             finally:

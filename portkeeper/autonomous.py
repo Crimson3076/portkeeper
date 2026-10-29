@@ -519,7 +519,10 @@ class Automation:
         """Hold a queued job while a remote broker is offline; the budget starts once it is ready."""
         waited = False
         while True:
-            self.check_live(job)
+            # Only cancel/stop apply while waiting; the deadline is reset below once the broker returns.
+            record = self.store.get('automation', job)
+            if self.engine.stop.is_set() or record.get('cancel_requested'):
+                raise Invalid('Automatic setup was cancelled')
             self.health_cache = None
             health = self.status()['worker']
             if health.get('ready') or not health.get('offline'):
@@ -530,6 +533,7 @@ class Automation:
         if waited:
             policy = self.record(job)['policy']
             self.store.update('automation', job, queue_note=None, deadline=time.time() + policy['elapsed_seconds'])
+        self.check_live(job)
 
     offline_poll = 10
 

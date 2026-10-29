@@ -124,15 +124,20 @@ class LinkState:
 
 class NetHandler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
+    timeout = 30  # per socket operation; also bounds the TLS handshake
 
     def log_message(self, *args):
         pass
 
     def reply(self, status, value):
         body = json.dumps(value).encode()
+        if status >= 400:
+            self.close_connection = True  # the request body may be unread; never parse it as the next request
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(body)))
+        if self.close_connection:
+            self.send_header('Connection', 'close')
         self.end_headers()
         self.wfile.write(body)
 
@@ -194,7 +199,7 @@ class NetHandler(BaseHTTPRequestHandler):
             return
         self.connection.settimeout(15)
         payload = json.loads(self.rfile.read(self.body(256 * 1024)))
-        self.connection.settimeout(None)
+        self.connection.settimeout(self.timeout)
         result = self.server.broker.handle(payload)
         if payload.get('op') == 'health':
             result = {**result, 'protocol': PROTOCOL, 'version': __version__}
@@ -295,6 +300,23 @@ class NetHandler(BaseHTTPRequestHandler):
 
 class NetServer(ThreadingHTTPServer):
     daemon_threads = True
+    max_connections = 32
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.slots = threading.BoundedSemaphore(self.max_connections)
+
+    def process_request(self, request, client_address):
+        if not self.slots.acquire(blocking=False):
+            self.shutdown_request(request)  # over the connection cap
+            return
+        super().process_request(request, client_address)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.slots.release()
 
     def handle_error(self, request, client_address):
         pass  # failed handshakes (scanners, wrong pins) are expected noise
@@ -316,7 +338,8 @@ def make_net_server(broker, host, port, state_root):
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(cert, key)
-    server.socket = context.wrap_socket(server.socket, server_side=True)
+    # Handshake in the per-connection thread (bounded by the handler timeout), not the accept loop.
+    server.socket = context.wrap_socket(server.socket, server_side=True, do_handshake_on_connect=False)
     server.broker = broker
     server.fingerprint = fingerprint
     server.link = LinkState(state_root, fingerprint)
