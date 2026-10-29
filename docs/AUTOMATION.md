@@ -151,10 +151,11 @@ from its own **read-only NAS mount** (the same relative paths the app sees under
 mode (`PORTKEEPER_WORKER_SOCKET`) is unchanged and still supported.
 
 **Security of the link.** The broker creates a self-signed certificate on first
-start. Pairing uses a one-time code (valid 15 minutes, 5 attempts, single use):
-both sides prove knowledge of the code over the certificate fingerprint they
-observed, so a man in the middle presenting another certificate fails. The app then
-pins that fingerprint and sends a 384-bit random bearer token (the broker stores only
+start. Pairing uses a one-time code (valid 15 minutes, single use):
+the user copies the full SHA-256 fingerprint from the trusted broker VM console.
+The app verifies that fingerprint before sending a code proof, preventing an
+intermediary from collecting proofs for offline guessing. Bad proofs do not
+permanently disable the code. The app then pins that fingerprint and sends a 384-bit random bearer token (the broker stores only
 its hash; the app keeps it in `/data/secrets/broker.json`, mode 0600). Pairing again
 replaces the old token. Keep the broker port (8788) reachable only from the Unraid
 host/LAN. App and broker refuse to talk across different protocol versions with a
@@ -198,8 +199,9 @@ Re-print a pairing code later with
 
 On Unraid, install the template, set **Broker URL** (e.g. `https://broker-vm:8788`),
 open **Settings → Automatic port setup → Pair a remote broker** and enter the URL
-and code. Status shows connected, broker version, protocol, certificate fingerprint
-and whether the rootless check passed.
+and code, plus the full certificate fingerprint printed in the trusted VM console.
+Status shows connected, broker version, protocol, certificate fingerprint and
+whether the rootless check passed.
 
 ### Broker self-update
 
@@ -211,6 +213,7 @@ marked rejected (`rejected-<tag>`), `current` is switched back and the broker is
 restarted. Check with `systemctl --user list-timers` and
 `journalctl --user -u portkeeper-broker-update`. Releases are fetched over HTTPS
 from GitHub; trust in the update path is trust in the repository's release process.
+Release tests run as the broker user and can read `broker.env` and the TLS private key.
 
 ### Migrating an existing all-in-one VM install
 

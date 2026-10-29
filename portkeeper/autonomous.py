@@ -232,12 +232,12 @@ class Automation:
             raise Invalid('Finish or cancel the active automatic setup before changing the worker broker')
 
     def pair(self, payload):
-        if not isinstance(payload, dict) or set(payload) != {'url', 'code'}:
-            raise Invalid('Enter the broker address and pairing code')
+        if not isinstance(payload, dict) or set(payload) != {'url', 'code', 'fingerprint'}:
+            raise Invalid('Enter the broker address, pairing code and certificate fingerprint')
         if os.environ.get('PORTKEEPER_WORKER_SOCKET'):
             raise Invalid('This app is configured for a local broker socket; unset it to pair a remote broker')
         self.require_idle()
-        link = broker_net.pair(payload['url'], payload['code'])
+        link = broker_net.pair(payload['url'], payload['code'], payload['fingerprint'])
         _atomic_json(self.link_path, link)
         self.broker, self.health_cache = broker_net.RemoteBrokerClient(link, self.exchange), None
         return self.status()

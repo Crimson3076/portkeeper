@@ -1,3 +1,6 @@
+import os
+import io
+import tarfile
 import copy
 import http.client
 import json
@@ -64,7 +67,7 @@ class LinkTests(unittest.TestCase):
         self.temp.cleanup()
 
     def paired(self):
-        return RemoteBrokerClient(pair(self.url, self.code), self.root / 'app-exchange')
+        return RemoteBrokerClient(pair(self.url, self.code, self.server.fingerprint), self.root / 'app-exchange')
 
     def test_pairing_then_health_reports_version_and_rootless_backend(self):
         client = self.paired()
@@ -77,17 +80,83 @@ class LinkTests(unittest.TestCase):
 
     def test_wrong_code_is_rejected_and_code_is_single_use(self):
         with self.assertRaisesRegex(Invalid, 'did not match'):
-            pair(self.url, '0000-0000-0000')
+            pair(self.url, '0000-0000-0000', self.server.fingerprint)
         self.paired()
         with self.assertRaisesRegex(Invalid, 'No valid pairing code'):
-            pair(self.url, self.code)
+            pair(self.url, self.code, self.server.fingerprint)
 
-    def test_pairing_code_locks_after_repeated_failures(self):
-        for _ in range(broker_net.PAIR_ATTEMPTS):
+    def test_bad_proofs_do_not_burn_pairing_code(self):
+        for _ in range(10):
             with self.assertRaises(Invalid):
-                pair(self.url, '0000-0000-0000')
-        with self.assertRaisesRegex(Invalid, 'No valid pairing code'):
-            pair(self.url, self.code)
+                pair(self.url, '0000-0000-0000', self.server.fingerprint)
+        self.paired()
+
+    def test_unconfirmed_fingerprint_sends_no_pairing_proof(self):
+        with patch.object(broker_net.PinnedTLS, 'request') as request:
+            with self.assertRaisesRegex(Invalid, 'fingerprint'):
+                pair(self.url, self.code, '0' * 64)
+            request.assert_not_called()
+        self.paired()
+
+    def test_proof_for_another_fingerprint_is_refused(self):
+        nonce = 'a' * 32
+        with self.assertRaisesRegex(Invalid, 'did not match'):
+            self.server.link.pair(broker_net.proof(self.code, 'client', '0' * 64, nonce), nonce)
+        self.paired()
+
+    def test_remote_fetch_stages_dependency_and_rejects_checksum_mismatch(self):
+        client = self.paired()
+        job = 'a' * 32
+        def fetch(payload):
+            self.assertEqual(payload['op'], 'fetch')
+            target = self.broker.job_root(job) / 'downloads' / 'dep.tar'
+            target.parent.mkdir(exist_ok=True)
+            target.write_bytes(b'dependency')
+            return {'name': target.name, 'sha256': broker_net.checksum(target)}
+        with patch.object(self.broker, 'handle', side_effect=fetch):
+            client.request('fetch', job_id=job)
+        target = client.root / 'jobs' / job / 'downloads' / 'dep.tar'
+        self.assertEqual(target.read_bytes(), b'dependency')
+        with patch.object(self.broker, 'handle', return_value={'name': 'dep.tar', 'sha256': '0' * 64}):
+            with self.assertRaisesRegex(Invalid, 'checksum'):
+                client.request('fetch', job_id=job)
+        self.assertFalse(target.exists())
+
+    def test_interrupted_upload_removes_temporary_archive(self):
+        handler = object.__new__(broker_net.NetHandler)
+        handler.server = self.server
+        handler.route = lambda: '/v1/jobs/' + 'b' * 32 + '/trees/seed'
+        handler.guard = lambda: True
+        handler.body = lambda limit: 100
+        handler.rfile = io.BytesIO(b'partial')
+        with self.assertRaisesRegex(Invalid, 'ended early'):
+            handler.put()
+        self.assertEqual(list(self.broker.job_root('b' * 32).glob('.upload-*')), [])
+
+    def test_ipv6_pairing_preserves_brackets(self):
+        with patch.object(broker_net, 'PinnedTLS') as tls:
+            connection = tls.return_value
+            connection.seen = self.server.fingerprint
+            def response():
+                nonce = json.loads(connection.request.call_args.args[2])['nonce']
+                result = unittest.mock.Mock(status=200)
+                result.read.return_value = json.dumps({'token': 'private', 'proof': broker_net.proof(self.code, 'broker', self.server.fingerprint, nonce)}).encode()
+                return result
+            connection.getresponse.side_effect = response
+            link = pair('https://[::1]:8788', self.code, self.server.fingerprint)
+        self.assertEqual(link['url'], 'https://[::1]:8788')
+        self.assertEqual(RemoteBrokerClient(link, self.root).host, '::1')
+
+    def test_hourly_pruning_waits_then_removes_only_old_jobs(self):
+        old = self.broker.job_root('c' * 32)
+        fresh = self.broker.job_root('d' * 32)
+        os.utime(old, (1, 1))
+        with patch.object(broker_net.time, 'sleep', side_effect=[None, InterruptedError]) as sleep:
+            with self.assertRaises(InterruptedError):
+                broker_net.prune_periodically(self.broker.root)
+        self.assertEqual(sleep.call_args_list, [unittest.mock.call(3600)] * 2)
+        self.assertFalse(old.exists())
+        self.assertTrue(fresh.exists())
 
     def test_requests_without_valid_token_are_rejected(self):
         client = self.paired()
@@ -103,6 +172,20 @@ class LinkTests(unittest.TestCase):
         with self.assertRaisesRegex(Invalid, 'pair again'):
             client.request('health')
         self.assertFalse(self.broker.calls)
+
+    def test_token_is_absent_from_job_logs_and_error_text(self):
+        client = self.paired()
+        token = client.link['token']
+        job, operation = 'e' * 32, 'f' * 32
+        seed = client.root / 'jobs' / job / 'seed'
+        seed.mkdir(parents=True)
+        (seed / 'source').write_text('public')
+        result = client.request('run', job_id=job, operation_id=operation, seed='seed', script='true', phase='public')
+        self.assertNotIn(token, (client.root / 'jobs' / job / result['log']).read_text())
+        client.link = {**client.link, 'token': token + 'invalid'}
+        with self.assertRaises(Invalid) as error:
+            client.request('health')
+        self.assertNotIn(token, str(error.exception))
 
     def test_rejected_requests_close_the_connection(self):
         connection = http.client.HTTPSConnection('127.0.0.1', self.port, context=__import__('ssl')._create_unverified_context())
@@ -178,6 +261,7 @@ class LinkTests(unittest.TestCase):
         conn = http.client.HTTPSConnection('127.0.0.1', self.server.server_address[1], context=ssl._create_unverified_context())
         conn.request('GET', '/v1/health', headers={'X-Portkeeper-Protocol': str(broker_net.PROTOCOL)})
         self.assertIs(json.loads(conn.getresponse().read())['ready'], True)
+        conn.close()
         script = (Path(__file__).resolve().parent.parent / 'deploy' / 'broker' / 'portkeeper-broker-update.sh').read_text()
         self.assertIn('"ready": *true', script)
 
@@ -275,8 +359,13 @@ class OfflineQueueTests(unittest.TestCase):
             try:
                 code = server.link.new_code()
                 automation = engine.automation
-                status = automation.pair({'url': f'https://127.0.0.1:{server.server_address[1]}', 'code': code})
+                status = automation.pair({'url': f'https://127.0.0.1:{server.server_address[1]}', 'code': code, 'fingerprint': server.fingerprint})
                 self.assertTrue(status['worker']['ready'])
+                token = json.loads(automation.link_path.read_text())['token']
+                self.assertNotIn(token, json.dumps(status))
+                self.assertNotIn(token, json.dumps(automation.status()))
+                self.assertNotIn(token, server.link.path.read_text())
+                self.assertEqual(server.link.path.stat().st_mode & 0o777, 0o600)
                 self.assertEqual(oct(automation.link_path.stat().st_mode & 0o777), '0o600')
                 self.assertIsNotNone(Automation(engine).broker)
                 self.assertFalse(automation.unpair()['worker']['ready'])
@@ -295,7 +384,7 @@ class OfflineQueueTests(unittest.TestCase):
                 with self.assertRaisesRegex(Invalid, 'active'):
                     automation.unpair()
                 with self.assertRaisesRegex(Invalid, 'active'):
-                    automation.pair({'url': 'https://127.0.0.1:1', 'code': '1' * 12})
+                    automation.pair({'url': 'https://127.0.0.1:1', 'code': '1' * 12, 'fingerprint': 'a' * 64})
                 self.assertIsNotNone(automation.broker)
             finally:
                 engine.close()

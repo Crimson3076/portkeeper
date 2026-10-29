@@ -315,9 +315,10 @@ else: emit({'response':'{"draft":"safe"}'})
         with patch('portkeeper.subscription_agents.LOGIN_TIMEOUT', .1):
             self.agents.login('codex')
             record = self.agents._logins['codex']
-            deadline = time.monotonic()+3
-            while record['process'].poll() is None and time.monotonic()<deadline:
-                time.sleep(.01)
+            # Process exit precedes descriptor cleanup in the expiry callback.
+            # Wait for the callback itself without polling login_status().
+            record['timer'].join(3)
+            self.assertFalse(record['timer'].is_alive())
             self.assertIsNotNone(record['process'].poll())
             self.assertIsNone(record['fd'])
             self.assertFalse(self.agents._processes)

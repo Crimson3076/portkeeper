@@ -2152,18 +2152,21 @@ function renderAutomaticSettings(parent) {
       if (result) { automaticPolicyDraft = null; await refresh(); }
     }, busy.has("automatic-policy")));
 }
-const brokerPairDraft = {url: "", code: ""};
+const brokerPairDraft = {url: "", code: "", fingerprint: ""};
 function brokerLinkControls(card, config, worker) {
   if (worker.link) card.append(el("p", "field-help", `Remote broker ${worker.link.url} · ${worker.version ? "v" + worker.version + " · " : ""}protocol ${worker.protocol} · ${worker.ready ? "rootless check passed" : "not ready"} · certificate ${worker.link.fingerprint}…`));
   else if (worker.offline) card.append(el("p", "review-notes", "Broker offline: automatic setups stay queued until it reconnects."));
   const url = input("broker-url", "text", brokerPairDraft.url || config.default_broker_url || "", "https://broker-vm:8788");
+  const fingerprint = input("broker-fingerprint", "text", brokerPairDraft.fingerprint, "SHA-256 fingerprint from the broker VM console");
+  fingerprint.addEventListener("input", () => { brokerPairDraft.fingerprint = fingerprint.value; });
   const code = input("broker-code", "text", brokerPairDraft.code, "1234-5678-9012");
   url.addEventListener("input", () => { brokerPairDraft.url = url.value; }); code.addEventListener("input", () => { brokerPairDraft.code = code.value; });
   const details = el("details", "settings-disclosure", el("summary", "table-action", config.remote ? "Re-pair or remove the remote broker" : "Pair a remote broker"));
   field(details, "Broker URL", url, "Run the broker with --listen and --pair in its VM; it prints a one-time code.");
   field(details, "Pairing code", code);
+  field(details, "Certificate fingerprint", fingerprint, "Copy all 64 characters directly from the trusted broker VM console, never from a network connection.");
   details.append(button("Pair", "button secondary small", async () => {
-    const result = await runAction("broker-pair", "/api/automation/broker/pair", {url: url.value, code: code.value}, "Paired with the broker.");
+    const result = await runAction("broker-pair", "/api/automation/broker/pair", {url: url.value, code: code.value, fingerprint: fingerprint.value}, "Paired with the broker.");
     if (result) { brokerPairDraft.code = ""; }
   }, busy.has("broker-pair")));
   if (config.remote) details.append(button("Remove pairing", "button secondary small", () => runAction("broker-unpair", "/api/automation/broker/unpair", {}, "Broker pairing removed."), busy.has("broker-unpair")));

@@ -67,6 +67,7 @@ async function create(saved, storageBlocked=false, source=fixture) {
     else if(endpoint.endsWith('/draft-record'))payload=source.draft_record||{attempts:[]};
     else if(endpoint.endsWith('/automation-record'))payload=source.automation_record||{attempts:[],worker_runs:[],model_calls:0,worker_seconds:0};
     else if(endpoint.startsWith('/api/automation/inputs'))payload={directory:'',parent:null,items:[{name:'owned.bin',path:'owned.bin',kind:'file'}],truncated:false};
+    else if(endpoint==='/api/automation/broker/pair'){requests.push({endpoint,body:JSON.parse(options.body)});payload={worker:{ready:true}};}
     else if(endpoint.endsWith('/automate')||endpoint.endsWith('/script-recipe')||endpoint.endsWith('/reply-automation')||endpoint==='/api/automation/config'){
       const body=JSON.parse(options.body);requests.push({endpoint,body});payload={job:{id:id(501)}};
     }
@@ -76,7 +77,7 @@ async function create(saved, storageBlocked=false, source=fixture) {
     else if(endpoint==='/api/setup'){requests.push({endpoint,body:JSON.parse(options.body)});payload={project:source.projects[1],job:{}};}
     return {ok:true,status:200,json:async()=>JSON.parse(JSON.stringify(payload))};
   };
-  w.eval(fs.readFileSync(path.join(base,'static/app.js'),'utf8'));
+  w.eval(fs.readFileSync(path.join(base,'static/app.js'),'utf8') + '\nwindow.testBrokerLinkControls = brokerLinkControls;');
   await new Promise(resolve=>setTimeout(resolve,30));
   assert.equal(errors.length,0,errors.map(e=>e.stack).join('\n'));
   return dom;
@@ -84,6 +85,14 @@ async function create(saved, storageBlocked=false, source=fixture) {
 async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
 (async()=>{
   let dom=await create();let w=dom.window,d=w.document;
+  w.testBrokerLinkControls(d.body, {}, {});
+  const brokerUrl=d.getElementById('broker-url'), brokerCode=d.getElementById('broker-code'), brokerFingerprint=d.getElementById('broker-fingerprint');
+  assert(brokerFingerprint, 'Pairing requires the fingerprint from the trusted broker console');
+  brokerUrl.value='https://broker:8788';brokerCode.value='1234-5678-9012';brokerFingerprint.value='a'.repeat(64);
+  [...d.querySelectorAll('button')].find(button=>button.textContent==='Pair').click();await tick();
+  assert.deepEqual(requests.find(request=>request.endpoint==='/api/automation/broker/pair').body,{url:'https://broker:8788',code:'1234-5678-9012',fingerprint:'a'.repeat(64)});
+  requests.length=0;
+
   assert(d.getElementById('project-grid').classList.contains('layout-workspace'));
   assert.equal(d.querySelectorAll('.workspace-game-button').length,2,'Platform projects must be grouped');
   assert.equal(d.getElementById('summary-projects').textContent,'2');

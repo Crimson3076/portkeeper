@@ -6,9 +6,9 @@ socket accepts, upload a public seed tree, and download snapshots/logs.
 
 Trust model: the broker serves HTTPS with a self-signed certificate. The app pins
 that certificate's SHA-256 fingerprint during pairing and then sends a long random
-bearer token. Pairing uses a one-time code printed by the broker; both sides prove
-knowledge of the code over the fingerprint they observed, so a man in the middle
-(different certificate) cannot complete pairing.
+bearer token. Pairing uses a one-time code printed by the broker. The user must
+supply the fingerprint from the trusted broker console before any code proof is
+sent, preventing an intermediary from collecting proofs for offline guessing.
 """
 import hashlib
 import hmac
@@ -38,7 +38,6 @@ TREE = re.compile(r'seed|replay-seed|snapshot-[a-f0-9]{32}')
 FILE = re.compile(r'[a-f0-9]{32}\.log|downloads/[a-zA-Z0-9][a-zA-Z0-9._-]{0,120}')
 MAX_TREE_UPLOAD = MAX_BYTES + 256 * 1024**2
 PAIR_LIFETIME = 900
-PAIR_ATTEMPTS = 5
 JOB_RETENTION = 7 * 86400
 
 
@@ -86,7 +85,7 @@ class LinkState:
         self.path = Path(root) / 'link.json'
         self.fingerprint = fingerprint
         self.lock = threading.Lock()
-        self.code, self.code_at, self.attempts = None, 0, 0
+        self.code, self.code_at = None, 0
         try:
             self.token_hash = json.loads(self.path.read_text()).get('token_sha256')
         except (OSError, ValueError):
@@ -95,14 +94,13 @@ class LinkState:
     def new_code(self):
         with self.lock:
             digits = ''.join(secrets.choice('0123456789') for _ in range(12))
-            self.code, self.code_at, self.attempts = f'{digits[:4]}-{digits[4:8]}-{digits[8:]}', time.monotonic(), 0
+            self.code, self.code_at = f'{digits[:4]}-{digits[4:8]}-{digits[8:]}', time.monotonic()
             return self.code
 
     def pair(self, client_proof, nonce):
         with self.lock:
-            if not self.code or time.monotonic() - self.code_at > PAIR_LIFETIME or self.attempts >= PAIR_ATTEMPTS:
+            if not self.code or time.monotonic() - self.code_at > PAIR_LIFETIME:
                 raise Invalid('No valid pairing code; restart the broker with --pair to print a new one')
-            self.attempts += 1
             expected = proof(self.code, 'client', self.fingerprint, nonce)
             if not hmac.compare_digest(expected, client_proof):
                 raise Invalid('Pairing code or broker certificate did not match')
@@ -216,23 +214,25 @@ class NetHandler(BaseHTTPRequestHandler):
         root = self.server.broker.job_root(job)
         destination = root / name
         # Drain the body even when refusing so the connection stays well-formed.
-        with tempfile.NamedTemporaryFile(dir=root, prefix='.upload-', delete=False) as archive:
-            temporary = Path(archive.name)
-            remaining = length
-            while remaining:
-                chunk = self.rfile.read(min(1024**2, remaining))
-                if not chunk:
-                    raise Invalid('Upload ended early')
-                archive.write(chunk)
-                remaining -= len(chunk)
+        temporary = None
         try:
+            with tempfile.NamedTemporaryFile(dir=root, prefix='.upload-', delete=False) as archive:
+                temporary = Path(archive.name)
+                remaining = length
+                while remaining:
+                    chunk = self.rfile.read(min(1024**2, remaining))
+                    if not chunk:
+                        raise Invalid('Upload ended early')
+                    archive.write(chunk)
+                    remaining -= len(chunk)
             if destination.exists() or destination.is_symlink():
                 if destination.is_symlink() or not destination.is_dir():
                     raise Invalid('Tree path is unsafe')
                 shutil.rmtree(destination)
             identity = unpack_snapshot(temporary, destination)
         finally:
-            temporary.unlink(missing_ok=True)
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
         expected = self.headers.get('X-Tree-Sha256')
         if expected and not hmac.compare_digest(expected, identity['sha256']):
             shutil.rmtree(destination, ignore_errors=True)
@@ -333,6 +333,12 @@ def prune_jobs(root, now=None):
             shutil.rmtree(child, ignore_errors=True)
 
 
+def prune_periodically(root):
+    while True:
+        time.sleep(3600)
+        prune_jobs(root)
+
+
 def make_net_server(broker, host, port, state_root):
     cert, key, fingerprint = make_certificate(Path(state_root) / 'tls')
     server = NetServer((host, port), NetHandler)
@@ -348,12 +354,12 @@ def make_net_server(broker, host, port, state_root):
 
 
 class PinnedTLS(http.client.HTTPSConnection):
-    """TLS that trusts exactly one certificate fingerprint (or records it for pairing)."""
+    """TLS that checks the supplied certificate fingerprint before sending HTTP data."""
     def __init__(self, host, port, fingerprint, timeout):
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
+        context.check_hostname = False  # NOSONAR: self-signed identity is checked against the out-of-band SHA-256 pin in connect().
+        context.verify_mode = ssl.CERT_NONE  # NOSONAR: connect() checks the certificate pin before any HTTP request.
         super().__init__(host, port, timeout=timeout, context=context)
         self.pin, self.seen = fingerprint, None
 
@@ -373,13 +379,15 @@ def parse_url(url):
     return parts.hostname, parts.port or 8788
 
 
-def pair(url, code):
+def pair(url, code, fingerprint):
     """Pair with a broker; returns the link record to persist."""
     host, port = parse_url(url)
     if not isinstance(code, str) or not re.fullmatch(r'[0-9]{4}-[0-9]{4}-[0-9]{4}', code.strip()):
         raise Invalid('Enter the pairing code printed by the broker (e.g. 1234-5678-9012)')
     code = code.strip()
-    connection = PinnedTLS(host, port, None, 10)
+    if not isinstance(fingerprint, str) or not re.fullmatch(r'[a-f0-9]{64}', fingerprint):
+        raise Invalid('Enter the full SHA-256 fingerprint printed in the broker VM console')
+    connection = PinnedTLS(host, port, fingerprint, 10)
     nonce = secrets.token_hex(16)
     try:
         connection.connect()
@@ -388,6 +396,8 @@ def pair(url, code):
                            {'Content-Type': 'application/json', 'X-Portkeeper-Protocol': str(PROTOCOL)})
         response = connection.getresponse()
         value = json.loads(response.read(65536))
+    except Invalid:
+        raise
     except (OSError, ValueError, http.client.HTTPException):
         raise Invalid('Could not reach the broker to pair; check its address, port and firewall') from None
     finally:
@@ -398,7 +408,7 @@ def pair(url, code):
         raise Invalid(value.get('error', 'Pairing was rejected'))
     if not hmac.compare_digest(value.get('proof', ''), proof(code, 'broker', fingerprint, nonce)) or not isinstance(value.get('token'), str):
         raise Invalid('The broker could not prove it knows the pairing code; do not trust this connection')
-    return {'url': f'https://{host}:{port}', 'fingerprint': fingerprint, 'token': value['token']}
+    return {'url': f'https://{"[" + host + "]" if ":" in host else host}:{port}', 'fingerprint': fingerprint, 'token': value['token']}
 
 
 class RemoteBrokerClient:
