@@ -714,6 +714,8 @@ class Engine:
         result = {"project": project, "matched": None, "warning": None}
         try:
             result["matched"] = self.match_imports_now()["matched"]
+            if not result["matched"]:
+                self.match_schedule.kick("Cover change waiting to be applied in RomM")
         except Exception:
             result["warning"] = "Cover saved. RomM could not be updated yet; Portkeeper retries on its RomM check schedule. Check the token has roms.write."
             self.match_schedule.kick("Cover change waiting to be applied in RomM")
@@ -1981,7 +1983,9 @@ class Engine:
             for old in self.store.all("artifacts"):
                 if old["project_id"] == artifact["project_id"] and old["target"] == artifact["target"] and old["published"]:
                     self.store.update("artifacts", old["id"], published=False)
-            return self.store.update("artifacts", artifact_id, published=True, published_at=now(), published_path=str(output))
+            artifact = self.store.update("artifacts", artifact_id, published=True, published_at=now(), published_path=str(output))
+            self.match_schedule.kick(f"{output_name} was published")
+            return artifact
 
     def demo(self):
         # Synthetic input belongs in our own bulk storage, never in the input mount.

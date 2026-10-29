@@ -135,10 +135,10 @@ class MatchSchedule:
             misses.clear()
         try:
             from .romm_identity import ImportIdentities
+            engine.publisher.poll()
             with engine.match_lock:
                 result = ImportIdentities(engine.romm, engine.data, engine.store).sync(misses=misses, at=at)
             engine.save_setting('romm_import_matching', {'checked_at': stamp_now(), **result})
-            engine.publisher.poll()
             seen = set()
             for project in engine.store.all('projects'):
                 prefix = (project.get('metadata') or {}).get('filename_prefix')

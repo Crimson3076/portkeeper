@@ -172,6 +172,39 @@ class ScheduleTests(unittest.TestCase):
         self.assertTrue(self.schedule.due())
         self.assertEqual(self.engine.get_setting('romm_match_state')['reason'], 'Game-1.zip was published')
 
+    def test_cover_with_no_immediate_match_kicks_schedule(self):
+        project = self.engine.create_project({'name': 'Game', 'repo': 'example/game', 'targets': ['linux']})
+        with patch.object(self.engine, 'match_imports_now', return_value={'matched': 0}):
+            result = self.engine.choose_cover(project['id'], {'url_cover': 'https://cdn.example/c.png', 'filename_prefix': 'Game'})
+        self.assertEqual(result['matched'], 0)
+        self.assertTrue(self.schedule.due())
+        self.assertIn('Cover change', self.schedule.status()['pending'][0])
+
+    def test_poll_confirms_indexing_before_identity_sync_can_settle_event(self):
+        self.engine.romm.library_stamp = lambda: 'stamp'
+        self.schedule.kick('Uploaded', at=1000)
+        self.engine.store.put('artifacts', {'id': 'a1', 'filename': 'Game.zip', 'romm': {'status': 'awaiting_scan'}})
+        def poll():
+            self.engine.store.update('artifacts', 'a1', romm={'status': 'in_romm'})
+        def sync(**kwargs):
+            self.assertEqual(self.engine.store.get('artifacts', 'a1')['romm']['status'], 'in_romm')
+            return {'matched': 1}
+        with patch.object(self.engine.publisher, 'poll', side_effect=poll), patch('portkeeper.romm_identity.ImportIdentities.sync', side_effect=sync) as matching:
+            self.assertEqual(self.schedule.run(at=1010), {'matched': 1})
+        matching.assert_called_once()
+        self.assertNotIn('event_at', self.engine.get_setting('romm_match_state'))
+
+    def test_local_publish_kicks_schedule(self):
+        project = self.engine.create_project({'name': 'Game', 'repo': 'example/game', 'targets': ['linux']})
+        package = Path(self.temp.name, 'Game.zip')
+        package.write_bytes(b'zip')
+        self.engine.store.put('artifacts', {'id': 'a1', 'project_id': project['id'], 'filename': package.name,
+                                           'file': str(package), 'sha256': hashlib.sha256(b'zip').hexdigest(),
+                                           'target': 'linux', 'published': False})
+        result = self.engine.publish('a1')
+        self.assertTrue(result['published'])
+        self.assertTrue(self.schedule.due())
+
     def test_check_romm_now_requires_connection_and_reports_failure(self):
         with patch.object(self.engine.romm, 'public_config', return_value={'configured': False}):
             with self.assertRaises(Invalid):
