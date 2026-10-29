@@ -1,6 +1,7 @@
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -72,7 +73,7 @@ class ScheduleTests(unittest.TestCase):
     def test_awaiting_upload_is_pending(self):
         project = self.engine.create_project({'name': 'Game', 'repo': 'example/game', 'targets': ['linux']})
         self.engine.store.put('artifacts', {'id': 'a1', 'project_id': project['id'], 'filename': 'Game-1.zip',
-                                            'romm': {'status': 'awaiting_scan', 'uploaded_at': '2026-01-01T00:00:00+00:00'}})
+                                            'romm': {'status': 'awaiting_scan', 'uploaded_at': datetime.now(timezone.utc).isoformat()}})
         self.assertIn('Game-1.zip', self.schedule.pending()[1][0])
         self.assertTrue(self.schedule.due())
 
@@ -112,6 +113,39 @@ class ScheduleTests(unittest.TestCase):
             self.engine.romm.library_stamp = lambda: 'changed'  # library change clears the cache
             self.schedule.run(at=1030)
             self.assertEqual(call.call_count + len(searches), first * 3)
+
+    def test_manual_run_reports_failure_and_keeps_event(self):
+        self.engine.romm.library_stamp = lambda: 'stamp'
+        self.schedule.kick('Uploaded', at=1000)
+        with patch('portkeeper.romm_identity.ImportIdentities.sync', side_effect=RuntimeError('boom')):
+            with self.assertRaises(Invalid):
+                self.schedule.run(manual=True, at=1010)
+            self.schedule.run(at=1020)  # automatic runs record the error instead of raising
+        self.assertIn('error', self.engine.get_setting('romm_import_matching'))
+        state = self.engine.get_setting('romm_match_state')
+        self.assertEqual((state['event_at'], state['last_run']), (1000, 1020))
+
+    def test_kick_during_run_survives_and_failed_stamp_keeps_library(self):
+        self.engine.romm.library_stamp = lambda: 'stamp'
+        self.schedule.run(at=1000)
+        kicked = lambda *a, **k: self.schedule.kick('Newer', at=1500) or {'matched': 0}
+        self.engine.romm.library_stamp = Mock(side_effect=Invalid('down'))
+        with patch('portkeeper.romm_identity.ImportIdentities.sync', side_effect=kicked):
+            self.schedule.run(at=1010)
+        state = self.engine.get_setting('romm_match_state')
+        self.assertEqual((state['event_at'], state['library']), (1500, 'stamp'))
+
+    def test_stale_awaiting_scan_is_given_up(self):
+        project = self.engine.create_project({'name': 'Game', 'repo': 'example/game', 'targets': ['linux']})
+        self.engine.store.put('artifacts', {'id': 'a1', 'project_id': project['id'], 'filename': 'Game-1.zip',
+                                            'romm': {'status': 'awaiting_scan', 'uploaded_at': '2026-01-01T00:00:00+00:00'}})
+        far = time.time() + 2 * 86400
+        self.assertEqual(self.schedule.pending(far), (None, []))
+
+    def test_set_mode_rejects_non_strings(self):
+        for value in ([], {}, None, 5):
+            with self.assertRaises(Invalid):
+                self.schedule.set_mode(value)
 
     def test_publish_and_cover_failure_kick_the_schedule(self):
         self.assertIsNone(self.schedule.pending()[0])

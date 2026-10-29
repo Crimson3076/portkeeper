@@ -46,6 +46,7 @@ class MatchSchedule:
     def __init__(self, engine):
         self.engine = engine
         self.wake = threading.Event()
+        self.state_lock = threading.Lock()
 
     # Settings -------------------------------------------------------------------------------
     def mode(self):
@@ -53,7 +54,7 @@ class MatchSchedule:
         return value if value in MODES else DEFAULT_MODE
 
     def set_mode(self, value):
-        if value not in MODES:
+        if not isinstance(value, str) or value not in MODES:
             raise Invalid('Choose how often to check RomM for new imports')
         self.engine.save_setting('romm_match_mode', value)
         self.wake.set()
@@ -64,8 +65,8 @@ class MatchSchedule:
 
     def kick(self, reason, at=None):
         """Something was uploaded, published or changed: start checking RomM until it is matched."""
-        state = self._state()
-        self.engine.save_setting('romm_match_state', {**state, 'event_at': at or time.time(), 'reason': reason})
+        with self.state_lock:
+            self.engine.save_setting('romm_match_state', {**self._state(), 'event_at': at or time.time(), 'reason': reason})
         self.wake.set()
 
     # Schedule -------------------------------------------------------------------------------
@@ -76,7 +77,10 @@ class MatchSchedule:
         for artifact in self.engine.store.all('artifacts'):
             romm = artifact.get('romm') or {}
             if romm.get('status') == 'awaiting_scan':
-                anchors.append(_epoch(romm.get('uploaded_at')) or at)
+                anchor = _epoch(romm.get('uploaded_at')) or at
+                if at - anchor >= GIVE_UP:
+                    continue  # never indexed after a day: stop polling for it
+                anchors.append(anchor)
                 notes.append(f"{artifact.get('filename', artifact['id'])} uploaded, waiting for RomM to index it")
         state = self._state()
         if state.get('event_at') and at - state['event_at'] < GIVE_UP:
@@ -125,6 +129,7 @@ class MatchSchedule:
         except Invalid:
             library = None
         state = self._state()
+        failed = False
         if manual or (library is not None and library != state.get('library')):
             misses.clear()
         try:
@@ -142,15 +147,22 @@ class MatchSchedule:
         except Exception:
             # Do not expose credentials or remote response bodies in the status.
             engine.save_setting('romm_import_matching', {'checked_at': stamp_now(), 'error': 'Import matching failed. Check RomM connection and roms.write permission.'})
-            result = None
+            result, failed = None, True
         finally:
             engine.save_setting('romm_match_misses', misses)
-            state = {**self._state(), 'last_run': at, 'library': library}
-            # A recorded event is settled once nothing is awaiting a scan and every search found its import.
-            if result is not None and not misses and not any((a.get('romm') or {}).get('status') == 'awaiting_scan' for a in engine.store.all('artifacts')):
-                state.pop('event_at', None)
-                state.pop('reason', None)
-            engine.save_setting('romm_match_state', state)
+            with self.state_lock:
+                state = {**self._state(), 'last_run': at}
+                if library is not None:  # a failed stamp request must not look like a library change
+                    state['library'] = library
+                # A recorded event is settled once nothing is awaiting a scan and every search found its import.
+                # An event kicked during this run (newer than `at`) is kept.
+                if result is not None and not misses and (state.get('event_at') or 0) <= at \
+                        and not any((a.get('romm') or {}).get('status') == 'awaiting_scan' for a in engine.store.all('artifacts')):
+                    state.pop('event_at', None)
+                    state.pop('reason', None)
+                engine.save_setting('romm_match_state', state)
+        if failed and manual:
+            raise Invalid('Import matching failed. Check RomM connection and roms.write permission.')
         return result or {'matched': 0}
 
     def loop(self):
