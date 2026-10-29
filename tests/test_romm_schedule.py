@@ -234,13 +234,19 @@ class ScheduleTests(unittest.TestCase):
         self.assertEqual(result['matching']['mode'], 'event')
 
     def test_library_stamp_is_stable_and_tolerates_mixed_values(self):
-        entries = [{'id': None, 'rom_count': 'x'}, {'id': 2, 'rom_count': 5, 'updated_at': 't'}, {'id': 1, 'rom_count': None}, 'junk']
+        entries = [{'id': None, 'rom_count': 'x'}, {'id': None, 'rom_count': 5},
+                   {'id': 2, 'rom_count': 5, 'updated_at': 't'}, {'id': 1, 'rom_count': None}, 'junk']
         with patch.object(self.engine.romm, '_json', return_value=entries):
             first = self.engine.romm.library_stamp()
         with patch.object(self.engine.romm, '_json', return_value=list(reversed(entries))):
             self.assertEqual(self.engine.romm.library_stamp(), first)
         with patch.object(self.engine.romm, '_json', return_value=[{'id': 2, 'rom_count': 6}]):
             self.assertNotEqual(self.engine.romm.library_stamp(), first)
+        for field, value in (('rom_count', 6), ('updated_at', 'new'), ('last_scanned_at', 'new')):
+            changed = [dict(item) if isinstance(item, dict) else item for item in entries]
+            changed[2][field] = value
+            with self.subTest(field=field), patch.object(self.engine.romm, '_json', return_value=changed):
+                self.assertNotEqual(self.engine.romm.library_stamp(), first)
         with patch.object(self.engine.romm, '_json', return_value={'items': []}):
             with self.assertRaises(Invalid):
                 self.engine.romm.library_stamp()
