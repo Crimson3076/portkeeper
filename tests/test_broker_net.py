@@ -122,6 +122,20 @@ class LinkTests(unittest.TestCase):
                 client.request('fetch', job_id=job)
         self.assertFalse(target.exists())
 
+    def test_dependency_with_log_extension_uses_dependency_size_limit(self):
+        client = self.paired()
+        job = 'a' * 32
+        data = b'x' * 101
+        def fetch(payload):
+            target = self.broker.job_root(job) / 'downloads' / 'build.log'
+            target.parent.mkdir(exist_ok=True)
+            target.write_bytes(data)
+            return {'name': target.name, 'sha256': broker_net.checksum(target)}
+        with patch.object(self.broker, 'handle', side_effect=fetch), patch.object(broker_net, 'MAX_LOG', 100):
+            client.request('fetch', job_id=job)
+        target = client.root / 'jobs' / job / 'downloads' / 'build.log'
+        self.assertEqual(target.read_bytes(), data)
+
     def test_interrupted_upload_removes_temporary_archive(self):
         handler = object.__new__(broker_net.NetHandler)
         handler.server = self.server

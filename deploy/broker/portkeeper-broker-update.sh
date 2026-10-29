@@ -41,17 +41,17 @@ mv "$work/src" "$BASE/releases/$tag"
 previous=$(readlink -f "$BASE/current" 2>/dev/null || true)
 ln -sfn "$BASE/releases/$tag" "$BASE/current.new"
 mv -T "$BASE/current.new" "$BASE/current"
-"${SYSTEMCTL[@]}" restart "$SERVICE"
-
 # No -I: it drops the current directory, and the release is an unpacked source tree.
 protocol=$(cd "$BASE/current" && python3 -c 'from portkeeper.broker_net import PROTOCOL; print(PROTOCOL)' || true)
 protocol=${protocol:-0}
 healthy=""
-for _ in $(seq 1 30); do
-  sleep 2
-  # Listening is not enough: the release must also report a ready worker (Docker/isolation probe passed).
-  if curl -fsk --max-time 5 -H "X-Portkeeper-Protocol: $protocol" "https://127.0.0.1:$PORT/v1/health" | grep -Eq '"ready": *true'; then healthy=1; break; fi
-done
+if "${SYSTEMCTL[@]}" restart "$SERVICE"; then
+  for _ in $(seq 1 30); do
+    sleep 2
+    # Listening is not enough: the release must also report a ready worker (Docker/isolation probe passed).
+    if curl -fsk --max-time 5 -H "X-Portkeeper-Protocol: $protocol" "https://127.0.0.1:$PORT/v1/health" | grep -Eq '"ready": *true'; then healthy=1; break; fi
+  done
+fi
 if [ -z "$healthy" ]; then
   echo "$tag did not become healthy; rolling back"
   touch "$BASE/rejected-$tag"

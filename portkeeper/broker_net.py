@@ -268,7 +268,7 @@ class NetHandler(BaseHTTPRequestHandler):
         target = root / name
         if target.is_symlink() or not target.is_file():
             return self.reply(404, {'error': 'File is not present'})
-        limit = MAX_LOG if name.endswith('.log') else MAX_BYTES
+        limit = MAX_BYTES if name.startswith('downloads/') else MAX_LOG
         size = target.stat().st_size
         if size > limit:
             raise Invalid('Artifact exceeds its size limit')
