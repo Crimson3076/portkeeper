@@ -153,10 +153,6 @@ class ScheduleTests(unittest.TestCase):
         self.assertTrue(self.schedule.due())
         self.assertEqual(self.schedule.status()['pending'], ['x'])
 
-
-if __name__ == '__main__':
-    unittest.main()
-
     def test_library_stamp_transport_error_does_not_escape_run(self):
         self.engine.romm.library_stamp = Mock(side_effect=TimeoutError('read timed out'))
         with patch.object(self.engine.romm, '_json', return_value={'items': [], 'total': 0}), \
@@ -176,3 +172,7 @@ if __name__ == '__main__':
         self.assertTrue(self.schedule.due(t + 1))
         self.engine.save_setting('romm_match_state', {'event_at': t, 'last_run': t + 1})
         self.assertEqual(self.schedule.next_check(t + 2)[0], t + 1 + 60)
+
+
+if __name__ == '__main__':
+    unittest.main()
