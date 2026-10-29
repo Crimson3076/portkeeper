@@ -55,6 +55,12 @@ class HttpIntegrationTests(unittest.TestCase):
             self.assertEqual(status, 400)
             self.assertIn('Import matching failed', json.loads(body)['error'])
 
+    def test_romm_match_now_without_connection_returns_400(self):
+        with patch.object(self.engine.romm, 'public_config', return_value={'configured': False}):
+            status, _, body = self.request('POST', '/api/romm/match-now', {})
+        self.assertEqual(status, 400)
+        self.assertIn('error', json.loads(body))
+
     def test_discovery_routes_are_read_only_until_explicit_refresh_and_check_origin(self):
         with patch.object(self.engine.discovery, 'fetch') as fetch:
             status, _, body = self.request('GET', '/api/discovery')

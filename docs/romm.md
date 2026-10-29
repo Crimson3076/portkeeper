@@ -16,6 +16,9 @@ console files are untouched. Unregistered games require an explicit identity fir
 this avoids guessing from port names. This step matches files already imported by
 RomM; it does not upload files or initiate library scans.
 
+Known misses follow the same retry backoff even with a fixed check interval. A
+library change or **Match now** retries them immediately.
+
 ### Project metadata settings
 
 Open a game's Overview and select **Edit metadata link**. Enter the package filename
