@@ -1,5 +1,6 @@
 """Match registered native-port imports after RomM discovers their files."""
 import json
+import time
 import hashlib
 import uuid
 import urllib.parse
@@ -8,6 +9,7 @@ from pathlib import Path
 
 from .romm import _OriginRedirect, _origin, _atomic_json, _cover_url, artwork_url
 from .safety import Invalid
+from .romm_schedule import miss_due, note_search
 
 
 def validate_identity(identity):
@@ -44,7 +46,9 @@ class ImportIdentities:
         self.store = store
         self.receipts = Path(data_dir) / 'romm-artwork-receipts.json'
 
-    def sync(self):
+    def sync(self, misses=None, at=None):
+        """Match imports. With a miss cache, prefixes that recently found nothing are not searched again."""
+        at = at or time.time()
         if self.path.is_symlink():
             raise Invalid('Import identity configuration must not be a symlink')
         identities = json.loads(self.path.read_text()) if self.path.is_file() else []
@@ -69,6 +73,9 @@ class ImportIdentities:
         matched = 0
         for identity in identities:
             identity = dict(identity)
+            miss_key = 'identity:' + str(identity.get('filename_prefix')).casefold()
+            if misses is not None and not miss_due(misses, miss_key, at):
+                continue
             reference = None
             artwork = None
             artwork_type = None
@@ -98,6 +105,7 @@ class ImportIdentities:
             if not isinstance(prefix, str) or not prefix or '/' in prefix or not isinstance(game, str) or not game or not ((custom and igdb_id is None) or (type(igdb_id) is int and igdb_id >= 1)):
                 raise Invalid('Invalid registered game identity')
             offset = 0
+            found = False
             while True:
                 params = urllib.parse.urlencode({'search_term': prefix, 'limit': 100, 'offset': offset, 'with_files': 'false', 'with_char_index': 'false', 'with_filter_values': 'false', 'with_rom_id_index': 'false'})
                 result = self.romm._json('roms?' + params)
@@ -107,6 +115,7 @@ class ImportIdentities:
                     filename = record.get('fs_name', '')
                     if record.get('platform_slug') not in ('linux', 'win') or not filename.casefold().startswith(prefix.casefold() + '-') or not filename.lower().endswith('.zip'):
                         continue
+                    found = True
                     # The reference belongs to the user; never overwrite their edits. A cover
                     # chosen in Portkeeper is the one exception, so every platform shares it.
                     is_reference = bool(reference) and record['id'] == identity['romm_rom_id']
@@ -151,4 +160,6 @@ class ImportIdentities:
                 offset += len(items)
                 if not items or offset >= result.get('total', offset):
                     break
+            if misses is not None:
+                note_search(misses, miss_key, found, at)
         return {'matched': matched}

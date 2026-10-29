@@ -427,6 +427,14 @@ class RomM:
         except (UnicodeDecodeError, json.JSONDecodeError):
             return status, None
 
+    def library_stamp(self):
+        """Changes when RomM's library does (platform entries, ROM counts, scan times)."""
+        result = self._json('platforms')
+        if not isinstance(result, list):
+            raise Invalid('RomM returned an invalid platform list')
+        return json.dumps(sorted([item.get('id'), item.get('rom_count'), item.get('updated_at'), item.get('last_scanned_at')]
+                                 for item in result if isinstance(item, dict)), default=str)
+
     def platforms(self):
         result = self._json('platforms')
         if not isinstance(result, list):

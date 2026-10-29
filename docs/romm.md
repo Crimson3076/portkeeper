@@ -9,7 +9,7 @@ Register known games in `data/romm-import-identities.json`:
 ```
 
 Use the metadata ID and cover from the original game selected in RomM. The connector
-needs `roms.write` as well as `roms.read`. Matching runs every minute, applies only
+needs `roms.write` as well as `roms.read`. Matching runs on the schedule chosen in Settings → RomM (default: only after an upload, checking every minute for 30 minutes, then backing off to 5, 15 and 60 minutes; idle installs make no RomM requests), applies only
 to ZIP archives beginning with the registered prefix followed by `-` on Linux or
 Windows platforms, and preserves existing version labels and testing notes. Original
 console files are untouched. Unregistered games require an explicit identity first;

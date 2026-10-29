@@ -90,8 +90,9 @@ class Publisher:
             result = {**status, "filename": filename, "platform_id": platform["id"], "platform": platform["fs_slug"],
                       "server": romm.public_config()["url"], "uploaded_at": now()}
             self.store.update("artifacts", artifact_id, romm=result)
+            self.engine.match_schedule.kick(f"{filename} was published")
             if not record:
-                log("Upload complete. RomM's filesystem watcher adds the file to the library after its rescan delay; Portkeeper checks every minute.")
+                log("Upload complete. RomM's filesystem watcher adds the file to the library after its rescan delay; Portkeeper checks on its RomM schedule.")
                 self.check(artifact_id)
             return self.store.get("artifacts", artifact_id)["romm"]
         except Exception as error:

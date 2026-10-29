@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from .romm import _normalize_record
 from .safety import Invalid
+from .romm_schedule import miss_due, note_search
 from .storage import identifier, now
 
 RESULTS = {'untested': 'Not tested', 'starts': 'Starts successfully', 'played': 'Played successfully', 'failed': 'Doesn’t work'}
@@ -61,27 +62,35 @@ class Reviews:
                 continue
         return candidates[0] if len(candidates) == 1 else {}
 
-    def imports(self, project_id, force=False):
+    def imports(self, project_id, force=False, misses=None, at=None):
         project = self.store.get('projects', project_id)
         server = self.engine.romm.public_config().get('url')
         key = (server, project_id, tuple(self.prefixes(project)))
         cached = self.cache.get(key)
-        if cached and not force and time.monotonic() - cached[0] < 60:
+        at = at or time.time()
+        if misses is None and cached and not force and time.monotonic() - cached[0] < 60:
             records = cached[1]
         else:
             records = {}
             for prefix in self.prefixes(project):
-                offset = 0
+                miss_key = 'import:' + prefix.casefold()
+                if misses is not None and not miss_due(misses, miss_key, at):
+                    continue
+                offset, found = 0, False
                 while True:
                     result = self.engine.romm.search(prefix, offset=offset, limit=100)
                     for record in result['items']:
                         if self.belongs(project, record):
                             records[record['id']] = record
+                            found = True
                     offset += len(result['items'])
                     if not result['items'] or offset >= result['total']:
                         break
+                if misses is not None:
+                    note_search(misses, miss_key, found, at)
             records = list(records.values())
-            self.cache[key] = (time.monotonic(), records)
+            if misses is None:  # A pass that skipped known misses is incomplete; don't serve it to the UI.
+                self.cache[key] = (time.monotonic(), records)
         items = []
         for record in records:
             reference = self.reference(record)
