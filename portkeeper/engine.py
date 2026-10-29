@@ -714,11 +714,11 @@ class Engine:
         result = {"project": project, "matched": None, "warning": None}
         try:
             result["matched"] = self.match_imports_now()["matched"]
-            if not result["matched"]:
-                self.match_schedule.kick("Cover change waiting to be applied in RomM")
         except Exception:
             result["warning"] = "Cover saved. RomM could not be updated yet; Portkeeper retries on its RomM check schedule. Check the token has roms.write."
-            self.match_schedule.kick("Cover change waiting to be applied in RomM")
+        # The immediate sync counts updates across all games, so it cannot confirm this
+        # project's cover. A scheduled pass checks its imports and retains any misses.
+        self.match_schedule.kick("Cover change waiting to be applied in RomM")
         return result
 
     def match_imports_now(self):

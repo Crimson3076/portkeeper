@@ -180,6 +180,21 @@ class ScheduleTests(unittest.TestCase):
         self.assertTrue(self.schedule.due())
         self.assertIn('Cover change', self.schedule.status()['pending'][0])
 
+    def test_unrelated_cover_updates_do_not_suppress_selected_game_retry(self):
+        project = self.engine.create_project({'name': 'Game', 'repo': 'example/game', 'targets': ['linux']})
+        self.engine.create_project({'name': 'Other', 'repo': 'example/other', 'targets': ['linux'],
+                                    'metadata': {'filename_prefix': 'Other', 'game': 'Other', 'igdb_id': 5}})
+        with patch.object(self.engine, 'match_imports_now', return_value={'matched': 1}):
+            result = self.engine.choose_cover(project['id'], {'url_cover': 'https://cdn.example/c.png', 'filename_prefix': 'Game'})
+        self.assertEqual(result['matched'], 1)
+        self.assertTrue(self.schedule.due())
+        self.engine.romm.library_stamp = lambda: 'stamp'
+        self.engine.romm.search = lambda *a, **k: {'items': [], 'total': 0}
+        with patch('portkeeper.romm_identity.ImportIdentities.sync', return_value={'matched': 1}):
+            self.schedule.run()
+        self.assertIsNotNone(self.schedule.next_check()[0])
+        self.assertIn('import:game', self.engine.get_setting('romm_match_misses'))
+
     def test_poll_confirms_indexing_before_identity_sync_can_settle_event(self):
         self.engine.romm.library_stamp = lambda: 'stamp'
         self.schedule.kick('Uploaded', at=1000)
