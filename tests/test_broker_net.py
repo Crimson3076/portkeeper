@@ -231,6 +231,11 @@ class LinkTests(unittest.TestCase):
                 self.server.slots.release()
         self.assertTrue(self.paired().request('health')['ready'])
 
+    def test_tls_requires_a_complete_certificate_pin(self):
+        for pin in (None, '', 'a' * 12, 'z' * 64):
+            with self.subTest(pin=pin), self.assertRaisesRegex(Invalid, 'fingerprint'):
+                broker_net.PinnedTLS('127.0.0.1', self.port, pin, 10)
+
     def test_certificate_pin_mismatch_is_refused(self):
         client = self.paired()
         client.link = {**client.link, 'fingerprint': '0' * 64}
@@ -265,7 +270,7 @@ class LinkTests(unittest.TestCase):
 
     def test_update_script_imports_release_protocol_from_source_tree(self):
         script = (Path(__file__).resolve().parent.parent / 'deploy' / 'broker' / 'portkeeper-broker-update.sh').read_text()
-        self.assertIn('cd "$BASE/current" && python3 -c', script)
+        self.assertIn('cd "$work/src" && python3 -c', script)
         root = Path(__file__).resolve().parent.parent
         done = subprocess.run(['python3', '-c', 'from portkeeper.broker_net import PROTOCOL; print(PROTOCOL)'],
                               cwd=root, capture_output=True, text=True)

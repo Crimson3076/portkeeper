@@ -11,7 +11,7 @@ import unittest
 class UpdateTests(unittest.TestCase):
     def test_release_success_test_failure_rollback_and_rejected_release(self):
         script = Path(__file__).resolve().parents[1] / 'deploy/broker/portkeeper-broker-update.sh'
-        for scenario in ('success', 'tests-fail', 'not-ready', 'restart-fail', 'rejected'):
+        for scenario in ('success', 'tests-fail', 'not-ready', 'restart-fail', 'protocol-fail', 'rejected'):
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 base, commands = root / 'install', root / 'bin'
@@ -22,7 +22,7 @@ class UpdateTests(unittest.TestCase):
                 archive = root / 'release.tar.gz'
                 files = {
                     'release/portkeeper/__init__.py': '',
-                    'release/portkeeper/broker_net.py': 'PROTOCOL = 2\n',
+                    'release/portkeeper/broker_net.py': 'raise RuntimeError("invalid release")\n' if scenario == 'protocol-fail' else 'PROTOCOL = 2\n',
                     'release/tests/test_release.py': 'import unittest\nclass ReleaseTest(unittest.TestCase):\n def test_release(self): self.assertTrue(' + str(scenario != 'tests-fail') + ')\n',
                 }
                 with tarfile.open(archive, 'w:gz') as bundle:
@@ -56,13 +56,13 @@ else:
                        'PORTKEEPER_INSTALL_DIR': str(base), 'TEST_ARCHIVE': str(archive),
                        'TEST_SCENARIO': scenario, 'TEST_RESTARTS': str(restarts)}
                 result = subprocess.run(['bash', str(script)], env=env, capture_output=True, text=True, timeout=30)
-                self.assertEqual(result.returncode, 1 if scenario in ('tests-fail', 'not-ready', 'restart-fail') else 0, result.stdout + result.stderr)
+                self.assertEqual(result.returncode, 1 if scenario in ('tests-fail', 'not-ready', 'restart-fail', 'protocol-fail') else 0, result.stdout + result.stderr)
                 self.assertEqual((base / 'current').resolve().name, 'new' if scenario == 'success' else 'old')
                 self.assertEqual((base / 'rejected-new').exists(), scenario != 'success')
                 calls = restarts.read_text().splitlines() if restarts.exists() else []
                 self.assertEqual(len(calls), {'success': 1, 'not-ready': 2, 'restart-fail': 2}.get(scenario, 0))
                 self.assertFalse(list((base / 'releases').glob('.incoming-*')))
-                if scenario in ('tests-fail', 'not-ready', 'restart-fail'):
+                if scenario in ('tests-fail', 'not-ready', 'restart-fail', 'protocol-fail'):
                     again = subprocess.run(['bash', str(script)], env=env, capture_output=True, text=True, timeout=30)
                     self.assertEqual(again.returncode, 0)
                     self.assertIn('previously failed', again.stdout)

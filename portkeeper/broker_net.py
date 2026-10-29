@@ -356,6 +356,8 @@ def make_net_server(broker, host, port, state_root):
 class PinnedTLS(http.client.HTTPSConnection):
     """TLS that checks the supplied certificate fingerprint before sending HTTP data."""
     def __init__(self, host, port, fingerprint, timeout):
+        if not isinstance(fingerprint, str) or not re.fullmatch(r'[a-f0-9]{64}', fingerprint):
+            raise Invalid('A complete broker certificate fingerprint is required')
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.check_hostname = False  # NOSONAR: self-signed identity is checked against the out-of-band SHA-256 pin in connect().
@@ -366,7 +368,7 @@ class PinnedTLS(http.client.HTTPSConnection):
     def connect(self):
         super().connect()
         self.seen = fingerprint_of(self.sock.getpeercert(binary_form=True))
-        if self.pin and not hmac.compare_digest(self.pin, self.seen):
+        if not hmac.compare_digest(self.pin, self.seen):
             self.close()
             raise Invalid('The broker certificate does not match the paired fingerprint; pair again if you replaced the broker')
 
