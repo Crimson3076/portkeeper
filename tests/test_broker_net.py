@@ -2,10 +2,12 @@ import copy
 import http.client
 import json
 import shutil
+import ssl
 import subprocess
 import tempfile
 import threading
 import unittest
+import unittest.mock
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +21,8 @@ from portkeeper.worker_broker import ID, tree_identity
 
 class FakeBroker:
     """Stands in for WorkerBroker; never executes anything."""
+    ready = True
+
     def __init__(self, root):
         self.root = Path(root)
         self.calls = []
@@ -170,6 +174,13 @@ class LinkTests(unittest.TestCase):
                               cwd=root, capture_output=True, text=True)
         self.assertEqual(done.stdout.strip(), str(broker_net.PROTOCOL), done.stderr)
 
+    def test_public_health_reports_worker_readiness_and_update_script_requires_it(self):
+        conn = http.client.HTTPSConnection('127.0.0.1', self.server.server_address[1], context=ssl._create_unverified_context())
+        conn.request('GET', '/v1/health', headers={'X-Portkeeper-Protocol': str(broker_net.PROTOCOL)})
+        self.assertIs(json.loads(conn.getresponse().read())['ready'], True)
+        script = (Path(__file__).resolve().parent.parent / 'deploy' / 'broker' / 'portkeeper-broker-update.sh').read_text()
+        self.assertIn('"ready": *true', script)
+
     def test_unknown_job_types_are_rejected_by_broker_handler(self):
         client = self.paired()
         with patch.object(self.broker, 'handle', side_effect=Invalid('Unknown broker operation')):
@@ -272,6 +283,22 @@ class OfflineQueueTests(unittest.TestCase):
                 self.assertFalse(automation.link_path.exists())
             finally:
                 server.shutdown(); server.server_close(); engine.close()
+
+    def test_pair_and_unpair_are_refused_while_a_job_is_active(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            engine = Engine(root / 'data', root / 'inputs', root / 'library')
+            try:
+                automation = engine.automation
+                automation.broker = unittest.mock.MagicMock()
+                engine.store.put('automation', {'id': '8' * 32, 'project_id': 'p', 'status': 'queued'})
+                with self.assertRaisesRegex(Invalid, 'active'):
+                    automation.unpair()
+                with self.assertRaisesRegex(Invalid, 'active'):
+                    automation.pair({'url': 'https://127.0.0.1:1', 'code': '1' * 12})
+                self.assertIsNotNone(automation.broker)
+            finally:
+                engine.close()
 
 
 class TemplateTests(unittest.TestCase):

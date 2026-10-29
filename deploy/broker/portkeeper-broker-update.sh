@@ -49,7 +49,8 @@ protocol=${protocol:-0}
 healthy=""
 for _ in $(seq 1 30); do
   sleep 2
-  if curl -fsk --max-time 5 -H "X-Portkeeper-Protocol: $protocol" "https://127.0.0.1:$PORT/v1/health" >/dev/null; then healthy=1; break; fi
+  # Listening is not enough: the release must also report a ready worker (Docker/isolation probe passed).
+  if curl -fsk --max-time 5 -H "X-Portkeeper-Protocol: $protocol" "https://127.0.0.1:$PORT/v1/health" | grep -Eq '"ready": *true'; then healthy=1; break; fi
 done
 if [ -z "$healthy" ]; then
   echo "$tag did not become healthy; rolling back"

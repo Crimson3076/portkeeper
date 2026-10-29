@@ -227,11 +227,16 @@ class Automation:
         except (OSError, ValueError, KeyError, Invalid):
             return None
 
+    def require_idle(self):
+        if any(r.get('status') in ('queued', 'running', 'waiting_user') for r in self.store.all('automation')):
+            raise Invalid('Finish or cancel the active automatic setup before changing the worker broker')
+
     def pair(self, payload):
         if not isinstance(payload, dict) or set(payload) != {'url', 'code'}:
             raise Invalid('Enter the broker address and pairing code')
         if os.environ.get('PORTKEEPER_WORKER_SOCKET'):
             raise Invalid('This app is configured for a local broker socket; unset it to pair a remote broker')
+        self.require_idle()
         link = broker_net.pair(payload['url'], payload['code'])
         _atomic_json(self.link_path, link)
         self.broker, self.health_cache = broker_net.RemoteBrokerClient(link, self.exchange), None
@@ -240,6 +245,7 @@ class Automation:
     def unpair(self):
         if os.environ.get('PORTKEEPER_WORKER_SOCKET'):
             raise Invalid('The local broker socket is configured by environment variables')
+        self.require_idle()
         self.link_path.unlink(missing_ok=True)
         self.broker, self.health_cache = None, None
         return self.status()

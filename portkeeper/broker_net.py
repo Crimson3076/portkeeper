@@ -244,7 +244,8 @@ class NetHandler(BaseHTTPRequestHandler):
         if path == '/v1/health':
             # Unauthenticated, minimal: lets the app distinguish "wrong version" from "offline".
             if self.guard(public=True):
-                self.reply(200, {'protocol': PROTOCOL, 'version': __version__, 'paired': bool(self.server.link.token_hash)})
+                self.reply(200, {'protocol': PROTOCOL, 'version': __version__, 'paired': bool(self.server.link.token_hash),
+                                  'ready': bool(self.server.broker.ready)})
             return
         match = re.fullmatch(r'/v1/jobs/([a-f0-9]{32})/(trees|identity|files)/(.+)', path)
         if not self.guard():
