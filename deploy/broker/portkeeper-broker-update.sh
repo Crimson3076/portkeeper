@@ -43,7 +43,9 @@ ln -sfn "$BASE/releases/$tag" "$BASE/current.new"
 mv -T "$BASE/current.new" "$BASE/current"
 "${SYSTEMCTL[@]}" restart "$SERVICE"
 
-protocol=$(cd "$BASE/current" && python3 -I -c 'from portkeeper.broker_net import PROTOCOL; print(PROTOCOL)')
+# No -I: it drops the current directory, and the release is an unpacked source tree.
+protocol=$(cd "$BASE/current" && python3 -c 'from portkeeper.broker_net import PROTOCOL; print(PROTOCOL)' || true)
+protocol=${protocol:-0}
 healthy=""
 for _ in $(seq 1 30); do
   sleep 2

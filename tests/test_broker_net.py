@@ -2,6 +2,7 @@ import copy
 import http.client
 import json
 import shutil
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -150,6 +151,24 @@ class LinkTests(unittest.TestCase):
         with patch.object(client, 'json_call', return_value={'result': {'ready': True, 'protocol': PROTOCOL + 1}}):
             with self.assertRaisesRegex(Invalid, 'Incompatible Portkeeper protocol'):
                 client.request('health')
+
+    def test_replay_seed_tree_round_trips(self):
+        client = self.paired()
+        job, operation = '3' * 32, '4' * 32
+        seed = client.root / 'jobs' / job / 'replay-seed'
+        (seed / 'src').mkdir(parents=True)
+        (seed / 'src' / 'main.c').write_text('int main(){}')
+        result = client.request('run', job_id=job, operation_id=operation, seed='replay-seed', script='true', phase='public')
+        snapshot = client.root / 'jobs' / job / result['snapshot']
+        self.assertEqual((snapshot / 'src' / 'main.c').read_text(), 'int main(){}')
+
+    def test_update_script_imports_release_protocol_from_source_tree(self):
+        script = (Path(__file__).resolve().parent.parent / 'deploy' / 'broker' / 'portkeeper-broker-update.sh').read_text()
+        self.assertIn('cd "$BASE/current" && python3 -c', script)
+        root = Path(__file__).resolve().parent.parent
+        done = subprocess.run(['python3', '-c', 'from portkeeper.broker_net import PROTOCOL; print(PROTOCOL)'],
+                              cwd=root, capture_output=True, text=True)
+        self.assertEqual(done.stdout.strip(), str(broker_net.PROTOCOL), done.stderr)
 
     def test_unknown_job_types_are_rejected_by_broker_handler(self):
         client = self.paired()

@@ -34,7 +34,7 @@ from .safety import Invalid, checksum
 from .worker_broker import ID, MAX_BYTES, MAX_LOG, tree_identity, unpack_snapshot
 
 PROTOCOL = 2
-TREE = re.compile(r'seed|snapshot-[a-f0-9]{32}')
+TREE = re.compile(r'seed|replay-seed|snapshot-[a-f0-9]{32}')
 FILE = re.compile(r'[a-f0-9]{32}\.log|downloads/[a-zA-Z0-9][a-zA-Z0-9._-]{0,120}')
 MAX_TREE_UPLOAD = MAX_BYTES + 256 * 1024**2
 PAIR_LIFETIME = 900
