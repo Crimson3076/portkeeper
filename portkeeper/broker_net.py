@@ -213,6 +213,12 @@ class NetworkHandler(BaseHTTPRequestHandler):
             if method == 'GET' and path == '/v1/hello':
                 with broker.guard:
                     busy = bool(broker.active_names)
+                if not busy:
+                    # fetch and seed uploads hold the operation lock without being an active run
+                    if broker.lock.acquire(blocking=False):
+                        broker.lock.release()
+                    else:
+                        busy = True
                 return self.reply(200, {'protocol': self.server.protocol, 'version': __version__, 'ready': broker.ready,
                                         'paired': self.server.access.paired(), 'busy': busy})
             if method == 'POST' and path == '/v1/pair':

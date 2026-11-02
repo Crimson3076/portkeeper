@@ -316,6 +316,21 @@ class BusyTests(NetworkCase):
                 broker_net.main()
         self.assertEqual(caught.exception.code, 3)
 
+    def test_hello_reports_busy_while_a_fetch_or_upload_holds_the_lock(self):
+        import http.client
+        import ssl
+
+        def hello():
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.check_hostname, context.verify_mode = False, ssl.CERT_NONE
+            connection = http.client.HTTPSConnection('127.0.0.1', self.port, context=context, timeout=10)
+            connection.request('GET', '/v1/hello')
+            return json.loads(connection.getresponse().read())['busy']
+        self.assertFalse(hello())
+        with self.broker.lock:
+            self.assertTrue(hello())
+        self.assertFalse(hello())
+
 
 class OfflineTests(NetworkCase):
     def test_unreachable_broker_is_reported_as_offline_not_as_a_pairing_error(self):
