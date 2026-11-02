@@ -768,7 +768,7 @@ class Engine:
         project = self.store.get("projects", project_id)
         if automate_after:
             policy = self.automation.policy()
-            if not policy['enabled'] or not self.automation.status()['worker'].get('ready') or self.assistant._config()['provider'] not in policy['eligible_providers']:
+            if not policy['enabled'] or not (lambda worker: worker.get('ready') or worker.get('offline'))(self.automation.status()['worker']) or self.assistant._config()['provider'] not in policy['eligible_providers']:
                 raise Invalid('Connect and enable the worker/provider before requesting automatic setup')
             if draft_after or build_after or project.get('profile'):
                 raise Invalid('Choose automatic setup or the existing drafting/build workflow')
@@ -1589,7 +1589,7 @@ class Engine:
                 path = binding['path']
                 replacements += [(path, '[private-input:' + input_id + ']'),
                                  (Path(path).name, '[private-input:' + input_id + ']')]
-        for filename in ('assistant.json', 'romm.json'):
+        for filename in ('assistant.json', 'romm.json', 'broker.json'):
             path = self.data / 'secrets' / filename
             if path.is_file() and not path.is_symlink():
                 try:

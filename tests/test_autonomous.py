@@ -397,6 +397,27 @@ class AutonomousTests(unittest.TestCase):
         with self.assertRaises(Invalid): self.engine.automation.input_choices('../data')
         with self.assertRaises(Invalid): self.engine.automation.input_choices('escape')
 
+    def test_jobs_queue_while_the_remote_broker_is_offline_and_start_when_it_returns(self):
+        from portkeeper.broker_net import BrokerOffline
+        broker, request = self.broker, self.broker.request
+        broker.online = False
+        def flaky(op, **payload):
+            if op == 'health' and not broker.online:
+                raise BrokerOffline('The build broker could not be reached')
+            return request(op, **payload)
+        broker.request = flaky
+        self.engine.automation.offline_poll, self.engine.automation.health_cache = .02, None
+        self.assertTrue(self.engine.automation.status()['worker']['offline'])
+        inputs = [{'role': 'base_game', 'kind': 'file', 'path': 'private.bin'}]
+        with patch.object(self.engine.assistant, 'chat', side_effect=self.strict_responses()):
+            result = self.engine.automation.queue(self.project['id'], {'inputs': inputs})
+            threading.Event().wait(.3)
+            self.assertEqual(self.engine.store.get('jobs', result['job']['id'])['status'], 'queued')
+            self.assertFalse([c for c in broker.calls if c[0] == 'run'])
+            broker.online = True
+            job = self.wait_status(result['job']['id'], 'ready')
+        self.assertEqual(job['status'], 'ready')
+
     def test_controller_cancellation_persists_before_broker_dispatch(self):
         job = identifier()
         self.engine.store.put('automation', {'id': job, 'status': 'running'})

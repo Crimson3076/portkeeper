@@ -20,7 +20,8 @@ from .assistant import AGENT_PROVIDERS, _lan_host
 from .drafting import extract_json
 from .safety import Invalid, checksum, confined, relative, safe_extract, slug, verify_tree
 from .storage import identifier, now
-from .worker_broker import BrokerClient, MAX_BYTES, tree_identity
+from . import broker_net
+from .worker_broker import BrokerClient, MAX_BYTES, PROTOCOL, tree_identity
 
 DEFAULT_POLICY = {'enabled': False, 'privacy': 'strict', 'private_model_local': False,
                   'eligible_providers': [], 'max_calls': 20, 'daily_calls': 100,
@@ -212,8 +213,36 @@ class Automation:
     def __init__(self, engine, broker=None):
         self.engine, self.store = engine, engine.store
         socket_path, root = os.environ.get('PORTKEEPER_WORKER_SOCKET'), os.environ.get('PORTKEEPER_WORKER_EXCHANGE')
+        self.remote_config = engine.data / 'secrets' / 'broker.json'
+        self.default_broker_url = os.environ.get('PORTKEEPER_BROKER_URL') or None
+        self.remote = False
         self.broker = broker or (BrokerClient(socket_path, root) if socket_path and root else None)
+        if not self.broker and (self.remote_config.is_file() or self.default_broker_url):
+            self.use_remote()
         self.health_cache, self.health_at = None, 0
+
+    offline_poll = 15
+
+    def use_remote(self):
+        self.broker = broker_net.RemoteBrokerClient(self.remote_config, self.engine.storage / 'broker-exchange', self.default_broker_url)
+        self.remote, self.health_cache = True, None
+
+    def pair_broker(self, value):
+        if not isinstance(value, dict) or set(value) != {'url', 'code'} or not all(isinstance(v, str) for v in value.values()):
+            raise Invalid('Enter the broker address and its pairing code')
+        if self.remote is False and self.broker:
+            raise Invalid('This app uses the local broker socket; unset PORTKEEPER_WORKER_SOCKET to pair a remote broker')
+        broker_net.save_config(self.remote_config, broker_net.pair(value['url'].strip(), value['code']))
+        self.remote_config.chmod(0o600)
+        self.use_remote()
+        return self.status()
+
+    def forget_broker(self):
+        if not self.remote:
+            raise Invalid('No remote broker is paired')
+        self.remote_config.unlink(missing_ok=True)
+        self.health_cache = None
+        return self.status()
 
     def policy(self):
         return {**DEFAULT_POLICY, **self.engine.get_setting('automation_policy', {})}
@@ -240,6 +269,8 @@ class Automation:
     def status(self):
         if not self.broker:
             health = {'ready': False, 'error': 'Connect a dedicated worker broker to enable automatic setup'}
+        elif self.remote and not broker_net.load_config(self.remote_config):
+            health = {'ready': False, 'error': 'Pair this app with a build broker to enable automatic setup'}
         elif self.health_cache is not None and time.monotonic() - self.health_at < 15:
             health = self.health_cache
         else:
@@ -247,10 +278,39 @@ class Automation:
                 health = self.broker.request('health')
                 if health.get('test_only'):
                     health = {**health, 'ready': False, 'error': 'Rootful test brokers cannot be used by the application'}
+                elif health.get('protocol') != PROTOCOL:
+                    health = {**health, 'ready': False, 'error': f'Incompatible broker protocol {health.get("protocol")} (this app speaks {PROTOCOL}); update the older side'}
+            except broker_net.BrokerOffline as error:
+                health = {'ready': False, 'offline': True, 'error': str(error)}
             except Invalid as error:
                 health = {'ready': False, 'error': str(error)}
             self.health_cache, self.health_at = health, time.monotonic()
-        return {'policy': self.policy(), 'worker': health}
+        link = {'mode': 'remote' if self.remote else 'local' if self.broker else 'none', 'default_url': self.default_broker_url}
+        if self.remote:
+            config = broker_net.load_config(self.remote_config)
+            link.update(paired=bool(config), url=config['url'] if config else self.default_broker_url)
+        return {'policy': self.policy(), 'worker': health, 'link': link}
+
+    def wait_for_broker(self, job):
+        """Jobs queued while the remote broker is offline wait here instead of failing."""
+        waited = False
+        while True:
+            self.health_cache = None
+            worker = self.status()['worker']
+            if worker.get('ready'):
+                break
+            if not worker.get('offline'):
+                raise Invalid(worker.get('error') or 'The worker broker is unavailable')
+            if not waited:
+                self.engine.stage(job, 'queued', 'The build broker is offline; this setup will start when it is back')
+            waited = True
+            self.check_live(job)
+            self.engine.stop.wait(self.offline_poll)
+        if waited:
+            with self.store.lock:
+                record = self.record(job)
+                self.store.update('automation', job, deadline=time.time() + record['policy']['elapsed_seconds'])
+            self.engine.stage(job, 'preparing', 'The build broker is back')
 
     def recover(self):
         for record in self.store.all('automation'):
@@ -297,7 +357,7 @@ class Automation:
         if not isinstance(payload, dict) or set(payload) - {'instruction', 'inputs', 'replay', 'publish', 'targets', 'capture_id', 'prepare_game_files'}:
             raise Invalid('Unsupported automatic setup request')
         policy, health = self.policy(), self.status()['worker']
-        if not policy['enabled'] or not health.get('ready'):
+        if not policy['enabled'] or not (health.get('ready') or health.get('offline')):
             raise Invalid(health.get('error') or 'Enable automatic setup in Advanced settings first')
         project = self.store.get('projects', project_id)
         if project.get('demo') or project.get('profile'):
@@ -486,6 +546,7 @@ class Automation:
     def run(self, project, capture, job, config, publish):
         paused = False
         try:
+            self.wait_for_broker(job)
             self.store.update('automation', job, status='running')
             self.store.update('jobs', job, status='running')
             self.store.update('projects', project['id'], status='building', last_error=None)
@@ -1100,6 +1161,9 @@ class Automation:
             for path in root.iterdir():
                 if path.is_dir() and not path.is_symlink():
                     shutil.rmtree(path)
+        release = getattr(self.broker, 'release', None)
+        if release:
+            release(job)
 
     def export_recipe(self, project_id):
         recipe = self.store.get('projects', project_id).get('autonomous_recipe')
