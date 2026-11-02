@@ -419,18 +419,29 @@ class AutonomousTests(unittest.TestCase):
             job = self.wait_status(result['job']['id'], 'ready')
         self.assertEqual(job['status'], 'ready')
 
-    def test_waiting_for_an_offline_broker_stops_on_cancel_or_deadline(self):
+    def test_waiting_for_an_offline_broker_stops_on_cancel_and_ignores_the_queue_deadline(self):
         from portkeeper.broker_net import BrokerOffline
-        automation = self.engine.automation
+        automation, request = self.engine.automation, self.broker.request
+        calls = []
         def offline(op, **payload):
-            raise BrokerOffline('The build broker could not be reached')
+            calls.append(op)
+            if len(calls) < 3:
+                raise BrokerOffline('The build broker could not be reached')
+            return request(op, **payload)
         self.broker.request = offline
         automation.offline_poll = .02
-        for change in ({'cancel_requested': True}, {'deadline': time.time() - 1}):
-            job = identifier()
-            self.engine.store.put('automation', {'id': job, 'status': 'queued', 'deadline': time.time() + 600, **change})
-            with patch.object(self.engine, 'stage'), self.assertRaises(Invalid):
-                automation.wait_for_broker(job)
+        job = identifier()
+        self.engine.store.put('automation', {'id': job, 'status': 'queued', 'cancel_requested': True, 'deadline': time.time() + 600})
+        with patch.object(self.engine, 'stage'), self.assertRaises(Invalid):
+            automation.wait_for_broker(job)
+        # Time spent waiting for the broker does not use up the elapsed-time budget.
+        job = identifier()
+        policy = automation.policy()
+        self.engine.store.put('automation', {'id': job, 'status': 'queued', 'deadline': time.time() - 1, 'policy': policy})
+        calls.clear()
+        with patch.object(self.engine, 'stage'):
+            automation.wait_for_broker(job)
+        self.assertGreater(self.engine.store.get('automation', job)['deadline'], time.time())
 
     def test_controller_cancellation_persists_before_broker_dispatch(self):
         job = identifier()

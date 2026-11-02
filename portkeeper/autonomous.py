@@ -304,7 +304,9 @@ class Automation:
             if not waited:
                 self.engine.stage(job, 'queued', 'The build broker is offline; this setup will start when it is back')
             waited = True
-            self.check_live(job)
+            # Only cancel/shutdown end the wait; the elapsed-time budget restarts when the broker returns.
+            if self.engine.stop.is_set() or self.store.get('automation', job).get('cancel_requested'):
+                raise Invalid('Automatic setup was cancelled')
             self.engine.stop.wait(self.offline_poll)
         if waited:
             with self.store.lock:

@@ -25,6 +25,10 @@ if [[ "$tag" == "$installed" ]]; then log "already on $tag"; exit 0; fi
 if grep -qxF "$tag" "$BASE/rejected" 2>/dev/null; then log "$tag was rejected earlier; waiting for a newer release"; exit 0; fi
 reject() { echo "$tag" >> "$BASE/rejected"; log "rejected $tag: $1"; }
 
+status=0
+(cd "$BASE/current" 2>/dev/null && python3 -m portkeeper.broker_net check --url "$LINK_URL" --idle >/dev/null 2>&1) || status=$?
+if [[ "$status" == 3 ]]; then log "a build is running; $tag will be installed on a later run"; exit 0; fi
+
 staging="$BASE/releases/$tag.new"
 rm -rf "$staging"; mkdir -p "$staging"
 trap 'rm -rf "$staging"' EXIT
@@ -48,10 +52,6 @@ ready() {
   done
   return 1
 }
-
-status=0
-(cd "$BASE/current" 2>/dev/null && python3 -m portkeeper.broker_net check --url "$LINK_URL" --idle >/dev/null 2>&1) || status=$?
-if [[ "$status" == 3 ]]; then log "a build is running; $tag will be installed on a later run"; exit 0; fi
 
 switch "releases/$tag"
 if ready "$version"; then

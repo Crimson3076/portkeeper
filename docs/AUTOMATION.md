@@ -231,6 +231,19 @@ release appears. Output: `journalctl --user -u portkeeper-broker-update`; test o
 (`state/` is outside the releases); the certificate is created once. The last three
 releases are kept.
 
+Things to know:
+
+- **You are trusting the release tag.** The script runs the release's tests unsandboxed
+  as the broker user, who has Docker access, and does not verify a signature or checksum.
+  Only point `PORTKEEPER_REPO` at a repository you trust.
+- **Updates wait for idle.** If a build is running the script exits before downloading
+  anything and tries again at the next timer run.
+- **Pairing can be blocked from the LAN.** Five wrong pairing attempts burn the current
+  code, so anyone who can reach the port can stop pairing until you generate a new code.
+  Keep the port firewalled to the app's address.
+- **Backups don't include the pairing.** `secrets/broker.json` is not part of the app
+  backup, so a restored app comes back unpaired and must be paired again.
+
 ### Migrating an existing single-VM install
 
 Everything below is a copy; the VM install stays untouched until you are satisfied.

@@ -142,9 +142,13 @@ class AuthTests(NetworkCase):
         token = json.loads(self.config_path.read_text())['token']
         status, _ = self.raw('POST', '/v1', token, json.dumps({'op': 'shell', 'command': 'id'}))
         self.assertEqual(status, 400)
-        status, _ = self.raw('POST', '/v1', token, json.dumps({'op': 'run', 'job_id': identifier(), 'operation_id': identifier(),
-                                                               'script': 'x', 'phase': 'public', 'mounts': ['/etc:/etc']}))
+        # The stub overrides run(); route it to the real validation so the allow-list is what rejects this.
+        with patch.object(StubBroker, 'run', lambda broker, payload: WorkerBroker.run(broker, payload)):
+            status, body = self.raw('POST', '/v1', token, json.dumps({
+                'op': 'run', 'job_id': identifier(), 'operation_id': identifier(), 'seed': 'seed',
+                'script': 'x', 'phase': 'public', 'mounts': ['/etc:/etc']}))
         self.assertEqual(status, 400)
+        self.assertIn('Unsupported worker argument', body.decode())
         job = identifier()
         for name in ('../broker.sqlite3', 'broker.sqlite3', 'snapshot-%2e%2e'):
             self.assertEqual(self.raw('GET', f'/v1/jobs/{job}/artifacts/{name}', token)[0], 404)

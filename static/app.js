@@ -2126,7 +2126,7 @@ function nextStepCard(project) {
 
 function automaticAvailable() {
   const config = state.automation || {};
-  return Boolean(config.policy?.enabled && config.worker?.ready &&
+  return Boolean(config.policy?.enabled && (config.worker?.ready || config.worker?.offline) &&
     (assistantSettings().configured && config.policy.eligible_providers?.includes(assistantSettings().provider)));
 }
 let brokerDraft = {};
@@ -2348,7 +2348,7 @@ function automaticSetupCard(project) {
     }
   }
   card.append(el("div", "inline-actions", [button(recipe ? "Investigate & create a new recipe" : "Set up automatically", "button primary small", () => startAutomaticSetup(id), !automaticAvailable() || Boolean(projectActiveJob(project)) || !project.capture_id),
-    ...(recipe ? [button("Replay saved recipe (no model)", "button secondary small", () => startAutomaticSetup(id, true), !config.worker?.ready || !config.policy?.enabled || Boolean(projectActiveJob(project)))] : [])]));
+    ...(recipe ? [button("Replay saved recipe (no model)", "button secondary small", () => startAutomaticSetup(id, true), !(config.worker?.ready || config.worker?.offline) || !config.policy?.enabled || Boolean(projectActiveJob(project)))] : [])]));
   if (recipe) {
     const scripts = disclosure(`automatic-scripts:${id}`, "diagnostics-list", el("summary", "table-action", `Saved scripts & recipe JSON · version ${recipe.revision}`));
     recipe.steps.forEach((step, index) => { const copy = button("Copy script", "button secondary small", () => copyJson(step.script, copy)); scripts.append(el("h4", "", `${index + 1}. ${step.phase} · ${targetLabels[step.target] || step.target}`), copy, el("pre", "json-preview", step.script)); });
