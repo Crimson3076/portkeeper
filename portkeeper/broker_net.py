@@ -211,8 +211,10 @@ class NetworkHandler(BaseHTTPRequestHandler):
         try:
             path, query = self.route()
             if method == 'GET' and path == '/v1/hello':
+                with broker.guard:
+                    busy = bool(broker.active_names)
                 return self.reply(200, {'protocol': self.server.protocol, 'version': __version__, 'ready': broker.ready,
-                                        'paired': self.server.access.paired()})
+                                        'paired': self.server.access.paired(), 'busy': busy})
             if method == 'POST' and path == '/v1/pair':
                 value = self.json_body(4096)
                 if value.get('protocol') != self.server.protocol:
@@ -553,6 +555,7 @@ def main():
     check = commands.add_parser('check', help='Exit 0 when the local broker reports ready with the expected version')
     check.add_argument('--url', required=True)
     check.add_argument('--version')
+    check.add_argument('--idle', action='store_true', help='Exit 3 when a build is running')
     args = parser.parse_args()
     if args.command == 'pair':
         _, _, fingerprint = ensure_certificate(args.tls_dir or args.root / 'tls')
@@ -568,6 +571,9 @@ def main():
         connection.close()
     if not hello.get('ready') or (args.version and hello.get('version') != args.version) or hello.get('protocol') != PROTOCOL:
         raise SystemExit('Broker is not ready: ' + json.dumps(hello))
+    if args.idle and hello.get('busy'):
+        print('Broker is busy with a build')
+        raise SystemExit(3)
     print(json.dumps(hello))
 
 

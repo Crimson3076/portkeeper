@@ -7,6 +7,7 @@ import shutil
 import tarfile
 import tempfile
 import threading
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -417,6 +418,19 @@ class AutonomousTests(unittest.TestCase):
             broker.online = True
             job = self.wait_status(result['job']['id'], 'ready')
         self.assertEqual(job['status'], 'ready')
+
+    def test_waiting_for_an_offline_broker_stops_on_cancel_or_deadline(self):
+        from portkeeper.broker_net import BrokerOffline
+        automation = self.engine.automation
+        def offline(op, **payload):
+            raise BrokerOffline('The build broker could not be reached')
+        self.broker.request = offline
+        automation.offline_poll = .02
+        for change in ({'cancel_requested': True}, {'deadline': time.time() - 1}):
+            job = identifier()
+            self.engine.store.put('automation', {'id': job, 'status': 'queued', 'deadline': time.time() + 600, **change})
+            with patch.object(self.engine, 'stage'), self.assertRaises(Invalid):
+                automation.wait_for_broker(job)
 
     def test_controller_cancellation_persists_before_broker_dispatch(self):
         job = identifier()

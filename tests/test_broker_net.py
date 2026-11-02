@@ -280,6 +280,9 @@ class AppPairingTests(NetworkCase):
         self.assertEqual(status['worker']['version'], broker_net.__version__)
         self.assertEqual(status['link'], {'mode': 'remote', 'default_url': None, 'paired': True, 'url': self.url})
         self.assertNotIn(token, json.dumps(status))
+        project = {'input_bindings': {}}
+        feedback = engine._draft_feedback(project, 'upstream said Bearer ' + token + ' failed')
+        self.assertNotIn(token, feedback)
         forgotten = automation.forget_broker()
         self.assertFalse(forgotten['worker']['ready'])
         self.assertFalse((engine.data / 'secrets' / 'broker.json').exists())
@@ -295,6 +298,19 @@ class TemplateTests(unittest.TestCase):
         self.assertEqual(configs['/data'].get('Type'), 'Path')
         self.assertEqual(configs['PORTKEEPER_BROKER_URL'].get('Type'), 'Variable')
         self.assertEqual(root.findtext('Privileged'), 'false')
+
+
+class BusyTests(NetworkCase):
+    def test_check_idle_exits_3_only_while_a_build_is_active(self):
+        import io
+        from contextlib import redirect_stdout
+        argv = ['broker_net', 'check', '--url', self.url, '--idle']
+        with patch('sys.argv', argv), redirect_stdout(io.StringIO()):
+            broker_net.main()
+            self.broker.active_names['job'] = 'container'
+            with self.assertRaises(SystemExit) as caught:
+                broker_net.main()
+        self.assertEqual(caught.exception.code, 3)
 
 
 class OfflineTests(NetworkCase):

@@ -49,6 +49,10 @@ ready() {
   return 1
 }
 
+status=0
+(cd "$BASE/current" 2>/dev/null && python3 -m portkeeper.broker_net check --url "$LINK_URL" --idle >/dev/null 2>&1) || status=$?
+if [[ "$status" == 3 ]]; then log "a build is running; $tag will be installed on a later run"; exit 0; fi
+
 switch "releases/$tag"
 if ready "$version"; then
   echo "$tag" > "$BASE/installed"
@@ -59,7 +63,7 @@ else
   exit 1
 fi
 
-# Keep the newest releases, never the active or previous one.
+# Keep the newest releases, never the active one.
 ls -1dt "$BASE"/releases/*/ 2>/dev/null | tail -n +$((KEEP + 1)) | while read -r old; do
   [[ "$(readlink -f "$BASE/current")" == "$(readlink -f "$old")" ]] || rm -rf "$old"
 done
