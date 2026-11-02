@@ -315,9 +315,10 @@ else: emit({'response':'{"draft":"safe"}'})
         with patch('portkeeper.subscription_agents.LOGIN_TIMEOUT', .1):
             self.agents.login('codex')
             record = self.agents._logins['codex']
-            deadline = time.monotonic()+3
-            while record['process'].poll() is None and time.monotonic()<deadline:
-                time.sleep(.01)
+            # Process exit precedes PTY closure and process bookkeeping. Wait for
+            # the expiry callback itself so these assertions cannot race cleanup.
+            record['timer'].join(timeout=3)
+            self.assertFalse(record['timer'].is_alive(), 'Login expiry did not finish')
             self.assertIsNotNone(record['process'].poll())
             self.assertIsNone(record['fd'])
             self.assertFalse(self.agents._processes)

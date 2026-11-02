@@ -24,6 +24,17 @@ async function create(saved, storageBlocked=false, source=fixture) {
   w.fetch=async (endpoint, options={})=>{
     let payload={};
     if(endpoint==='/api/state')payload=source;
+    else if(endpoint==='/api/romm/matching'||endpoint==='/api/romm/match-now'){
+      const body=JSON.parse(options.body);requests.push({endpoint,method:options.method,body});
+      if(source.match_error)return {ok:false,status:400,json:async()=>({error:source.match_error})};
+      if(endpoint==='/api/romm/matching'){
+        Object.assign(source.romm.matching,{mode:body.mode,reason:'Fixed interval: every 5 minutes'});
+        payload=source.romm.matching;
+      }else{
+        Object.assign(source.romm.matching,{last_check:'2026-10-29T12:00:00Z',next_check:'2026-10-29T12:05:00Z',pending:['Game.zip']});
+        payload={matched:2,matching:source.romm.matching};
+      }
+    }
     else if(endpoint==='/api/assistant/models'){const body=JSON.parse(options.body);requests.push({endpoint,body});payload={models:source.agent_model_choices?.[body.provider] || ['provider-model-a','provider-model-b']};}
     else if(endpoint==='/api/assistant/provider'){
       const body=JSON.parse(options.body);requests.push({endpoint,body});source.assistant||={};source.assistant.provider=body.provider;
@@ -83,6 +94,31 @@ async function create(saved, storageBlocked=false, source=fixture) {
 }
 async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
 (async()=>{
+  const matchingFixture=JSON.parse(JSON.stringify(fixture));
+  matchingFixture.romm.matching={mode:'event',modes:{'1':'Every minute','5':'Every 5 minutes','15':'Every 15 minutes','30':'Every 30 minutes','60':'Hourly',event:'Only after an upload',off:'Off (Match now only)'},last_check:null,next_check:null,reason:'Nothing is waiting',pending:[]};
+  let matchingDom=await create(null,false,matchingFixture);
+  const mw=matchingDom.window,md=mw.document;
+  mw.location.hash='settings';await tick();md.getElementById('settings-romm-tab').click();
+  const mode=md.getElementById('romm-match-mode');
+  assert.equal(mode.options.length,7);assert.equal(mode.value,'event');
+  assert(md.getElementById('romm-match-status').textContent.includes('Last check: never'));
+  assert(md.getElementById('romm-match-status').textContent.includes('Next check: none'));
+  mode.value='5';mode.dispatchEvent(new mw.Event('change',{bubbles:true}));await tick();await tick();
+  assert.deepEqual(requests.at(-1),{endpoint:'/api/romm/matching',method:'POST',body:{mode:'5'}});
+  assert.equal(mode.value,'5');
+  assert(md.getElementById('romm-match-status').textContent.includes('Fixed interval'));
+  md.getElementById('romm-match-now').click();await tick();await tick();
+  assert.deepEqual(requests.at(-1),{endpoint:'/api/romm/match-now',method:'POST',body:{}});
+  assert(md.getElementById('toasts').textContent.includes('RomM checked · 2 updated'));
+  assert(md.getElementById('romm-match-status').textContent.includes('Waiting for: Game.zip'));
+  matchingFixture.match_error='Import matching failed';
+  md.getElementById('romm-match-now').click();await tick();await tick();
+  assert(md.getElementById('toasts').textContent.includes('Import matching failed'));
+  assert(!md.getElementById('romm-match-now').disabled);
+  matchingFixture.romm.has_token=false;matchingFixture.romm.configured=false;mw.pollRefresh();await tick();await tick();
+  assert(md.getElementById('romm-match-now').disabled);
+  matchingDom.window.close();
+  requests.length=0;
   let dom=await create();let w=dom.window,d=w.document;
   assert(d.getElementById('project-grid').classList.contains('layout-workspace'));
   assert.equal(d.querySelectorAll('.workspace-game-button').length,2,'Platform projects must be grouped');

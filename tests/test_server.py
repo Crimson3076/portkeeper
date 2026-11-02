@@ -31,6 +31,36 @@ class AllowedHostTests(unittest.TestCase):
 
 
 class HttpIntegrationTests(unittest.TestCase):
+    def test_romm_matching_routes_validate_modes_and_return_status(self):
+        status, _, body = self.request('POST', '/api/romm/matching', {'mode': '5'})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), self.engine.match_schedule.status())
+        self.assertEqual(json.loads(body)['mode'], '5')
+        for payload in ({}, {'mode': 'invalid'}, {'mode': 5}, {'mode': None}, {'mode': []}, {'mode': {}}):
+            with self.subTest(payload=payload):
+                status, _, body = self.request('POST', '/api/romm/matching', payload)
+                self.assertEqual(status, 400)
+                self.assertIn('error', json.loads(body))
+        self.assertEqual(self.engine.match_schedule.mode(), '5')
+
+    def test_romm_match_now_returns_result_and_maps_manual_failure_to_400(self):
+        with patch.object(self.engine.romm, 'public_config', return_value={'configured': True}), patch.object(self.engine.romm, 'library_stamp', return_value='stamp'), patch('portkeeper.romm_identity.ImportIdentities.sync', return_value={'matched': 2}) as sync:
+            status, _, body = self.request('POST', '/api/romm/match-now', {})
+            self.assertEqual(status, 200)
+            result = json.loads(body)
+            self.assertEqual(result['matched'], 2)
+            self.assertEqual(result['matching']['mode'], 'event')
+            sync.side_effect = RuntimeError('remote failure')
+            status, _, body = self.request('POST', '/api/romm/match-now', {})
+            self.assertEqual(status, 400)
+            self.assertIn('Import matching failed', json.loads(body)['error'])
+
+    def test_romm_match_now_without_connection_returns_400(self):
+        with patch.object(self.engine.romm, 'public_config', return_value={'configured': False}):
+            status, _, body = self.request('POST', '/api/romm/match-now', {})
+        self.assertEqual(status, 400)
+        self.assertIn('error', json.loads(body))
+
     def test_discovery_routes_are_read_only_until_explicit_refresh_and_check_origin(self):
         with patch.object(self.engine.discovery, 'fetch') as fetch:
             status, _, body = self.request('GET', '/api/discovery')
