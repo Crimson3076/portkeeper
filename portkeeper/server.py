@@ -111,6 +111,12 @@ class Handler(BaseHTTPRequestHandler):
             elif method == "POST" and path == "/api/romm/test":
                 self.body()
                 self.json(200, self.engine.test_romm())
+            elif method == "POST" and path == "/api/romm/matching":
+                payload = self.body()
+                self.json(200, self.engine.match_schedule.set_mode(payload.get("mode")))
+            elif method == "POST" and path == "/api/romm/match-now":
+                self.body()
+                self.json(200, self.engine.check_romm_now())
             elif method == "GET" and path == "/api/romm/search":
                 query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
                 self.json(200, self.engine.romm.search(query.get("q", [""])[0]))

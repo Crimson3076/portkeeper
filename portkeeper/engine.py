@@ -175,6 +175,8 @@ class Engine:
         from .mcp import MCP
         self.mcp = MCP(self)
         self.publisher = Publisher(self)
+        from .romm_schedule import MatchSchedule
+        self.match_schedule = MatchSchedule(self)
         self.catalog = Catalog(self)
         from .discovery import Discovery
         self.discovery = Discovery(self)
@@ -230,6 +232,7 @@ class Engine:
             return
         self._closed = True
         self.stop.set()
+        self.match_schedule.wake.set()
         self.discovery.close()
         if self.automation.broker and self.store.path.exists():
             for record in self.store.all('automation'):
@@ -293,6 +296,7 @@ class Engine:
         public_romm["token_configured"] = public_romm.get("has_token", False)
         health = self.get_setting("romm_health", {})
         public_romm["last_test"] = health if health.get("url") == public_romm.get("url") else None
+        public_romm["matching"] = self.match_schedule.status()
         public_romm["connected"] = bool(public_romm.get("last_test", {}).get("connected")) if public_romm["last_test"] else False
         assistant = self.assistant.public_config()
         proposals = [p for p in self.store.all("proposals") if p.get("kind") in ('definition', 'investigation') and p.get("status") == "pending_review"]
@@ -711,13 +715,22 @@ class Engine:
         try:
             result["matched"] = self.match_imports_now()["matched"]
         except Exception:
-            result["warning"] = "Cover saved. RomM could not be updated yet; Portkeeper retries every minute. Check the token has roms.write."
+            result["warning"] = "Cover saved. RomM could not be updated yet; Portkeeper retries on its RomM check schedule. Check the token has roms.write."
+        # The immediate sync counts updates across all games, so it cannot confirm this
+        # project's cover. A scheduled pass checks its imports and retains any misses.
+        self.match_schedule.kick("Cover change waiting to be applied in RomM")
         return result
 
     def match_imports_now(self):
         from .romm_identity import ImportIdentities
         with self.match_lock:
             return ImportIdentities(self.romm, self.data, self.store).sync()
+
+    def check_romm_now(self):
+        """The Match now button: one full check that ignores the miss cache."""
+        if not self.romm.public_config().get("configured"):
+            raise Invalid("Connect RomM in Settings first")
+        return {**self.match_schedule.run(manual=True), "matching": self.match_schedule.status()}
 
     def claim(self, project_id, expected_project=None):
         with self.lock:
@@ -1970,7 +1983,9 @@ class Engine:
             for old in self.store.all("artifacts"):
                 if old["project_id"] == artifact["project_id"] and old["target"] == artifact["target"] and old["published"]:
                     self.store.update("artifacts", old["id"], published=False)
-            return self.store.update("artifacts", artifact_id, published=True, published_at=now(), published_path=str(output))
+            artifact = self.store.update("artifacts", artifact_id, published=True, published_at=now(), published_path=str(output))
+            self.match_schedule.kick(f"{output_name} was published")
+            return artifact
 
     def demo(self):
         # Synthetic input belongs in our own bulk storage, never in the input mount.
@@ -2038,27 +2053,6 @@ class Engine:
         self.scheduler = threading.Thread(target=poll, daemon=True, name="portkeeper-scheduler")
         self.scheduler.start()
         # Matching is independent of builds and runs after RomM's asynchronous file scan.
-        def match_imports():
-            from .romm_identity import ImportIdentities
-            matcher = ImportIdentities(self.romm, self.data, self.store)
-            while not self.stop.is_set():
-                if self.romm.public_config().get("configured"):
-                    try:
-                        with self.match_lock:
-                            result = matcher.sync()
-                        self.save_setting("romm_import_matching", {"checked_at": now(), **result})
-                        self.publisher.poll()
-                        checked_prefixes = set()
-                        for project in self.store.all("projects"):
-                            prefix = (project.get("metadata") or {}).get("filename_prefix")
-                            if prefix and prefix not in checked_prefixes:
-                                checked_prefixes.add(prefix)
-                                self.reviews.imports(project["id"])
-                    except Exception:
-                        # Do not expose credentials or remote response bodies in the status.
-                        self.save_setting("romm_import_matching", {"checked_at": now(), "error": "Import matching failed. Check RomM connection and roms.write permission."})
-                if self.stop.wait(60):
-                    return
-        self.identity_scheduler = threading.Thread(target=match_imports, daemon=True, name="portkeeper-romm-matching")
+        self.identity_scheduler = threading.Thread(target=self.match_schedule.loop, daemon=True, name="portkeeper-romm-matching")
         self.catalog.start()
         self.identity_scheduler.start()

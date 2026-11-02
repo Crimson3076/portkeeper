@@ -230,7 +230,7 @@ Neither a clean automatic check nor a model review marks a package as gameplay t
 - **Send to RomM** (Updates tab) uploads a package with RomM's chunked upload API
   into the Linux or Windows platform. The token needs `roms.write`. RomM creates the library
   entry after its filesystem watcher rescans (`ENABLE_RESCAN_ON_FILESYSTEM_CHANGE`, five minutes
-  by default); Portkeeper checks every minute and records the RomM entry. An existing file name
+  by default); Portkeeper checks on the RomM check schedule (every minute for 30 minutes after an upload, then backing off) and records the RomM entry. An existing file name
   is never overwritten: a different package gets a `-r2` style name.
 - **Copy to local library folder** is separate. It reaches RomM only when that folder is RomM's
   own platform folder.
