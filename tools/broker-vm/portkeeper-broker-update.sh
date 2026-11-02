@@ -53,12 +53,11 @@ ready() {
   return 1
 }
 
-switch "releases/$tag"
-if ready "$version"; then
+if switch "releases/$tag" && ready "$version"; then
   echo "$tag" > "$BASE/installed"
   log "now running $tag"
 else
-  reject "broker did not become ready"
+  reject "broker did not restart or did not become ready"
   if [[ -n "$previous" ]]; then switch "$previous"; log "rolled back to $previous"; fi
   exit 1
 fi
