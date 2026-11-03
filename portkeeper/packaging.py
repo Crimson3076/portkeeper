@@ -38,6 +38,7 @@ BUNDLED = Path(__file__).resolve().parent.parent / "catalog" / "definitions"
 
 _ID = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+_MD5 = re.compile(r"[a-f0-9]{32}")
 _SHA1 = re.compile(r"[a-f0-9]{40}")
 _SHA256 = re.compile(r"[a-f0-9]{64}")
 _ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
@@ -370,7 +371,7 @@ def validate_definition(definition):
         _text(item.get("description"), f"Download {key} description", 500)
     inputs = _list(d.setdefault("inputs", []), "inputs", 20)
     seen = set()
-    for item in inputs:
+    for position, item in enumerate(inputs):
         if not isinstance(item, dict) or set(item) - {"id", "label", "kind", "platform_hint", "name_hint", "normalize", "accepted", "verify", "max_bytes", "notes", "required"}:
             raise Invalid("Each input needs id, label, kind and validation fields only")
         if not isinstance(item.get("id"), str) or not _ID.fullmatch(item["id"]) or item["id"] in seen:
@@ -388,9 +389,12 @@ def validate_definition(definition):
         if item.get("verify", "hash") not in ("hash", "downstream"):
             raise Invalid("Input verify must be hash or downstream")
         accepted = _list(item.get("accepted"), "Input accepted", 50)
-        for entry in accepted:
-            if not isinstance(entry, dict) or set(entry) - {"label", "sha1", "sha256"} or not (_SHA1.fullmatch(str(entry.get("sha1", ""))) or _SHA256.fullmatch(str(entry.get("sha256", "")))):
-                raise Invalid("Accepted inputs need a label and lowercase sha1 or sha256")
+        for number, entry in enumerate(accepted):
+            if not isinstance(entry, dict) or set(entry) - {"label", "md5", "sha1", "sha256"} or not (
+                    _SHA256.fullmatch(str(entry.get("sha256", ""))) or _SHA1.fullmatch(str(entry.get("sha1", ""))) or _MD5.fullmatch(str(entry.get("md5", "")))):
+                found = ", ".join(sorted(entry)) if isinstance(entry, dict) else type(entry).__name__
+                raise Invalid(f"inputs[{position}].accepted[{number}] needs a label and a lowercase hash: sha256 (preferred), sha1 or md5 "
+                              f"(expected {{label, sha256 | sha1 | md5}}; got {found})")
         if item["kind"] == "file" and item.get("verify", "hash") == "hash" and not accepted:
             raise Invalid(f"Input {item['id']} needs accepted hashes, or verify: downstream with a later validation step")
         size = item.get("max_bytes", 1 * GIB)
@@ -655,7 +659,7 @@ def evaluate_release(definition, capture, input_hashes=None, targets=None):
                         if check["contains"] not in text:
                             problems.append(f"{check['description']}: {check['path']} no longer contains {check['contains']!r}")
                     else:
-                        wanted = [e.get("sha1") or e.get("sha256") for e in next(i for i in definition["inputs"] if i["id"] == check["contains_input_hash"]).get("accepted", [])]
+                        wanted = [e.get("sha1") or e.get("sha256") or e.get("md5") for e in next(i for i in definition["inputs"] if i["id"] == check["contains_input_hash"]).get("accepted", [])]
                         if (input_hashes or {}).get(check["contains_input_hash"]):
                             wanted = [input_hashes[check["contains_input_hash"]]]
                         if not any(value and value in text for value in wanted):

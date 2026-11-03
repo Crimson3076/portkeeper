@@ -50,7 +50,7 @@ Top-level fields:
   A download from another repository must pin repository, tag, asset and sha256 instead of asset_pattern.
 - inputs: files the player supplies. [{id, label, kind: "file" | "directory", platform_hint: "RomM platform
   folder such as n64, ps2, ps4, gc", name_hint: "regex for the file name", normalize: "n64_big_endian"
-  (N64 ROMs only), accepted: [{label, sha1 or sha256}], verify: "hash" | "downstream", max_bytes, notes,
+  (N64 ROMs only), accepted: [{label, sha256, sha1 or md5; sha256 preferred, md5 allowed when upstream only publishes MD5}], verify: "hash" | "downstream", max_bytes, notes,
   required}]. A file with verify "hash" needs accepted hashes. Use hashes only when they appear in the
   material you were given; write hexadecimal hashes in lowercase. Do not guess max_bytes; omit it unless the evidence establishes a sufficient limit. Otherwise use verify "downstream" and say so in limitations.
   Inputs are needed on the Portkeeper server DURING PACKAGING, not files chosen later by the player.
@@ -704,7 +704,7 @@ def unsupported_hashes(definition, material):
     found = []
     for item in definition.get("inputs", []):
         for entry in item.get("accepted", []):
-            for key in ("sha1", "sha256"):
+            for key in ("sha1", "sha256", "md5"):
                 if entry.get(key) and entry[key].lower() not in text:
                     found.append(entry[key])
     for op in definition.get('operations', []):

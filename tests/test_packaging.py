@@ -287,6 +287,30 @@ class PackagingEngineTests(unittest.TestCase):
         self.assertEqual(review["status"], "needs_review")
         self.assertIn("differs from the reviewed v1 file", review["problems"][0])
 
+    def test_md5_only_accepted_input_validates_and_is_marked_as_weaker(self):
+        value = definition()
+        value["inputs"][0]["accepted"] = [{"label": "USA", "md5": hashlib.md5(ROM, usedforsecurity=False).hexdigest()}]
+        packaging.validate_definition(value)
+        from portkeeper.runner import accepted, digests, hash_strength
+        path = self.root / "rom.z64"
+        path.write_bytes(ROM)
+        digest = digests(path)
+        entry = accepted(value["inputs"][0], digest)
+        self.assertEqual(entry["label"], "USA");self.assertEqual(hash_strength(entry, digest), "md5")
+        value["inputs"][0]["accepted"] = [{"label": "USA", "md5": "A" * 32}]
+        with self.assertRaisesRegex(Invalid, r"inputs\[0\]\.accepted\[0\]"):
+            packaging.validate_definition(value)
+
+    def test_sha256_is_preferred_when_present(self):
+        from portkeeper.runner import accepted, digests, hash_strength
+        path = self.root / "rom.z64"
+        path.write_bytes(ROM)
+        digest = digests(path)
+        entry = {"label": "USA", "md5": digest["md5"], "sha1": digest["sha1"], "sha256": digest["sha256"]}
+        self.assertEqual(hash_strength(entry, digest), "sha256")
+        self.assertEqual(hash_strength({"label": "x", "sha1": digest["sha1"]}, digest), "sha1")
+        self.assertIsNone(accepted({"accepted": [{"label": "x", "md5": "0" * 32}]}, digest))
+
     def test_mismatched_inputs_are_never_packaged(self):
         (self.root / "inputs/n64/roms/Example (USA).v64").unlink()
         project = self.check(self.project())

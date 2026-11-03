@@ -232,6 +232,36 @@ class InvestigationTests(unittest.TestCase):
         self.assertEqual(events[0]['result'], 'rejected')
         self.assertEqual(events[0]['response'], responses[0])
 
+    def test_invalid_json_is_corrected_and_the_record_shows_two_attempts(self):
+        responses = ['not json at all', json.dumps({'action': 'plan', 'plan': self.plan})]
+        events = []
+        config = {'drafting_model': 'qwen3:8b', 'provider': 'ollama'}
+        with patch.object(self.engine.assistant, 'chat', side_effect=responses) as chat:
+            result, _, _ = investigation.run(self.engine, self.project, self.capture, copy.deepcopy(self.context), config, 3, lambda _: None, events.append)
+        self.assertTrue(result['can_draft'])
+        self.assertEqual([event['result'] for event in events], ['rejected', 'ready'])
+        self.assertEqual([event['attempt'] for event in events], [1, 2])
+        feedback = chat.call_args.args[1][0]['content']
+        for text in ('qwen3:8b', 'ollama', 'attempt 1 of 3'):
+            self.assertIn(text, feedback)
+
+    def test_unmatched_quote_is_sent_back_for_correction(self):
+        bad = copy.deepcopy(self.plan);bad['evidence'][0]['quote'] = 'A fabricated quote'
+        responses = [json.dumps({'action': 'plan', 'plan': bad}), json.dumps({'action': 'plan', 'plan': self.plan})]
+        events = []
+        with patch.object(self.engine.assistant, 'chat', side_effect=responses) as chat:
+            result, _, _ = investigation.run(self.engine, self.project, self.capture, copy.deepcopy(self.context), {'drafting_model': 'fixture', 'provider': 'ollama'}, 3, lambda _: None, events.append)
+        self.assertTrue(result['can_draft']);self.assertEqual(chat.call_count, 2)
+        self.assertEqual(events[0]['result'], 'rejected')
+        self.assertIn('evidence[0].quote', chat.call_args.args[1][0]['content'])
+
+    def test_correction_exhausted_keeps_the_last_error_with_field_model_and_attempt(self):
+        with patch.object(self.engine.assistant, 'chat', return_value='not json') as chat:
+            result, _, _ = investigation.run(self.engine, self.project, self.capture, copy.deepcopy(self.context), {'drafting_model': 'qwen3:8b', 'provider': 'ollama'}, 2, lambda _: None, lambda _: None)
+        self.assertEqual(chat.call_count, 2);self.assertFalse(result['can_draft'])
+        for text in ('qwen3:8b', 'ollama', 'attempt 2 of 2'):
+            self.assertIn(text, result['summary'])
+
     def test_limit_returns_insufficient_evidence_without_an_extra_model_call(self):
         request = json.dumps({'action': 'request_evidence', 'requests': [{'kind': 'source', 'path': 'README.md'}]})
         with patch.object(self.engine.assistant, 'chat', return_value=request) as chat:

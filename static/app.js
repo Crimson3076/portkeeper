@@ -999,7 +999,7 @@ function inputsSection(project) {
     const node = el("div", "instruction-input", [el("h4", "", item.label + (requiredForBase ? " (needed for the selected base)" : item.required === false ? " (optional)" : "")),
       el("p", "field-help", item.accepted?.length ? `Accepted: ${item.accepted.map((entry) => entry.label).join(", ")}${item.normalize ? " (checked after byte-order normalization)" : ""}` : "Validated after extraction; see the build steps."),
       ...(item.notes ? [el("p", "field-help", item.notes)] : []),
-      el("p", "field-help", binding ? `Selected: ${binding.source === "prepared" ? "prepared/" : ""}${binding.path}${binding.accepted ? " · verified as " + binding.accepted : ""}` : item.required === false ? "Not selected." : "Not selected yet. Portkeeper searches your game files folder when a build starts.")]);
+      el("p", "field-help", binding ? `Selected: ${binding.source === "prepared" ? "prepared/" : ""}${binding.path}${binding.accepted ? " · verified as " + binding.accepted + (binding.verified_by ? " by " + String(binding.verified_by).toUpperCase().replace("SHA", "SHA-") + (binding.verified_by === "md5" ? " (weaker check)" : "") : "") : ""}` : item.required === false ? "Not selected." : "Not selected yet. Portkeeper searches your game files folder when a build starts.")]);
     const path = input(`input-path-${project.id}-${item.id}`, "text", inputDrafts.get(`${project.id}-${item.id}`) ?? binding?.path ?? "");
     path.placeholder = item.kind === "directory" ? "Folder under the prepared/ folder" : item.platform_hint === "ps4" ? "Path below your game files folder, such as ps4/roms/base.pkg" : "Path below your game files folder, such as n64/roms/game.z64";
     path.setAttribute("aria-label", `${item.label} path`);
@@ -2560,6 +2560,7 @@ function investigationCard(project) {
   field(node, "Investigation limit", limit);
   node.append(el("p", "field-help", "Each evidence follow-up uses one request from this limit. A later draft and optional review have separate limits and consume additional model usage."));
   if (job && jobActive(job)) node.append(el("p", "field-help", "Investigating… " + localizeTimestamps((job.logs || []).slice(-1)[0])));
+  if (job && job.status === "failed" && settings.configured) node.append(el("p", "field-help", localizeTimestamps(job.error || "")), button("Retry with corrections", "button primary small", () => retryInvestigationWithCorrections(id), Boolean(projectActiveJob(project)) || busy.has(`investigate-${id}`)), el("p", "field-help", "Runs the investigation again and sends each validation error back to the model for correction, using up to 3 model requests (or your limit if higher)."));
   if (settings.configured) node.append(button(report ? "Investigate again" : `Investigate with ${settings.drafting_model}`, "button primary small", () => investigateProject(id), !project.capture_id || Boolean(projectActiveJob(project)) || busy.has(`investigate-${id}`)));
   else node.append(el("p", "field-help", "Connect a local model, API or subscription agent in Settings to investigate. Manual prompts and JSON editing remain available below."));
   if (job?.draft_record_available) node.append(draftingRecordLink(job.id));
@@ -2568,6 +2569,10 @@ function investigationCard(project) {
 }
 function investigateProject(id) {
   return runAction(`investigate-${id}`, `/api/projects/${encodeURIComponent(id)}/investigate`, {instruction:(assistantPromptDrafts.get(id) || "").trim(), max_calls:investigationLimits.get(id) ?? projectJobs(id).find(job => job.kind === "investigation")?.investigation_max_calls ?? 3, prepare_game_files:prepareDraftGameFiles(id)}, "Investigation started. Review the plan before drafting.");
+}
+function retryInvestigationWithCorrections(id) {
+  const limit = Math.max(3, investigationLimits.get(id) ?? 0);
+  return runAction(`investigate-${id}`, `/api/projects/${encodeURIComponent(id)}/investigate`, {instruction:(assistantPromptDrafts.get(id) || "").trim(), max_calls:limit, prepare_game_files:prepareDraftGameFiles(id)}, "Retrying the investigation with automatic corrections.");
 }
 function queueDraftFromPlan(id, report) {
   return runAction(`draft-${id}`, `/api/projects/${encodeURIComponent(id)}/draft`, {instruction:(assistantPromptDrafts.get(id) || "").trim(), investigation_id:report.id, prepare_game_files:prepareDraftGameFiles(id), review_model:draftModelReviews.get(id) ?? false, max_calls:draftCorrectionLimits.get(id) ?? 1, test_inputs:investigationInputs.get(id) ?? false}, "Drafting from the reviewed plan. Review the checked definition before approval.");

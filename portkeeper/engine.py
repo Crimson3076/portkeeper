@@ -497,7 +497,7 @@ class Engine:
             raise Invalid("Game file selections must be an object")
         declared = {item["id"] for item in (definition or {}).get("inputs", [])}
         for key, value in bindings.items():
-            if key not in declared or not isinstance(value, dict) or value.get("source") not in ("inputs", "prepared") or set(value) - {"source", "path", "sha1", "sha256", "accepted", "verified_at", "ps4"}:
+            if key not in declared or not isinstance(value, dict) or value.get("source") not in ("inputs", "prepared") or set(value) - {"source", "path", "sha1", "sha256", "accepted", "verified_by", "verified_at", "ps4"}:
                 raise Invalid("Game file selections must name a declared input, its source and a relative path")
             relative(value.get("path"))
             if 'ps4' in value:
@@ -658,12 +658,12 @@ class Engine:
                         raise Invalid('Prepared game folder cannot be used: ' + problem)
                     binding.update(accepted=verified['title_id'] + ' ' + verified['app_version'], verified_at=now())
             if item["kind"] == "file" and item.get("verify", "hash") == "hash":
-                from .runner import accepted, digests
+                from .runner import accepted, digests, hash_strength
                 digest = digests(path, item.get("normalize"))
                 match = accepted(item, digest)
                 if not match:
                     raise Invalid(f"This file is not an accepted revision (SHA-1 {digest['sha1']})")
-                binding.update(sha1=digest["sha1"], accepted=match["label"], verified_at=now())
+                binding.update(sha1=digest["sha1"], accepted=match["label"], verified_by=hash_strength(match, digest), verified_at=now())
             bindings[input_id] = binding
             return self.update_project(project_id, {"input_bindings": bindings})
         found = self.packager.locate(project, definition, input_id)
