@@ -1,19 +1,15 @@
-"""Authenticated HTTPS link between the Portkeeper app and a remote worker broker.
+"""Authenticated network link between the Portkeeper app and a remote worker broker.
 
-The broker keeps every safety decision (mounts, network, resources, dependencies).
-Over this link the app can only: send the same allow-listed job requests the local
-Unix socket accepts, upload a seed tree for a job, and download the resulting
-snapshot, log and fetched dependency. Nothing here accepts a host path.
+The broker keeps every safety decision (mounts, network, resources, dependency
+fetching). The app can only send the same bounded job requests the local Unix
+socket accepts, upload a public seed tree, and download snapshots/logs.
 
-Trust model: the broker generates a self-signed certificate. The app pins its
-SHA-256 fingerprint. First contact is protected by a one-time pairing code that
-is never sent: both sides prove knowledge of it with an HMAC bound to the
-certificate fingerprint, so a man in the middle can neither learn the code nor
-impersonate the broker. Afterwards every request carries a random bearer token
-(only its hash is stored on the broker) and the fingerprint is verified before
-the token is sent.
+Trust model: the broker serves HTTPS with a self-signed certificate. The app pins
+that certificate's SHA-256 fingerprint during pairing and then sends a long random
+bearer token. Pairing uses a one-time code printed by the broker. The user must
+supply the fingerprint from the trusted broker console before any code proof is
+sent, preventing an intermediary from collecting proofs for offline guessing.
 """
-import argparse
 import hashlib
 import hmac
 import http.client
@@ -25,8 +21,8 @@ import shutil
 import socket
 import ssl
 import subprocess
-import tarfile
 import tempfile
+import tarfile
 import threading
 import time
 import urllib.parse
@@ -34,554 +30,538 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import __version__
-from .safety import Invalid, confined
-from .worker_broker import ID, MAX_BYTES, MAX_FILES, MAX_LOG, PROTOCOL, tree_identity, unpack_snapshot
+from .safety import Invalid, checksum
+from .worker_broker import ID, MAX_BYTES, MAX_LOG, tree_identity, unpack_snapshot
 
-DEFAULT_PORT = 8799
-MAX_UPLOAD = MAX_BYTES + 64 * 1024**2
-MAX_DOWNLOAD = MAX_BYTES + 64 * 1024**2
-CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
-CODE_TTL = 15 * 60
-MAX_FAILURES = 5
-SEED_NAME = re.compile(r'[a-z0-9][a-z0-9-]{0,79}')
-SNAPSHOT = re.compile(r'snapshot-[a-f0-9]{32}')
-LOGFILE = re.compile(r'[a-f0-9]{32}\.log')
-DEPENDENCY = re.compile(r'downloads/[a-zA-Z0-9][a-zA-Z0-9._-]{0,120}')
-OPERATIONS = ('health', 'run', 'fetch', 'status', 'cancel', 'release')
+PROTOCOL = 2
+TREE = re.compile(r'seed|replay-seed|snapshot-[a-f0-9]{32}')
+FILE = re.compile(r'[a-f0-9]{32}\.log|downloads/[a-zA-Z0-9][a-zA-Z0-9._-]{0,120}')
+MAX_TREE_UPLOAD = MAX_BYTES + 256 * 1024**2
+PAIR_LIFETIME = 900
+JOB_RETENTION = 7 * 86400
 
 
 class BrokerOffline(Invalid):
-    """The broker could not be reached; queued work can wait for it."""
+    """The broker is temporarily unreachable."""
 
 
-def normalize_code(value):
-    return re.sub(r'[^A-Z0-9]', '', str(value).upper())
+def mismatch_message(remote):
+    return (f'Incompatible Portkeeper protocol: this side speaks {PROTOCOL}, the other speaks {remote}. '
+            'Update the older side (the broker updates itself from GitHub releases; the app updates from the Docker tab) and try again')
 
 
-def proof(code, role, fingerprint):
-    return hmac.new(normalize_code(code).encode(), f'portkeeper-pair:{role}:{fingerprint}'.encode(), hashlib.sha256).hexdigest()
+def proof(code, role, fingerprint, nonce):
+    return hmac.new(code.encode(), f'{role}|{fingerprint}|{nonce}'.encode(), hashlib.sha256).hexdigest()
 
 
-def fingerprint_of(certificate_der):
-    return hashlib.sha256(certificate_der).hexdigest()
-
-
-# ---------------------------------------------------------------- broker side
-
-def ensure_certificate(directory):
-    """Create (once) a private key and self-signed certificate; return paths and fingerprint."""
-    directory = Path(directory)
+def make_certificate(directory):
+    """Create a self-signed certificate once; returns (cert, key, sha256 fingerprint)."""
     directory.mkdir(parents=True, exist_ok=True)
     directory.chmod(0o700)
-    key, certificate = directory / 'broker.key', directory / 'broker.pem'
-    if not (key.exists() and certificate.exists()):
-        names = ['DNS:localhost', 'IP:127.0.0.1']
-        hostname = socket.gethostname()
-        if re.fullmatch(r'[A-Za-z0-9.-]{1,100}', hostname):
-            names.append('DNS:' + hostname)
+    cert, key = directory / 'cert.pem', directory / 'key.pem'
+    if not (cert.exists() and key.exists()):
+        names = {socket.gethostname(), 'localhost'}
+        try:
+            names.add(socket.gethostbyname(socket.gethostname()))
+        except OSError:
+            pass
+        alt = ','.join(('IP:' if re.fullmatch(r'[0-9.]+', n) else 'DNS:') + n for n in sorted(names))
         old = os.umask(0o077)
         try:
-            subprocess.run(['openssl', 'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes',
-                            '-keyout', str(key), '-out', str(certificate), '-days', '3650', '-subj', '/CN=portkeeper-broker',
-                            '-addext', 'subjectAltName=' + ','.join(names)],
-                           check=True, capture_output=True, timeout=60)
+            subprocess.run(['openssl', 'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1',
+                            '-nodes', '-days', '3650', '-subj', '/CN=portkeeper-broker', '-addext', 'subjectAltName=' + alt,
+                            '-keyout', str(key), '-out', str(cert)], check=True, capture_output=True, timeout=60)
         except (OSError, subprocess.SubprocessError) as error:
-            key.unlink(missing_ok=True)
-            certificate.unlink(missing_ok=True)
-            raise Invalid('Could not create the broker certificate; install openssl: ' + str(error)[-200:]) from None
+            raise Invalid('Could not create the broker certificate; install the openssl command') from error
         finally:
             os.umask(old)
     key.chmod(0o600)
-    fingerprint = fingerprint_of(ssl.PEM_cert_to_DER_cert(certificate.read_text()))
-    return key, certificate, fingerprint
+    return cert, key, fingerprint_of(ssl.PEM_cert_to_DER_cert(cert.read_text()))
 
 
-class AccessControl:
-    """One-time pairing code and the (hashed) bearer token of the paired app."""
+def fingerprint_of(der):
+    return hashlib.sha256(der).hexdigest()
+
+
+class LinkState:
+    """Broker-side pairing code and paired-token hash (token itself is never stored)."""
     def __init__(self, root, fingerprint):
-        self.root, self.fingerprint = Path(root), fingerprint
+        self.path = Path(root) / 'link.json'
+        self.fingerprint = fingerprint
         self.lock = threading.Lock()
-        self.pending, self.clients = self.root / 'pairing.json', self.root / 'clients.json'
+        self.code, self.code_at = None, 0
+        try:
+            self.token_hash = json.loads(self.path.read_text()).get('token_sha256')
+        except (OSError, ValueError):
+            self.token_hash = None
 
-    def paired(self):
-        return self.clients.is_file()
-
-    def _write(self, path, value):
-        temporary = path.with_name(path.name + '.tmp')
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(descriptor, 'w') as stream:
-            json.dump(value, stream)
-        os.replace(temporary, path)
-
-    def new_code(self, ttl=CODE_TTL):
-        raw = ''.join(secrets.choice(CODE_ALPHABET) for _ in range(20))
+    def new_code(self):
         with self.lock:
-            self._write(self.pending, {'code': raw, 'expires': time.time() + ttl, 'failures': 0})
-        return '-'.join(raw[i:i + 5] for i in range(0, 20, 5))
+            digits = ''.join(secrets.choice('0123456789') for _ in range(12))
+            self.code, self.code_at = f'{digits[:4]}-{digits[4:8]}-{digits[8:]}', time.monotonic()
+            return self.code
 
-    def redeem(self, client_proof):
+    def pair(self, client_proof, nonce):
         with self.lock:
-            try:
-                state = json.loads(self.pending.read_text())
-            except (OSError, ValueError):
-                raise Invalid('No pairing code is active; run the broker pairing command to create one') from None
-            if time.time() > state['expires']:
-                self.pending.unlink(missing_ok=True)
-                raise Invalid('The pairing code expired; create a new one on the broker')
-            if not isinstance(client_proof, str) or not hmac.compare_digest(client_proof, proof(state['code'], 'client', self.fingerprint)):
-                state['failures'] += 1
-                if state['failures'] >= MAX_FAILURES:
-                    self.pending.unlink(missing_ok=True)
-                else:
-                    self._write(self.pending, state)
-                raise Invalid('Pairing code was not accepted')
-            token = secrets.token_urlsafe(32)
-            # One paired app at a time: pairing again revokes the previous token.
-            self._write(self.clients, {'token_sha256': hashlib.sha256(token.encode()).hexdigest(), 'paired_at': time.time()})
-            self.pending.unlink(missing_ok=True)
-            return token, proof(state['code'], 'broker', self.fingerprint)
+            if not self.code or time.monotonic() - self.code_at > PAIR_LIFETIME:
+                raise Invalid('No valid pairing code; restart the broker with --pair to print a new one')
+            expected = proof(self.code, 'client', self.fingerprint, nonce)
+            if not hmac.compare_digest(expected, client_proof):
+                raise Invalid('Pairing code or broker certificate did not match')
+            code, self.code = self.code, None
+            token = secrets.token_urlsafe(48)
+            self.token_hash = hashlib.sha256(token.encode()).hexdigest()
+            temporary = self.path.with_suffix('.tmp')
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, 'w') as stream:
+                json.dump({'token_sha256': self.token_hash}, stream)
+            os.replace(temporary, self.path)
+            return token, proof(code, 'broker', self.fingerprint, nonce)
 
     def authorized(self, header):
-        if not isinstance(header, str) or not header.startswith('Bearer '):
+        if not self.token_hash or not header or not header.startswith('Bearer '):
             return False
-        try:
-            expected = json.loads(self.clients.read_text())['token_sha256']
-        except (OSError, ValueError, KeyError):
-            return False
-        return hmac.compare_digest(hashlib.sha256(header[7:].encode()).hexdigest(), expected)
+        return hmac.compare_digest(hashlib.sha256(header[7:].encode()).hexdigest(), self.token_hash)
 
 
-class NetworkHandler(BaseHTTPRequestHandler):
-    timeout = 120
-    protocol_version = 'HTTP/1.0'
-
-    def setup(self):
-        self.request.settimeout(30)
-        self.request.do_handshake()
-        super().setup()
+class NetHandler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+    timeout = 30  # per socket operation; also bounds the TLS handshake
 
     def log_message(self, *args):
         pass
 
-    def reply(self, status, value=None, headers=None):
-        body = json.dumps(value if value is not None else {}).encode()
+    def reply(self, status, value):
+        body = json.dumps(value).encode()
+        if status >= 400:
+            self.close_connection = True  # the request body may be unread; never parse it as the next request
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(body)))
-        for key, item in (headers or {}).items():
-            self.send_header(key, item)
+        if self.close_connection:
+            self.send_header('Connection', 'close')
         self.end_headers()
         self.wfile.write(body)
 
-    def fail(self, status, message):
-        self.reply(status, {'error': message})
-
-    def route(self):
-        parts = urllib.parse.urlsplit(self.path)
-        return parts.path, urllib.parse.parse_qs(parts.query)
-
-    def json_body(self, limit=256 * 1024):
-        length = self.headers.get('Content-Length', '')
-        if not length.isdigit() or not 0 < int(length) <= limit or self.headers.get('Transfer-Encoding'):
-            raise Invalid('Invalid broker request')
-        return json.loads(self.rfile.read(int(length)))
-
-    def guard(self):
-        """Common checks for authenticated routes. Returns False after replying."""
-        if not self.server.access.authorized(self.headers.get('Authorization')):
-            self.fail(401, 'This app is not paired with the broker (or its pairing was revoked)')
+    def guard(self, public=False):
+        remote = self.headers.get('X-Portkeeper-Protocol', '')
+        if remote != str(PROTOCOL):
+            self.reply(426, {'error': mismatch_message(remote or 'unknown'), 'protocol': PROTOCOL})
             return False
-        if self.headers.get('X-Portkeeper-Protocol') != str(self.server.protocol):
-            self.fail(426, f'Incompatible protocol: the broker speaks version {self.server.protocol}; '
-                           f'the app sent {self.headers.get("X-Portkeeper-Protocol")}. Update the older side.')
+        if not public and not self.server.link.authorized(self.headers.get('Authorization')):
+            self.reply(401, {'error': 'Not paired with this broker or the token was rejected; pair again in Settings'})
             return False
         return True
 
-    def do_GET(self):
-        self.dispatch('GET')
+    def body(self, limit):
+        if self.headers.get('Transfer-Encoding'):
+            raise Invalid('Chunked requests are not accepted')
+        try:
+            length = int(self.headers.get('Content-Length', ''))
+        except ValueError:
+            raise Invalid('A Content-Length is required') from None
+        if not 0 <= length <= limit:
+            raise Invalid('Request exceeds the size limit')
+        return length
+
+    def route(self):
+        return urllib.parse.urlsplit(self.path).path
+
+    def handle_safely(self, action):
+        try:
+            action()
+        except (Invalid, ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
+            try:
+                self.reply(400, {'error': str(error)[:500]})
+                self.close_connection = True
+            except OSError:
+                pass
 
     def do_POST(self):
-        self.dispatch('POST')
+        self.handle_safely(self.post)
 
     def do_PUT(self):
-        self.dispatch('PUT')
+        self.handle_safely(self.put)
 
-    def dispatch(self, method):
-        broker = self.server.broker
-        try:
-            path, query = self.route()
-            if method == 'GET' and path == '/v1/hello':
-                with broker.guard:
-                    busy = bool(broker.active_names)
-                if not busy:
-                    # fetch and seed uploads hold the operation lock without being an active run
-                    if broker.lock.acquire(blocking=False):
-                        broker.lock.release()
-                    else:
-                        busy = True
-                return self.reply(200, {'protocol': self.server.protocol, 'version': __version__, 'ready': broker.ready,
-                                        'paired': self.server.access.paired(), 'busy': busy})
-            if method == 'POST' and path == '/v1/pair':
-                value = self.json_body(4096)
-                if value.get('protocol') != self.server.protocol:
-                    raise Invalid(f'Incompatible protocol: the broker speaks version {self.server.protocol}')
-                token, server_proof = self.server.access.redeem(value.get('proof'))
-                return self.reply(200, {'token': token, 'proof': server_proof, 'version': __version__})
-            if not self.guard():
+    def do_GET(self):
+        self.handle_safely(self.get)
+
+    def post(self):
+        path = self.route()
+        if path == '/v1/pair':
+            if not self.guard(public=True):
                 return
-            if method == 'POST' and path == '/v1':
-                payload = self.json_body()
-                if not isinstance(payload, dict) or payload.get('op') not in OPERATIONS:
-                    raise Invalid('Unknown broker operation')
-                return self.reply(200, {'result': broker.handle(payload)})
-            match = re.fullmatch(r'/v1/jobs/([a-f0-9]{32})/(seed|artifacts/(.+))', path)
-            if match and method == 'PUT' and match.group(2) == 'seed':
-                return self.upload(match.group(1), query)
-            if match and method == 'GET' and match.group(3):
-                return self.download(match.group(1), match.group(3))
-            self.fail(404, 'Unknown broker route')
-        except (Invalid, ValueError, KeyError, OSError, subprocess.SubprocessError, tarfile.TarError) as error:
-            self.fail(400, str(error)[:500])
+            data = json.loads(self.rfile.read(self.body(4096)))
+            nonce, given = data.get('nonce'), data.get('proof')
+            if not all(isinstance(v, str) and re.fullmatch(r'[a-f0-9]{32,128}', v) for v in (nonce, given)):
+                raise Invalid('Invalid pairing request')
+            token, broker_proof = self.server.link.pair(given, nonce)
+            return self.reply(200, {'token': token, 'proof': broker_proof, 'protocol': PROTOCOL, 'version': __version__})
+        if path != '/v1' or not self.guard():
+            return
+        self.connection.settimeout(15)
+        payload = json.loads(self.rfile.read(self.body(256 * 1024)))
+        self.connection.settimeout(self.timeout)
+        result = self.server.broker.handle(payload)
+        if payload.get('op') == 'health':
+            result = {**result, 'protocol': PROTOCOL, 'version': __version__}
+        self.reply(200, {'result': result})
 
-    def upload(self, job, query):
-        broker = self.server.broker
-        name = (query.get('path') or [''])[0]
-        length = self.headers.get('Content-Length', '')
-        if not SEED_NAME.fullmatch(name) or name == 'downloads':
-            raise Invalid('Seed upload needs a simple directory name')
-        if not length.isdigit() or int(length) <= 0:
-            raise Invalid('Seed upload needs a Content-Length')
-        if int(length) > MAX_UPLOAD:
-            return self.fail(413, 'Seed upload exceeds the broker size limit')
-        if not broker.lock.acquire(blocking=False):
-            return self.fail(409, 'Another worker operation is active; wait for it to finish')
-        try:
-            root = broker.job_root(job)
-            if shutil.disk_usage(root).free < 2 * MAX_BYTES + 256 * 1024**2:
-                raise Invalid('Broker needs at least 4.25 GiB free to accept a seed')
-            archive = root / ('upload-' + secrets.token_hex(8) + '.tar')
-            try:
-                remaining = int(length)
-                with archive.open('wb') as output:
-                    while remaining:
-                        chunk = self.rfile.read(min(1024**2, remaining))
-                        if not chunk:
-                            raise Invalid('Seed upload ended early')
-                        output.write(chunk)
-                        remaining -= len(chunk)
-                destination = confined(root, name)
-                shutil.rmtree(destination, ignore_errors=True)
-                identity = unpack_snapshot(archive, destination)
-            finally:
-                archive.unlink(missing_ok=True)
-        finally:
-            broker.lock.release()
-        self.reply(200, {'result': {k: v for k, v in identity.items() if k != 'entries'}})
-
-    def download(self, job, name):
-        broker = self.server.broker
-        root = broker.root / 'jobs' / job
+    def put(self):
+        match = re.fullmatch(r'/v1/jobs/([a-f0-9]{32})/trees/([a-z0-9-]+)', self.route())
+        if not self.guard():
+            return
+        if not match or not TREE.fullmatch(match[2]):
+            return self.reply(404, {'error': 'Unknown upload'})
+        job, name = match[1], match[2]
+        length = self.body(MAX_TREE_UPLOAD)
+        root = self.server.broker.job_root(job)
+        destination = root / name
+        # Drain the body even when refusing so the connection stays well-formed.
         temporary = None
-        if SNAPSHOT.fullmatch(name):
-            source = root / name
-            if not source.is_dir() or source.is_symlink():
-                return self.fail(404, 'No such artifact')
-            tree_identity(source)
-            handle, temporary = tempfile.mkstemp(dir=root, suffix='.tar')
-            os.close(handle)
-            with tarfile.open(temporary, 'w', format=tarfile.PAX_FORMAT) as bundle:
-                bundle.add(source, arcname='.', recursive=True)
-            source, kind = Path(temporary), 'application/x-tar'
-        elif LOGFILE.fullmatch(name) or DEPENDENCY.fullmatch(name):
-            source, kind = root / name, 'application/octet-stream'
-            if not source.is_file() or source.is_symlink() or source.parent.is_symlink():
-                return self.fail(404, 'No such artifact')
-        else:
-            return self.fail(404, 'No such artifact')
         try:
-            size = source.stat().st_size
-            if size > MAX_DOWNLOAD:
-                return self.fail(413, 'Artifact exceeds the broker size limit')
-            self.send_response(200)
-            self.send_header('Content-Type', kind)
-            self.send_header('Content-Length', str(size))
-            self.end_headers()
-            with source.open('rb') as stream:
-                shutil.copyfileobj(stream, self.wfile, 1024**2)
+            with tempfile.NamedTemporaryFile(dir=root, prefix='.upload-', delete=False) as archive:
+                temporary = Path(archive.name)
+                remaining = length
+                while remaining:
+                    chunk = self.rfile.read(min(1024**2, remaining))
+                    if not chunk:
+                        raise Invalid('Upload ended early')
+                    archive.write(chunk)
+                    remaining -= len(chunk)
+            if destination.exists() or destination.is_symlink():
+                if destination.is_symlink() or not destination.is_dir():
+                    raise Invalid('Tree path is unsafe')
+                shutil.rmtree(destination)
+            identity = unpack_snapshot(temporary, destination)
         finally:
-            if temporary:
-                Path(temporary).unlink(missing_ok=True)
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        expected = self.headers.get('X-Tree-Sha256')
+        if expected and not hmac.compare_digest(expected, identity['sha256']):
+            shutil.rmtree(destination, ignore_errors=True)
+            raise Invalid('Uploaded tree did not match its identity')
+        self.reply(200, {'sha256': identity['sha256']})
+
+    def get(self):
+        path = self.route()
+        if path == '/v1/health':
+            # Unauthenticated, minimal: lets the app distinguish "wrong version" from "offline".
+            if self.guard(public=True):
+                self.reply(200, {'protocol': PROTOCOL, 'version': __version__, 'paired': bool(self.server.link.token_hash),
+                                  'ready': bool(self.server.broker.ready)})
+            return
+        match = re.fullmatch(r'/v1/jobs/([a-f0-9]{32})/(trees|identity|files)/(.+)', path)
+        if not self.guard():
+            return
+        if not match:
+            return self.reply(404, {'error': 'Unknown artifact'})
+        job, kind, name = match.groups()
+        root = self.server.broker.job_root(job)
+        if kind in ('trees', 'identity'):
+            if not TREE.fullmatch(name):
+                raise Invalid('Unknown tree')
+            tree = root / name
+            if tree.is_symlink() or not tree.is_dir():
+                return self.reply(404, {'error': 'Tree is not present'})
+            if kind == 'identity':
+                return self.reply(200, {'sha256': tree_identity(tree)['sha256']})
+            return self.send_archive(tree)
+        if not FILE.fullmatch(name):
+            raise Invalid('Unknown file')
+        target = root / name
+        if target.is_symlink() or not target.is_file():
+            return self.reply(404, {'error': 'File is not present'})
+        limit = MAX_BYTES if name.startswith('downloads/') else MAX_LOG
+        size = target.stat().st_size
+        if size > limit:
+            raise Invalid('Artifact exceeds its size limit')
+        self.send_file(target, size)
+
+    def send_file(self, path, size):
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/octet-stream')
+        self.send_header('Content-Length', str(size))
+        self.end_headers()
+        with path.open('rb') as source:
+            shutil.copyfileobj(source, self.wfile, 1024**2)
+
+    def send_archive(self, tree):
+        with tempfile.NamedTemporaryFile(dir=tree.parent, prefix='.download-') as archive:
+            with tarfile.open(fileobj=archive, mode='w', format=tarfile.PAX_FORMAT) as bundle:
+                bundle.add(tree, arcname='.', recursive=True)
+            archive.flush()
+            size = Path(archive.name).stat().st_size
+            if size > MAX_TREE_UPLOAD:
+                raise Invalid('Snapshot exceeds its size limit')
+            archive.seek(0)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/x-tar')
+            self.send_header('Content-Length', str(size))
+            self.send_header('X-Tree-Sha256', tree_identity(tree)['sha256'])
+            self.end_headers()
+            shutil.copyfileobj(archive, self.wfile, 1024**2)
 
 
-class NetworkServer(ThreadingHTTPServer):
+class NetServer(ThreadingHTTPServer):
     daemon_threads = True
+    max_connections = 32
 
-    def get_request(self):
-        client, address = super().get_request()
-        # Handshake in the worker thread (see NetworkHandler.setup), not the accept loop.
-        return self.context.wrap_socket(client, server_side=True, do_handshake_on_connect=False), address
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.slots = threading.BoundedSemaphore(self.max_connections)
+
+    def process_request(self, request, client_address):
+        if not self.slots.acquire(blocking=False):
+            self.shutdown_request(request)  # over the connection cap
+            return
+        super().process_request(request, client_address)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.slots.release()
 
     def handle_error(self, request, client_address):
-        pass
+        pass  # failed handshakes (scanners, wrong pins) are expected noise
 
 
-def make_network_server(broker, host, port, tls_directory):
-    key, certificate, fingerprint = ensure_certificate(tls_directory)
+def prune_jobs(root, now=None):
+    jobs = Path(root) / 'jobs'
+    if not jobs.is_dir():
+        return
+    cutoff = (now or time.time()) - JOB_RETENTION
+    for child in jobs.iterdir():
+        if child.is_dir() and not child.is_symlink() and child.stat().st_mtime < cutoff:
+            shutil.rmtree(child, ignore_errors=True)
+
+
+def prune_periodically(root):
+    while True:
+        time.sleep(3600)
+        prune_jobs(root)
+
+
+def make_net_server(broker, host, port, state_root):
+    cert, key, fingerprint = make_certificate(Path(state_root) / 'tls')
+    server = NetServer((host, port), NetHandler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
-    context.load_cert_chain(certificate, key)
-    server = NetworkServer((host, port), NetworkHandler)
-    server.context, server.broker, server.protocol = context, broker, PROTOCOL
-    server.access = AccessControl(broker.root, fingerprint)
-    return server, server.access
+    context.load_cert_chain(cert, key)
+    # Handshake in the per-connection thread (bounded by the handler timeout), not the accept loop.
+    server.socket = context.wrap_socket(server.socket, server_side=True, do_handshake_on_connect=False)
+    server.broker = broker
+    server.fingerprint = fingerprint
+    server.link = LinkState(state_root, fingerprint)
+    return server
 
 
-# ------------------------------------------------------------------ app side
-
-class PinnedConnection(http.client.HTTPSConnection):
-    """TLS to one address, accepting only the certificate with the pinned fingerprint."""
+class PinnedTLS(http.client.HTTPSConnection):
+    """TLS that checks the supplied certificate fingerprint before sending HTTP data."""
     def __init__(self, host, port, fingerprint, timeout):
+        if not isinstance(fingerprint, str) or not re.fullmatch(r'[a-f0-9]{64}', fingerprint):
+            raise Invalid('A complete broker certificate fingerprint is required')
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
-        context.check_hostname, context.verify_mode = False, ssl.CERT_NONE
+        context.check_hostname = False  # NOSONAR: self-signed identity is checked against the out-of-band SHA-256 pin in connect().
+        context.verify_mode = ssl.CERT_NONE  # NOSONAR: connect() checks the certificate pin before any HTTP request.
         super().__init__(host, port, timeout=timeout, context=context)
-        self.pinned, self.seen = fingerprint, None
+        self.pin, self.seen = fingerprint, None
 
     def connect(self):
         super().connect()
         self.seen = fingerprint_of(self.sock.getpeercert(binary_form=True))
-        if self.pinned is not None and not hmac.compare_digest(self.seen, self.pinned):
+        if not hmac.compare_digest(self.pin, self.seen):
             self.close()
-            raise Invalid('The broker presented a different certificate than the one paired; '
-                          'pair again only if you reinstalled the broker')
+            raise Invalid('The broker certificate does not match the paired fingerprint; pair again if you replaced the broker')
 
 
 def parse_url(url):
     parts = urllib.parse.urlsplit(url if isinstance(url, str) else '')
     if (parts.scheme != 'https' or not parts.hostname or parts.username or parts.password
-            or parts.path not in ('', '/') or parts.query or parts.fragment):
-        raise Invalid('Use the broker address as https://host:port')
-    try:
-        port = parts.port or DEFAULT_PORT
-    except ValueError:
-        raise Invalid('Use the broker address as https://host:port') from None
-    return parts.hostname, port
+            or parts.path not in ('', '/') or parts.query or parts.fragment or len(url) > 300):
+        raise Invalid('Use an https://host:port address for the broker')
+    return parts.hostname, parts.port or 8788
 
 
-def exchange(connection, method, path, body=None, headers=None):
-    try:
-        connection.request(method, path, body, headers or {})
-        return connection.getresponse()
-    except (OSError, http.client.HTTPException) as error:
-        raise BrokerOffline('The build broker could not be reached; builds will wait until it is back') from error
-
-
-def read_json(response, limit=1024**2):
-    try:
-        value = json.loads(response.read(limit))
-    except ValueError:
-        raise Invalid('The broker sent an unreadable reply') from None
-    if response.status != 200:
-        raise Invalid(value.get('error', 'The broker rejected the request') if isinstance(value, dict) else 'The broker rejected the request')
-    return value
-
-
-def pair(url, code):
-    """Pair with a broker using its one-time code; returns the config to save."""
+def pair(url, code, fingerprint):
+    """Pair with a broker; returns the link record to persist."""
     host, port = parse_url(url)
-    if len(normalize_code(code)) != 20:
-        raise Invalid('Enter the 20-character pairing code printed by the broker')
-    connection = PinnedConnection(host, port, None, 15)
+    if not isinstance(code, str) or not re.fullmatch(r'[0-9]{4}-[0-9]{4}-[0-9]{4}', code.strip()):
+        raise Invalid('Enter the pairing code printed by the broker (e.g. 1234-5678-9012)')
+    code = code.strip()
+    if not isinstance(fingerprint, str) or not re.fullmatch(r'[a-f0-9]{64}', fingerprint):
+        raise Invalid('Enter the full SHA-256 fingerprint printed in the broker VM console')
+    connection = PinnedTLS(host, port, fingerprint, 10)
+    nonce = secrets.token_hex(16)
     try:
-        hello = read_json(exchange(connection, 'GET', '/v1/hello'))
-        if hello.get('protocol') != PROTOCOL:
-            raise Invalid(f'Incompatible protocol: this app speaks version {PROTOCOL} but the broker speaks '
-                          f'{hello.get("protocol")}. Update the older side before pairing.')
-        seen = connection.seen
-        body = json.dumps({'protocol': PROTOCOL, 'proof': proof(code, 'client', seen)})
-        connection.close()
-        result = read_json(exchange(connection, 'POST', '/v1/pair', body, {'Content-Type': 'application/json'}))
-        if connection.seen != seen:
-            raise Invalid('The broker certificate changed during pairing')
-        if not hmac.compare_digest(str(result.get('proof')), proof(code, 'broker', seen)) or not isinstance(result.get('token'), str):
-            raise Invalid('The broker could not prove it knows the pairing code; pairing was cancelled')
-        return {'url': f'https://{host}:{port}', 'fingerprint': seen, 'token': result['token']}
+        connection.connect()
+        fingerprint = connection.seen
+        connection.request('POST', '/v1/pair', json.dumps({'nonce': nonce, 'proof': proof(code, 'client', fingerprint, nonce)}),
+                           {'Content-Type': 'application/json', 'X-Portkeeper-Protocol': str(PROTOCOL)})
+        response = connection.getresponse()
+        value = json.loads(response.read(65536))
+    except Invalid:
+        raise
+    except (OSError, ValueError, http.client.HTTPException):
+        raise Invalid('Could not reach the broker to pair; check its address, port and firewall') from None
     finally:
         connection.close()
-
-
-def save_config(path, config):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + '.tmp')
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, 'w') as stream:
-        json.dump({k: config[k] for k in ('url', 'fingerprint', 'token')}, stream)
-    os.replace(temporary, path)
-
-
-def load_config(path):
-    try:
-        value = json.loads(Path(path).read_text())
-        parse_url(value['url'])
-        if not all(isinstance(value[k], str) and value[k] for k in ('fingerprint', 'token')):
-            raise ValueError
-        return value
-    except (OSError, ValueError, KeyError, Invalid):
-        return None
+    if response.status == 426:
+        raise Invalid(value.get('error', 'Incompatible protocol'))
+    if response.status != 200:
+        raise Invalid(value.get('error', 'Pairing was rejected'))
+    if not hmac.compare_digest(value.get('proof', ''), proof(code, 'broker', fingerprint, nonce)) or not isinstance(value.get('token'), str):
+        raise Invalid('The broker could not prove it knows the pairing code; do not trust this connection')
+    return {'url': f'https://{"[" + host + "]" if ":" in host else host}:{port}', 'fingerprint': fingerprint, 'token': value['token']}
 
 
 class RemoteBrokerClient:
-    """Same interface as BrokerClient, plus local copies of seeds/snapshots/logs under ``root``."""
-    def __init__(self, config_path, root, default_url=None):
-        self.config_path, self.root, self.default_url = Path(config_path), Path(root), default_url
+    """Same interface as BrokerClient, but the exchange directory is local to the app."""
+    offline_errors = ('could not be reached',)
 
-    def config(self):
-        config = load_config(self.config_path)
-        if not config:
-            raise Invalid('This app is not paired with a build broker; pair it in Settings')
-        return config
+    def __init__(self, link, root):
+        self.link, self.root = link, Path(root)
+        self.host, self.port = parse_url(link['url'])
 
     def connection(self, timeout):
-        config = self.config()
-        host, port = parse_url(config['url'])
-        return PinnedConnection(host, port, config['fingerprint'], timeout), {
-            'Authorization': 'Bearer ' + config['token'], 'X-Portkeeper-Protocol': str(PROTOCOL)}
+        return PinnedTLS(self.host, self.port, self.link['fingerprint'], timeout)
 
-    def call(self, method, path, body=None, timeout=30, content_type='application/json', stream=None, limit=None, length=None):
-        connection, headers = self.connection(timeout)
-        headers['Content-Type'] = content_type
-        if length is not None:
-            headers['Content-Length'] = str(length)
+    def headers(self, extra=None):
+        return {'Authorization': 'Bearer ' + self.link['token'], 'X-Portkeeper-Protocol': str(PROTOCOL), **(extra or {})}
+
+    def call(self, method, path, body=None, headers=None, timeout=30):
+        connection = self.connection(timeout)
         try:
-            response = exchange(connection, method, path, body, headers)
-            if stream is None:
-                return read_json(response)
-            if response.status != 200:
-                read_json(response)
+            connection.request(method, path, body, self.headers(headers))
+            return connection, connection.getresponse()
+        except Invalid:
+            connection.close()
+            raise
+        except (OSError, http.client.HTTPException):
+            connection.close()
+            raise Invalid('Worker broker could not be reached; check the broker URL, network and service') from None
+
+    def check(self, response, data=None):
+        if response.status == 200:
+            return
+        try:
+            message = json.loads(data if data is not None else response.read(65536)).get('error')
+        except ValueError:
+            message = None
+        raise Invalid(message or f'Worker broker rejected the request (HTTP {response.status})')
+
+    def json_call(self, method, path, payload=None, timeout=30):
+        connection, response = self.call(method, path, None if payload is None else json.dumps(payload),
+                                         {'Content-Type': 'application/json'}, timeout)
+        try:
+            data = response.read(1024**2)
+        except (OSError, http.client.HTTPException):
+            raise Invalid('Worker broker could not be reached; connection dropped') from None
+        finally:
+            connection.close()
+        self.check(response, data)
+        return json.loads(data)
+
+    def download(self, path, destination, limit):
+        connection, response = self.call('GET', path, timeout=300)
+        try:
+            self.check(response)
             length = response.getheader('Content-Length')
             if not length or not length.isdigit() or int(length) > limit:
-                raise Invalid('Artifact exceeds the size limit')
+                raise Invalid('Broker artifact is missing a size or exceeds its limit')
             total = 0
-            with stream.open('wb') as output:
+            with open(destination, 'wb') as output:
                 while True:
                     chunk = response.read(1024**2)
                     if not chunk:
                         break
                     total += len(chunk)
                     if total > limit:
-                        raise Invalid('Artifact exceeds the size limit')
+                        raise Invalid('Broker artifact exceeds its size limit')
                     output.write(chunk)
             if total != int(length):
-                raise Invalid('Artifact download was incomplete')
-            return total
-        except (OSError, http.client.HTTPException) as error:
-            raise BrokerOffline('The build broker could not be reached; builds will wait until it is back') from error
+                raise Invalid('Broker artifact was truncated')
+            return response.getheader('X-Tree-Sha256')
+        except (OSError, http.client.HTTPException):
+            raise Invalid('Worker broker could not be reached; download interrupted') from None
         finally:
             connection.close()
 
-    def request(self, op, **payload):
-        if op not in OPERATIONS:
-            raise Invalid('Unknown broker operation')
-        if op in ('run', 'fetch'):
-            return getattr(self, op)(payload)
-        result = self.call('POST', '/v1', json.dumps({'op': op, **payload}), 5 if op in ('health', 'status') else 60)['result']
-        return result
-
-    def job(self, payload):
-        job = payload.get('job_id')
-        if not isinstance(job, str) or not ID.fullmatch(job):
-            raise Invalid('Invalid worker job')
-        return job, self.root / 'jobs' / job
-
-    def run(self, payload):
-        job, root = self.job(payload)
-        name = payload.get('seed', 'seed')
-        if not isinstance(name, str) or not SEED_NAME.fullmatch(name):
-            raise Invalid('Seed must be a simple directory name')
-        seed = confined(root, name)
-        if not seed.is_dir():
+    def upload_seed(self, job, name):
+        tree = self.root / 'jobs' / job / name
+        if not TREE.fullmatch(name) or tree.is_symlink() or not tree.is_dir():
             raise Invalid('Worker seed is missing')
-        identity = tree_identity(seed)
-        root.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(dir=root, suffix='.tar') as archive:
-            with tarfile.open(fileobj=archive, mode='w', format=tarfile.PAX_FORMAT) as bundle:
-                bundle.add(seed, arcname='.', recursive=True)
-            archive.flush()
-            size = archive.seek(0, os.SEEK_END)
-            if size > MAX_UPLOAD:
-                raise Invalid('Seed exceeds the upload size limit')
-            archive.seek(0)
-            uploaded = self.call('PUT', f'/v1/jobs/{job}/seed?path={name}', archive, 1900, 'application/x-tar', length=size)['result']
-        if uploaded.get('sha256') != identity['sha256']:
-            raise Invalid('The broker stored a different seed than was sent')
-        result = self.call('POST', '/v1', json.dumps({'op': 'run', **payload}), 1900)['result']
-        log, snapshot = result.get('log'), result.get('snapshot')
-        if not (isinstance(log, str) and LOGFILE.fullmatch(log) and isinstance(snapshot, str) and SNAPSHOT.fullmatch(snapshot)):
-            raise Invalid('The broker returned an unexpected artifact name')
-        self.call('GET', f'/v1/jobs/{job}/artifacts/{log}', timeout=120, stream=root / log, limit=MAX_LOG)
-        with tempfile.NamedTemporaryFile(dir=root, suffix='.tar') as archive:
-            self.call('GET', f'/v1/jobs/{job}/artifacts/{snapshot}', timeout=1900, stream=Path(archive.name), limit=MAX_DOWNLOAD)
-            destination = root / snapshot
-            shutil.rmtree(destination, ignore_errors=True)
-            received = unpack_snapshot(archive.name, destination)
-        if received['sha256'] != result.get('identity', {}).get('sha256'):
-            shutil.rmtree(destination, ignore_errors=True)
-            raise Invalid('The returned package does not match the broker\'s checksum')
-        return result
-
-    def fetch(self, payload):
-        job, root = self.job(payload)
-        result = self.call('POST', '/v1', json.dumps({'op': 'fetch', **payload}), 1900)['result']
-        name = result.get('name')
-        if not isinstance(name, str) or not DEPENDENCY.fullmatch('downloads/' + name):
-            raise Invalid('The broker returned an unexpected dependency name')
-        destination = root / 'downloads' / name
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        self.call('GET', f'/v1/jobs/{job}/artifacts/downloads/{name}', timeout=1900, stream=destination, limit=MAX_BYTES)
-        if hashlib.sha256(destination.read_bytes()).hexdigest() != result.get('sha256'):
-            destination.unlink()
-            raise Invalid('Downloaded dependency does not match the broker\'s checksum')
-        return result
-
-    def release(self, job):
-        """Free the broker's copy of a finished job (best effort)."""
+        identity = tree_identity(tree)['sha256']
         try:
-            self.request('release', job_id=job)
-        except Invalid:
-            pass
+            if self.json_call('GET', f'/v1/jobs/{job}/identity/{name}')['sha256'] == identity:
+                return
+        except Invalid as error:
+            if 'not present' not in str(error):
+                raise
+        with tempfile.NamedTemporaryFile(prefix='portkeeper-seed-') as archive:
+            with tarfile.open(fileobj=archive, mode='w', format=tarfile.PAX_FORMAT) as bundle:
+                bundle.add(tree, arcname='.', recursive=True)
+            archive.flush()
+            size = Path(archive.name).stat().st_size
+            if size > MAX_TREE_UPLOAD:
+                raise Invalid('Seed exceeds the worker storage limit')
+            archive.seek(0)
+            connection, response = self.call('PUT', f'/v1/jobs/{job}/trees/{name}', archive,
+                                             {'Content-Length': str(size), 'X-Tree-Sha256': identity,
+                                              'Content-Type': 'application/x-tar'}, timeout=900)
+            try:
+                self.check(response)
+            finally:
+                connection.close()
+
+    def request(self, op, **payload):
+        timeout = 5 if op in ('health', 'status') else 1900
+        if op == 'run':
+            self.upload_seed(payload['job_id'], payload.get('seed', 'seed'))
+        result = self.json_call('POST', '/v1', {'op': op, **payload}, timeout)['result']
+        if op == 'health':
+            if result.get('protocol') != PROTOCOL:
+                raise Invalid(mismatch_message(result.get('protocol')))
+            result = {**result, 'link': {'url': self.link['url'], 'fingerprint': self.link['fingerprint'][:16]}}
+        elif op == 'run':
+            self.pull_run(payload['job_id'], result)
+        elif op == 'fetch':
+            self.pull_download(payload['job_id'], result)
+        return result
+
+    def pull_run(self, job, result):
+        local = self.root / 'jobs' / job
+        local.mkdir(parents=True, exist_ok=True)
+        snapshot, log = result.get('snapshot'), result.get('log')
+        if not isinstance(snapshot, str) or not TREE.fullmatch(snapshot) or not isinstance(log, str) or not FILE.fullmatch(log):
+            raise Invalid('Broker returned an unexpected artifact name')
+        with tempfile.NamedTemporaryFile(dir=local, prefix='.snapshot-', delete=False) as archive:
+            temporary = Path(archive.name)
+        try:
+            self.download(f'/v1/jobs/{job}/trees/{snapshot}', temporary, MAX_TREE_UPLOAD)
+            shutil.rmtree(local / snapshot, ignore_errors=True)
+            identity = unpack_snapshot(temporary, local / snapshot)
+        finally:
+            temporary.unlink(missing_ok=True)
+        if identity['sha256'] != result.get('identity', {}).get('sha256'):
+            shutil.rmtree(local / snapshot, ignore_errors=True)
+            raise Invalid('Downloaded snapshot did not match the broker’s identity')
+        self.download(f'/v1/jobs/{job}/files/{log}', local / log, MAX_LOG)
+
+    def pull_download(self, job, result):
+        name = result.get('name')
+        if not isinstance(name, str) or not FILE.fullmatch('downloads/' + name):
+            raise Invalid('Broker returned an unexpected dependency name')
+        destination = self.root / 'jobs' / job / 'downloads'
+        destination.mkdir(parents=True, exist_ok=True)
+        target = destination / name
+        self.download(f'/v1/jobs/{job}/files/downloads/{name}', target, MAX_BYTES)
+        if checksum(target) != result.get('sha256'):
+            target.unlink(missing_ok=True)
+            raise Invalid('Downloaded dependency did not match the broker’s checksum')
 
 
-def main():
-    parser = argparse.ArgumentParser(description='Broker network administration')
-    commands = parser.add_subparsers(dest='command', required=True)
-    code = commands.add_parser('pair', help='Print a new one-time pairing code (valid 15 minutes)')
-    code.add_argument('--root', type=Path, required=True)
-    code.add_argument('--tls-dir', type=Path)
-    check = commands.add_parser('check', help='Exit 0 when the local broker reports ready with the expected version')
-    check.add_argument('--url', required=True)
-    check.add_argument('--version')
-    check.add_argument('--idle', action='store_true', help='Exit 3 when a build is running')
-    args = parser.parse_args()
-    if args.command == 'pair':
-        _, _, fingerprint = ensure_certificate(args.tls_dir or args.root / 'tls')
-        print(AccessControl(args.root, fingerprint).new_code())
-        return
-    host, port = parse_url(args.url)
-    connection = PinnedConnection(host, port, None, 10)
-    try:
-        hello = read_json(exchange(connection, 'GET', '/v1/hello'))
-    except Invalid as error:
-        raise SystemExit(str(error))
-    finally:
-        connection.close()
-    if not hello.get('ready') or (args.version and hello.get('version') != args.version) or hello.get('protocol') != PROTOCOL:
-        raise SystemExit('Broker is not ready: ' + json.dumps(hello))
-    if args.idle and hello.get('busy'):
-        print('Broker is busy with a build')
-        raise SystemExit(3)
-    print(json.dumps(hello))
-
-
-if __name__ == '__main__':
-    main()
+def is_offline(error):
+    return 'could not be reached' in str(error)

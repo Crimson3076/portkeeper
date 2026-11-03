@@ -132,139 +132,104 @@ images or changed public seed files stop replay instead of fetching replacements
 
 ## Split deployment: app on Unraid, broker in a VM
 
-The single-machine mode above still works. To keep Portkeeper as an ordinary Unraid
-container (updated from the Docker tab, no Docker socket, no privileges) run **only
-the broker** in the VM and connect them over the network.
+Two roles on two machines:
 
-- **App** (UI, catalog, upstream polling, RomM matching, publishing): the Unraid container.
-- **Broker** (isolated builds in rootless Docker with cgroup v2 delegation): the VM. It
-  still refuses rootful daemons and alone decides mounts, network, resources and
-  which dependencies are fetched.
+- **App** (UI, catalog, polling, RomM matching, publishing) runs as the normal
+  Unraid container from `ghcr.io/crimson3076/portkeeper` and updates from the Docker
+  tab. It needs no Docker socket and no privileges.
+- **Broker** runs in a dedicated Linux VM exactly as above (rootless Docker, cgroup
+  v2, refuses rootful daemons) and additionally serves an authenticated HTTPS link.
 
-### What crosses the link
+The broker alone decides mounts, network, resources and dependency fetching. Over
+the link the app can only send the same job requests as the Unix socket
+(unknown operations are rejected), upload its public seed tree, and download
+snapshots, logs and fetched dependencies. Downloads and uploads are size-capped on
+both sides (2 GiB trees/dependencies, 1 MiB logs) and artifact names are fixed
+patterns, so the app cannot name arbitrary paths. Game inputs are read by the broker
+from its own **read-only NAS mount** (the same relative paths the app sees under
+`/inputs`); built packages return to the app over the link. The local Unix-socket
+mode (`PORTKEEPER_WORKER_SOCKET`) is unchanged and still supported.
 
-HTTPS on port 8799 (configurable). The broker generates a self-signed certificate and
-the app **pins its SHA-256 fingerprint**; the token is never sent to a different
-certificate. The app can only send the same allow-listed job requests as the local
-socket (unknown operations and extra arguments are rejected), upload a seed tree for a
-job, and download that job's snapshot, log and fetched dependencies. It cannot name
-host paths: the broker reads owned game inputs from its own read-only
-`--input-root` (mount the NAS read-only in the VM; selected inputs are relative paths
-inside it). Uploads and downloads are capped (2 GiB + 64 MiB archive overhead; logs 1 MiB),
-logs and artifacts are streamed, extracted with the same hardened unpacker, and checked
-against the broker's SHA-256 identity. Built packages come back to the app and enter
-its normal download/RomM lifecycle; the VM keeps no copy once a job finishes.
+**Security of the link.** The broker creates a self-signed certificate on first
+start. Pairing uses a one-time code (valid 15 minutes, single use):
+the user copies the full SHA-256 fingerprint from the trusted broker VM console.
+The app verifies that fingerprint before sending a code proof, preventing an
+intermediary from collecting proofs for offline guessing. Bad proofs do not
+permanently disable the code. The app then pins that fingerprint and sends a 384-bit random bearer token (the broker stores only
+its hash; the app keeps it in `/data/secrets/broker.json`, mode 0600). Pairing again
+replaces the old token. Keep the broker port (8788) reachable only from the Unraid
+host/LAN. App and broker refuse to talk across different protocol versions with a
+message naming both versions. While the broker is offline, Settings shows it as
+offline and automatic setups stay queued; their time budget starts once it returns.
 
-Pairing uses a one-time 20-character code (15 minutes, five attempts). The code is
-never transmitted: app and broker prove knowledge of it with an HMAC bound to the
-certificate fingerprint, so a man in the middle can neither learn it nor impersonate
-the broker. Pairing yields a random token; only its hash is stored on the broker, and
-the app keeps it in `/data/secrets/broker.json` (mode 0600). Pairing again revokes the
-previous app. Mutual TLS is not used; certificate pinning plus the token provides the
-same two-way authentication with one fewer file to manage.
+### One-time VM setup (copy-paste)
 
-If the broker is unreachable, new automatic builds **wait in the queue** (their time
-budget starts when the broker returns). A certificate change or a rejected token is
-shown as an error instead, never queued silently. The app and broker refuse to pair or
-talk across different protocol versions (`protocol` in Settings), naming both versions.
-
-### One-time VM setup
-
-Prepare the VM as described under *Worker deployment* (Linux, cgroup v2 delegation,
-rootless Docker, Python 3.11+, `openssl`, `curl`), logged in as the rootless user.
-Mount the NAS game collection **read-only** (for example at `/srv/owned-game-files`).
+Run as the rootless Docker account (not root) on Debian/Ubuntu. Install Docker
+rootless first (see above), then:
 
 ```bash
-set -euo pipefail
-REPO=Crimson3076/portkeeper
-BASE="$HOME/portkeeper-broker"
-mkdir -p "$BASE/releases" "$BASE/state" "$HOME/.config/systemd/user"
-chmod 700 "$BASE" "$BASE/state"
+sudo apt-get install -y python3 openssl curl dbus-user-session
+sudo loginctl enable-linger "$USER"        # user services survive logout/reboot
+mkdir -p ~/portkeeper-broker/data ~/.config/systemd/user
+cd ~/portkeeper-broker
+# Bootstrap the first release (later ones are installed by the timer).
+tag=$(curl -fsSL https://api.github.com/repos/Crimson3076/portkeeper/releases/latest | python3 -c 'import json,sys;print(json.load(sys.stdin)["tag_name"])')
+mkdir -p releases/$tag && curl -fsSL https://github.com/Crimson3076/portkeeper/archive/refs/tags/$tag.tar.gz | tar -xz -C releases/$tag --strip-components=1
+ln -sfn "$PWD/releases/$tag" current
+cp current/deploy/broker/portkeeper-broker-update.sh update.sh && chmod +x update.sh
+cp current/deploy/broker/*.service current/deploy/broker/*.timer ~/.config/systemd/user/
 
-# Install the latest release (the update timer takes over from here).
-TAG=$(curl -fsSL https://api.github.com/repos/$REPO/releases/latest | python3 -c 'import json,sys;print(json.load(sys.stdin)["tag_name"])')
-mkdir -p "$BASE/releases/$TAG"
-curl -fsSL "https://github.com/$REPO/archive/refs/tags/$TAG.tar.gz" | tar -xz --strip-components=1 -C "$BASE/releases/$TAG"
-ln -sfn "releases/$TAG" "$BASE/current"
-echo "$TAG" > "$BASE/installed"
-
-# Worker image (immutable ID) and broker settings.
 docker pull ghcr.io/crimson3076/portkeeper:worker-latest
-cat > "$BASE/broker.env" <<ENV
-BROKER_ROOT=$BASE/state
-INPUT_ROOT=/srv/owned-game-files
-LISTEN=0.0.0.0:8799
-WORKER_IMAGE_ID=$(docker image inspect --format '{{.Id}}' ghcr.io/crimson3076/portkeeper:worker-latest)
-ENV
-chmod 600 "$BASE/broker.env"
+cat > broker.env <<EOF2
+PORTKEEPER_OWNED_DIRECTORY=/srv/owned-game-files
+PORTKEEPER_WORKER_IMAGE_ID=$(docker image inspect --format '{{.Id}}' ghcr.io/crimson3076/portkeeper:worker-latest)
+EOF2
+chmod 600 broker.env
+chmod 700 ~/portkeeper-broker
 
-# Services: broker plus the hourly self-update timer.
-cp "$BASE"/current/tools/broker-vm/portkeeper-broker*.{service,timer} "$HOME/.config/systemd/user/"
-loginctl enable-linger "$USER"
 systemctl --user daemon-reload
 systemctl --user enable --now portkeeper-broker.service portkeeper-broker-update.timer
-journalctl --user -u portkeeper-broker -n 20 --no-pager   # shows the pairing code
+journalctl --user -u portkeeper-broker -n 20 --no-pager   # shows the one-time pairing code
 ```
 
-Allow only the Unraid server to reach TCP 8799 in the VM firewall. If the code has
-expired or you need a new one:
+`/srv/owned-game-files` is the VM's read-only mount of the NAS game collection.
+Re-print a pairing code later with
+`systemctl --user stop portkeeper-broker && cd ~/portkeeper-broker/current && python3 -m portkeeper.worker_broker --root ~/portkeeper-broker/data/exchange --input-root /srv/owned-game-files --listen 0.0.0.0:8788 --pair --image "$IMAGE_ID"`
+(or add `--pair` to `ExecStart` temporarily).
 
-```bash
-cd "$HOME/portkeeper-broker/current" && python3 -m portkeeper.broker_net pair --root "$HOME/portkeeper-broker/state"
-```
-
-On Unraid, open **Settings → Advanced → Storage & runners → Automatic port setup**, enter
-`https://<vm-address>:8799` (the template's *Build broker URL* variable pre-fills it) and the
-code, then press **Pair with broker**. The panel shows the broker version, protocol and
-whether the rootless check passed. Leave `PORTKEEPER_WORKER_SOCKET` unset in the container.
+On Unraid, install the template, set **Broker URL** (e.g. `https://broker-vm:8788`),
+open **Settings → Automatic port setup → Pair a remote broker** and enter the URL
+and code, plus the full certificate fingerprint printed in the trusted VM console.
+Status shows connected, broker version, protocol, certificate fingerprint and
+whether the rootless check passed.
 
 ### Broker self-update
 
-`portkeeper-broker-update.timer` runs `tools/broker-vm/portkeeper-broker-update.sh`
-hourly. It reads the latest GitHub release, downloads it into a new directory, runs the
-**full test suite there**, and only then switches the `current` link and restarts the
-broker. If the new broker is not ready within two minutes it relinks the previous
-release, restarts, and records the tag in `rejected` so it is not retried until a newer
-release appears. Output: `journalctl --user -u portkeeper-broker-update`; test output:
-`~/portkeeper-broker/last-test.log`. Run it by hand with
-`systemctl --user start portkeeper-broker-update.service`. Pairing survives updates
-(`state/` is outside the releases); the certificate is created once. The last three
-releases are kept.
+`portkeeper-broker-update.timer` runs `update.sh` hourly. It reads the latest GitHub
+release, downloads it, runs `python3 -W error -m unittest discover -s tests`, and
+only if that passes switches `current` to it, restarts the broker and waits for
+`/v1/health`. If the new release fails its tests or does not become healthy it is
+marked rejected (`rejected-<tag>`), `current` is switched back and the broker is
+restarted. Check with `systemctl --user list-timers` and
+`journalctl --user -u portkeeper-broker-update`. Releases are fetched over HTTPS
+from GitHub; trust in the update path is trust in the repository's release process.
+Release tests run as the broker user and can read `broker.env` and the TLS private key.
 
-Things to know:
+### Migrating an existing all-in-one VM install
 
-- **You are trusting the release tag.** The script runs the release's tests unsandboxed
-  as the broker user, who has Docker access, and does not verify a signature or checksum.
-  Only point `PORTKEEPER_REPO` at a repository you trust.
-- **Updates wait for idle.** If a build is running the script exits before downloading
-  anything and tries again at the next timer run.
-- **Pairing can be blocked from the LAN.** Five wrong pairing attempts burn the current
-  code, so anyone who can reach the port can stop pairing until you generate a new code.
-  Keep the port firewalled to the app's address.
-- **Backups don't include the pairing.** `secrets/broker.json` is not part of the app
-  backup, so a restored app comes back unpaired and must be paired again.
-
-### Migrating an existing single-VM install
-
-Everything below is a copy; the VM install stays untouched until you are satisfied.
-
-1. Stop the app in the VM: `docker compose -f compose.yaml -f compose.automation.yaml stop`
-   (leave the broker running).
-2. Export the app data from the VM. With the default bind mounts from the rootless
-   override, `PORTKEEPER_STATE_DIRECTORY` holds the database, settings and `secrets/`:
-   `tar -C "$PORTKEEPER_STATE_DIRECTORY" -cpf /tmp/portkeeper-data.tar .`
-   Bulk storage (`PORTKEEPER_STORAGE_DIRECTORY`: archives, replay files) and the
-   library move as ordinary folders onto Unraid shares.
-3. Install the Unraid template, but **do not start it yet**. Unpack the export into the
-   appdata path (`/mnt/user/appdata/portkeeper`) and copy bulk storage and library to
-   their mapped paths (see [storage](STORAGE.md) for the layout). Then fix ownership:
-   `chown -R 99:100 /mnt/user/appdata/portkeeper`.
-4. Delete any stale pairing: `rm -f /mnt/user/appdata/portkeeper/secrets/broker.json`.
-5. Start the container, pair it with the broker as above, and run one automatic build.
-   Replay recipes keep working because their public files travel in bulk storage and the
-   worker image ID is unchanged.
-6. Only after that works, remove the app from the VM (`docker compose ... down`) and keep
-   the broker service. The broker needs no app data and no secrets from the app.
+1. In the VM, stop the app: `docker compose -f compose.yaml -f compose.automation.yaml down`.
+2. Export app data from the VM (database, config, secrets, catalog): archive the
+   state directory (`$PORTKEEPER_STATE_DIRECTORY`, default `.data`) and, if bulk
+   storage lived on VM disk, `$PORTKEEPER_STORAGE_DIRECTORY` too (`tar -C .data -czf
+   portkeeper-data.tgz .`). The archive contains credentials; keep it private.
+3. On Unraid, unpack it into the template’s App data path (`/mnt/user/appdata/portkeeper`),
+   then `chown -R 99:100` it. If bulk storage moved, point the **Bulk storage** path at
+   it (see [storage](STORAGE.md)). Start the container from the template.
+4. In the VM keep only the broker: follow the setup above. Delete the VM's copy of
+   the app data only after a build has worked end to end. The local socket variables
+   are no longer needed.
+5. Pair in Settings. Existing recipes keep their exact worker image ID; keep the same
+   `PORTKEEPER_WORKER_IMAGE_ID` on the broker so replay stays valid.
 
 ## Enable and use it
 

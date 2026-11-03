@@ -1,0 +1,17 @@
+[Unit]
+Description=Portkeeper worker broker (rootless Docker)
+
+[Service]
+EnvironmentFile=%h/portkeeper-broker/broker.env
+WorkingDirectory=%h/portkeeper-broker/current
+ExecStart=/usr/bin/python3 -m portkeeper.worker_broker \
+  --root %h/portkeeper-broker/data/exchange \
+  --input-root ${PORTKEEPER_OWNED_DIRECTORY} \
+  --listen 0.0.0.0:8788 \
+  --protected-root %h/portkeeper-broker \
+  --image ${PORTKEEPER_WORKER_IMAGE_ID}
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

@@ -2284,7 +2284,6 @@ function automaticAvailable() {
   return Boolean(config.policy?.enabled && (config.worker?.ready || config.worker?.offline) &&
     (assistantSettings().configured && config.policy.eligible_providers?.includes(assistantSettings().provider)));
 }
-let brokerDraft = {};
 function renderAutomaticSettings(parent) {
   const config = state.automation || {}, saved = config.policy || {}, worker = config.worker || {};
   let card = $("automatic-settings");
@@ -2300,22 +2299,7 @@ function renderAutomaticSettings(parent) {
     el("p", "field-help", [el("strong", "", "What is a worker broker? "), BROKER_EXPLANATION]),
     el("p", worker.ready ? "field-help" : "review-notes", worker.ready ? `Worker ready · ${worker.backend} · ${Math.round((worker.limits?.workspace_bytes || 0) / 1024**3)} GiB temporary workspace` : worker.error || "Worker not connected."),
     externalLink("Worker installation & privacy settings ↗", "https://github.com/Crimson3076/portkeeper/blob/main/docs/AUTOMATION.md"));
-  if (worker.version) card.append(el("p", "field-help", `Broker version ${worker.version} · protocol ${worker.protocol} · rootless check ${worker.ready ? "passed" : "not passed"}`));
-  if (worker.offline) card.append(el("p", "field-help", "The broker is offline. New builds wait in the queue and start when it returns."));
-  const link = config.link || {};
-  if (link.mode !== "local") {
-    const url = input("broker-url", "text"); url.value = brokerDraft.url ?? link.url ?? link.default_url ?? ""; url.placeholder = "https://broker-vm:8799";
-    url.addEventListener("input", () => { brokerDraft.url = url.value; });
-    const code = input("broker-code", "text"); code.placeholder = "Pairing code printed by the broker"; code.autocomplete = "off";
-    field(card, "Broker address", url); field(card, link.paired ? "New pairing code" : "Pairing code", code);
-    card.append(el("div", "inline-actions", [
-      button(link.paired ? "Pair again" : "Pair with broker", "button secondary small", async () => {
-        const result = await runAction("broker-pair", "/api/automation/broker/pair", {url: url.value.trim(), code: code.value.trim()}, "Paired with the build broker.");
-        if (result) { brokerDraft = {}; await refresh(); }
-      }, busy.has("broker-pair")),
-      ...(link.paired ? [button("Forget broker", "text-button", async () => { if (await runAction("broker-forget", "/api/automation/broker/forget", {}, "Broker pairing removed.")) await refresh(); })] : [])]));
-    card.append(el("p", "field-help", "Run the pairing command on the broker machine (see the installation guide) to get a one-time code. The code is not stored here; only a revocable access token is."));
-  }
+  brokerLinkControls(card, config, worker);
   const enabled = input("automatic-enabled", "checkbox"); enabled.checked = Boolean(draft.enabled);
   enabled.addEventListener("change", () => change("enabled", enabled.checked));
   card.append(el("label", "check-label", [enabled, "Enable automatic setup"]));
@@ -2341,6 +2325,26 @@ function renderAutomaticSettings(parent) {
       const result = await runAction("automatic-policy", "/api/automation/config", automaticPolicyDraft || draft, "Automatic setup settings saved.");
       if (result) { automaticPolicyDraft = null; await refresh(); }
     }, busy.has("automatic-policy")));
+}
+const brokerPairDraft = {url: "", code: "", fingerprint: ""};
+function brokerLinkControls(card, config, worker) {
+  if (worker.link) card.append(el("p", "field-help", `Remote broker ${worker.link.url} · ${worker.version ? "v" + worker.version + " · " : ""}protocol ${worker.protocol} · ${worker.ready ? "rootless check passed" : "not ready"} · certificate ${worker.link.fingerprint}…`));
+  else if (worker.offline) card.append(el("p", "review-notes", "Broker offline: automatic setups stay queued until it reconnects."));
+  const url = input("broker-url", "text", brokerPairDraft.url || config.default_broker_url || "", "https://broker-vm:8788");
+  const fingerprint = input("broker-fingerprint", "text", brokerPairDraft.fingerprint, "SHA-256 fingerprint from the broker VM console");
+  fingerprint.addEventListener("input", () => { brokerPairDraft.fingerprint = fingerprint.value; });
+  const code = input("broker-code", "text", brokerPairDraft.code, "1234-5678-9012");
+  url.addEventListener("input", () => { brokerPairDraft.url = url.value; }); code.addEventListener("input", () => { brokerPairDraft.code = code.value; });
+  const details = el("details", "settings-disclosure", el("summary", "table-action", config.remote ? "Re-pair or remove the remote broker" : "Pair a remote broker"));
+  field(details, "Broker URL", url, "Run the broker with --listen and --pair in its VM; it prints a one-time code.");
+  field(details, "Pairing code", code);
+  field(details, "Certificate fingerprint", fingerprint, "Copy all 64 characters directly from the trusted broker VM console, never from a network connection.");
+  details.append(button("Pair", "button secondary small", async () => {
+    const result = await runAction("broker-pair", "/api/automation/broker/pair", {url: url.value, code: code.value, fingerprint: fingerprint.value}, "Paired with the broker.");
+    if (result) { brokerPairDraft.code = ""; }
+  }, busy.has("broker-pair")));
+  if (config.remote) details.append(button("Remove pairing", "button secondary small", () => runAction("broker-unpair", "/api/automation/broker/unpair", {}, "Broker pairing removed."), busy.has("broker-unpair")));
+  card.append(details);
 }
 function automaticInputDraft(project) {
   const draft = automaticSetupDrafts.get(project.id) || {instruction: "", inputs: project.autonomous_inputs || []};
@@ -2441,7 +2445,7 @@ function automaticSetupCard(project) {
   const jobs = projectJobs(id).filter(job => job.kind === "automation" && !job.activity_hidden), job = jobs[0];
   const card = el("section", "detail-card automatic-setup", [el("h2", "", "Automatic setup"),
     el("p", "detail-note", "Investigate this port, prepare owned data, build and save reusable scripts. Every generated program stays visible below; existing downloads are retained.")]);
-  if (!config.worker?.ready) {
+  if (!(config.worker?.ready || config.worker?.offline)) {
     card.append(el("p", "field-help", BROKER_EXPLANATION), el("p", "review-notes", "No worker broker is connected, so automatic setup isn\u2019t available. Use Draft packaging steps below instead."),
       el("div", "inline-actions", [button("Draft packaging steps", "button primary small", () => scrollToSection(".draft-card")), button("Go to worker broker settings \u2192", "text-button", openWorkerSettings)]));
     return card;

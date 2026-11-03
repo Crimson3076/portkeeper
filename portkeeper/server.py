@@ -168,10 +168,10 @@ class Handler(BaseHTTPRequestHandler):
             elif method == 'POST' and path == '/api/automation/config':
                 self.json(200, self.engine.automation.configure(self.body()))
             elif method == 'POST' and path == '/api/automation/broker/pair':
-                self.json(200, self.engine.automation.pair_broker(self.body()))
-            elif method == 'POST' and path == '/api/automation/broker/forget':
+                self.json(200, self.engine.automation.pair(self.body()))
+            elif method == 'POST' and path == '/api/automation/broker/unpair':
                 self.body()
-                self.json(200, self.engine.automation.forget_broker())
+                self.json(200, self.engine.automation.unpair())
             elif method == 'GET' and path == '/api/automation/inputs':
                 query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
                 self.json(200, self.engine.automation.input_choices(query.get('path', [''])[0]))

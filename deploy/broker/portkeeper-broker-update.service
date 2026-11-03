@@ -1,0 +1,9 @@
+[Unit]
+Description=Check GitHub for a new Portkeeper broker release
+
+[Service]
+Type=oneshot
+# Run as the same account that owns the rootless Docker daemon.
+Environment=PORTKEEPER_USER_SERVICE=1
+ExecStart=%h/portkeeper-broker/update.sh
+Environment=PORTKEEPER_INSTALL_DIR=%h/portkeeper-broker

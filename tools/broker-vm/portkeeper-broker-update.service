@@ -1,6 +1,0 @@
-[Unit]
-Description=Check GitHub for a new Portkeeper broker release
-
-[Service]
-Type=oneshot
-ExecStart=%h/portkeeper-broker/current/tools/broker-vm/portkeeper-broker-update.sh
