@@ -457,6 +457,13 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   let rawCopied='';w.navigator.clipboard={writeText:async text=>rawCopied=text};responseDetails[1].querySelector('button').click();await tick();assert.equal(rawCopied,rawResponse);
   rawPreview.scrollTop=42;const selection=d.createRange();selection.setStart(rawPreview.firstChild,5);selection.setEnd(rawPreview.firstChild,25);w.getSelection().removeAllRanges();w.getSelection().addRange(selection);const selectedRaw=w.getSelection().toString();
   failedDraft.jobs[0].logs.push('New log');w.pollRefresh();await tick();await tick();assert.equal(w.getSelection().toString(),selectedRaw);assert.equal([...d.querySelectorAll('.model-responses pre')][1].scrollTop,42);
+  const retryButton=()=>[...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Retry with corrections');
+  const retryCard=retryButton().closest('.draft-card');assert(retryCard.textContent.includes('up to 3 model requests'),'Retry states its cost');
+  const failureRow=[...retryCard.children];assert(failureRow.findIndex(n=>n.contains(retryButton()))<failureRow.findIndex(n=>n.classList.contains('model-responses')),'Retry sits above the model responses');
+  retryButton().click();await tick();await tick();assert.equal(requests.at(-1).body.max_calls,3,'Retry sends the corrections limit');
+  assert(!d.getElementById('draft-corrections-'+id(2)).checked,'A one-off retry does not change the saved default');
+  failedDraft.jobs[0].status='ready';failedDraft.jobs[0].error=null;w.pollRefresh();await tick();await tick();assert(!retryButton(),'A successful retry clears the failed state');
+  failedDraft.jobs[0].status='failed';failedDraft.jobs[0].error='Operation 2 path must start with $package or $shared';w.pollRefresh();await tick();await tick();
   [...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Draft with Claude default').click();await tick();await tick();assert.equal(requests.at(-1).body.max_calls,1);
   d.getElementById('draft-corrections-'+id(2)).click();
   [...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Draft with Claude default').click();await tick();await tick();assert.equal(requests.at(-1).body.max_calls,3);
