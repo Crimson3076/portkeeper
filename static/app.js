@@ -2478,7 +2478,7 @@ function draftCard(project) {
   share.append(picker, button("Import definition (JSON)", "button secondary small", () => picker.click(), busy.has(`share-${id}`)));
   card.append(share, el("p", "field-help", "A shared definition is checked and shown for review like any draft; nothing runs until you approve it."));
   const where = settings.provider === "ollama" ? " Drafts run on your local model." : ["anthropic", "openai"].includes(settings.provider) ? ` Drafts are sent to ${settings.provider_label}.` : "";
-  card.append(el("p", "quiet-note", "Models receive public project evidence and limited selected-input metadata: formats, sizes and recognized identities. Game contents, locations and credentials stay on the server." + where));
+  card.append(el("p", "quiet-note", "Models receive public project evidence and limited selected-input metadata: formats, sizes and recognized identities. Game contents, locations and credentials stay on the server. Your other saved definitions are only used as examples with a local model." + where));
   if (!settings.configured) card.append(button("Connect a local or cloud model →", "text-button", () => navigateSettings("assistant")));
   return card;
 }

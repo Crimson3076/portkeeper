@@ -1562,15 +1562,19 @@ class Engine:
         self._attach_examples(project, context)
         return capture, context
 
-    def _template_references(self, project):
+    def _template_references(self, project, include_user=True):
         from . import templates
-        user = [(item['id'], item.get('packaging')) for item in self.store.all('projects') if item.get('packaging')]
+        user = [(item['id'], item.get('packaging')) for item in self.store.all('projects') if item.get('packaging')] if include_user else []
         return templates.candidates(self.catalog.definitions(), user, exclude_project=project.get('id'))
+
+    def _local_model(self):
+        return self.assistant._config().get('provider') == 'ollama'
 
     def _attach_examples(self, project, context):
         """Pick the closest approved definitions as bounded prompt examples; keep only a summary in the record."""
         from . import templates
-        selected = templates.select(context, self._template_references(project))
+        # Saved definitions of the person's other projects only go to a model that runs on their machine.
+        selected = templates.select(context, self._template_references(project, include_user=self._local_model()))
         context['examples'] = templates.example_material(selected)
         context['examples_used'] = templates.summarize(selected)
 
@@ -1895,9 +1899,9 @@ class Engine:
 
     def import_definition(self, project_id, text):
         """A shared definition becomes a draft for review; approval gates are unchanged."""
-        from . import templates
+        from . import drafting, templates
         project = self.store.get('projects', project_id)
-        definition = templates.read_import(text, project['repo'])
+        definition = templates.read_import(text, project['repo'], drafting.draft_id(project))
         capture = self.store.get('captures', project['capture_id']) if project.get('capture_id') else None
         return self.save_definition_proposal(project, definition, 'Imported from a shared definition file. Nothing has run; check its file names and hashes against this release.',
                                              'an imported definition file', capture)

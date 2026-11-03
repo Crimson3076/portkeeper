@@ -63,6 +63,13 @@ class TemplateFitTests(unittest.TestCase):
         self.assertNotIn('Older', json.dumps(built))
         packaging.validate_definition(built)
 
+    def test_game_name_in_an_input_label_or_staged_path_blocks_a_template_fit(self):
+        named = reference()
+        named['operations'].insert(2, {'op': 'touch', 'targets': ['linux'], 'path': '$package/older-port.flag'})
+        self.assertIsNone(templates.fit(context(), refs(named)))
+        self.assertTrue(templates._mentions([{'label': 'Older Port ROM'}], {'Older Port'}))
+        self.assertFalse(templates._mentions([{'label': 'A ROM'}], {'Older Port'}))
+
     def test_archive_with_a_different_layout_is_not_a_fit(self):
         wrapped = context(windows=['Newgame.exe'])
         wrapped['release']['archive_layouts'][WINDOWS]['enclosing_folder'] = 'Newgame'
@@ -152,7 +159,17 @@ class EngineTemplateTests(unittest.TestCase):
         self.assertEqual(self.engine.draft_record(job['id'])['examples_used'][0]['id'], 'older-port')
         self.assertEqual(self.engine.store.get('projects', self.project['id'])['packaging']['runner'], 'capture')  # approval is unchanged
 
+    def test_cloud_models_never_receive_the_persons_other_saved_definitions(self):
+        job, chat = self.run_draft(context(), skip_template=True)
+        self.assertEqual(job['status'], 'ready', job.get('error'))
+        record = self.engine.draft_record(job['id'])
+        self.assertNotIn('older-port', [item['id'] for item in record['examples_used']])
+        self.assertNotIn('older-port', record['draft_prompt']['user'])
+
     def test_refine_skips_the_template_and_records_examples_sent_to_the_model(self):
+        patcher = patch.object(self.engine, '_local_model', return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         job, chat = self.run_draft(context(), skip_template=True)
         self.assertEqual(job['status'], 'ready', job.get('error'))
         self.assertGreaterEqual(chat.call_count, 1)
@@ -171,7 +188,11 @@ class EngineTemplateTests(unittest.TestCase):
         shared = json.dumps(self.engine.export_definition(older['id']))
         proposal = self.engine.import_definition(older['id'], shared)
         self.assertEqual(proposal['status'], 'pending_review')
-        self.assertEqual(proposal['definition']['id'], 'older-port')
+        self.assertEqual(proposal['definition']['id'], 'older')
+        other = self.engine.create_project({'name': 'Older fork', 'repo': 'example/older', 'targets': ['linux', 'windows']})
+        foreign = reference(id='someone-else', package_prefix='someone-else', history=['by them'])
+        pinned = self.engine.import_definition(other['id'], json.dumps(foreign))['definition']
+        self.assertEqual((pinned['id'], pinned['package_prefix']), ('older', 'older'))
         with self.assertRaises(Invalid):
             self.engine.import_definition(older['id'], json.dumps({'schema': 2}))
         with self.assertRaises(Invalid):

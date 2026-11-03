@@ -190,6 +190,18 @@ def fit(context, references):
     return None
 
 
+def _mentions(value, names):
+    """True when any string inside value names the reference project or its game."""
+    if isinstance(value, str):
+        lowered = value.lower()
+        return any(name.lower() in lowered for name in names if len(name) > 2)
+    if isinstance(value, dict):
+        return any(_mentions(item, names) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_mentions(item, names) for item in value)
+    return False
+
+
 def _build(context, reference, facts):
     project = context['project']
     names = {reference.get('name', ''), reference.get('game', ''), reference['id']} - {''}
@@ -197,6 +209,8 @@ def _build(context, reference, facts):
     result.update(id=project['definition_id'], revision=1, name=project['name'], package_prefix=project['definition_id'],
                   targets=list(project['targets']), history=[], verified_releases=[],
                   upstream={'repository': project['repository']}, limitations=[], dependencies={})
+    if _mentions([reference.get('inputs', []), {k: v for t in reference.get('outputs', {}).values() for k, v in t.items() if k != 'expected_files'}], names):
+        return None
     for key in ('game', 'summary', 'saves', 'notes'):
         result.pop(key, None)
     result['downloads'] = {}
@@ -209,7 +223,7 @@ def _build(context, reference, facts):
                 continue
         if op['op'] == 'unpack_download' and op['download'] not in project['targets']:
             continue
-        if op['op'] == 'write_text' and any(name.lower() in op.get('text', '').lower() for name in names if len(name) > 2):
+        if _mentions({key: value for key, value in op.items() if key != 'exec'}, names):
             return None
         if op['op'] == 'launcher':
             target = (op.get('targets') or project['targets'])[0]
@@ -244,7 +258,7 @@ def export_definition(definition):
     return {'kind': EXPORT_KIND, 'format': 1, 'definition': copy.deepcopy(definition)}
 
 
-def read_import(text, repository=None):
+def read_import(text, repository=None, definition_id=None):
     """Validate a shared definition. Verified-release claims never travel: they were not verified here."""
     if not isinstance(text, str) or not text.strip():
         raise Invalid('Paste or choose an exported definition (JSON) first')
@@ -264,4 +278,8 @@ def read_import(text, repository=None):
     if repository and definition['upstream']['repository'].lower() != repository.lower():
         raise Invalid(f"This definition is for {definition['upstream']['repository']}, not {repository}")
     definition['verified_releases'] = []
+    if definition_id:
+        definition['id'] = definition['package_prefix'] = definition_id
+        definition['history'] = []
+        definition = packaging.validate_definition(definition)
     return definition
