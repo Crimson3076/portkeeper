@@ -11,7 +11,7 @@ import stat
 import tarfile
 import zipfile
 
-from . import drafting, packaging, ps4
+from . import drafting, factsheet, packaging, ps4
 from .safety import Invalid, checksum, confined, relative
 
 MAX_FILE = 2_000_000
@@ -46,8 +46,13 @@ At most three requests per response. Source paths and assets must be from the su
  "asset":"exact release asset or null","launch":"relative runtime path or null"}],
  "game_files":{"needed_to_play":true,"needed_for_packaging":false,"requirements":"owned data and setup"},
  "steps":[{"capability":"unpack_download","purpose":"what this accomplishes","targets":["windows"]}],
- "evidence":[{"source":"e1","quote":"exact quote from that evidence","supports":"the claim"}],
+ "evidence":[{"facts":["f3","f7"],"supports":"the claim"}],
  "uncertainties":["what is unresolved"]}}
+The host supplies a deterministic fact_sheet (IDs f1, f2, ...) of release assets, archive layouts,
+executables, launch candidates, documented hashes/file names and mentioned tools. It is your primary input:
+cite fact IDs in each evidence entry ({"facts":["f3"],"supports":"claim"}) instead of quoting text. Cite only
+IDs that exist in fact_sheet; unknown IDs reject the plan. For a claim the fact_sheet does not cover, request
+the evidence and quote it instead: {"source":"e1","quote":"exact quote","supports":"the claim"}.
 Use only requested runtime targets. Availability of a Linux build tool does not prove Linux gameplay.
 outcome is ready, unsupported or needs_evidence. A target method is release, source_build, unavailable or unknown.
 Ready requires a real playable runtime for every selected target, supported preparation when requested,
@@ -142,6 +147,7 @@ class Evidence:
     def __init__(self, engine, project, capture, context):
         self.engine, self.project, self.capture, self.context = engine, project, capture, context
         self.nodes = []
+        self.sheet = factsheet.build(capture, context)
         self.add('release', 'release', json.dumps(context['release'], separators=(',', ':'))[:5000])
         material = context.get('material', {})
         self.add('source', 'README.md', material.get('readme', '')[:5000])
@@ -297,9 +303,25 @@ def check_plan(plan, project, capture, reader):
         raise Invalid('Plan evidence must be an array of at most 12 quotations')
     nodes = {node['id']: node for node in reader.nodes}
     evidence, problems = [], []
+    invalid, known = [], factsheet.by_id(reader.sheet)
     for ref in references:
+        if isinstance(ref, dict) and 'facts' in ref:
+            ids = ref['facts']
+            if not isinstance(ids, list) or not 1 <= len(ids) <= 10 or any(not isinstance(item, str) or len(item) > 20 for item in ids):
+                raise Invalid('Evidence facts must be a list of 1–10 fact IDs such as ["f1","f2"]')
+            invalid += [item for item in ids if item not in known and item not in invalid]
+    if invalid:
+        raise Invalid('Unknown fact IDs: ' + ', '.join(invalid[:20]) + '. Cite only IDs listed in fact_sheet, or quote evidence you requested.')
+    for ref in references:
+        if isinstance(ref, dict) and 'facts' in ref:
+            if not isinstance(ref.get('supports'), str) or len(ref['supports']) > 1000:
+                raise Invalid('Evidence references need the fact IDs and the claim they support')
+            facts, _ = factsheet.cited(ref['facts'], reader.sheet)
+            evidence.append({'source': facts[0]['id'], 'facts': [fact['id'] for fact in facts], 'quote': ' | '.join(fact['text'] for fact in facts)[:1000],
+                             'supports': ref['supports'], 'matched': True, 'path': facts[0]['source']['file'], 'doc_fact': any(fact['doc'] and fact['kind'] in factsheet.EVIDENCE_KINDS for fact in facts)})
+            continue
         if not isinstance(ref, dict) or any(not isinstance(ref.get(key), str) for key in ('source', 'quote', 'supports')) or not 1 <= len(ref['quote']) <= 1000 or len(ref['supports']) > 1000:
-            raise Invalid('Evidence references need source id, an exact quote and the claim it supports')
+            raise Invalid('Evidence references need fact IDs, or a source id with an exact quote, and the claim it supports')
         node = nodes.get(ref['source'])
         matched = bool(node and ' '.join(ref['quote'].split()) in ' '.join(node['text'].split()))
         evidence.append({**ref, 'matched': matched, 'path': node['source'] if node else None})
@@ -345,7 +367,7 @@ def check_plan(plan, project, capture, reader):
                 members = reader.context.get('archive_evidence', {}).get(asset, [])
                 if not any(path.rstrip('/') == launch or path.rstrip('/').endswith('/' + launch) for path in members):
                     problems.append(target['target'] + ': launch path is absent from the inspected archive')
-    if not any(item['matched'] and nodes[item['source']]['kind'] in ('source', 'search', 'archive_file') for item in evidence):
+    if not any(item['matched'] and (item.get('doc_fact') or nodes.get(item['source'], {}).get('kind') in ('source', 'search', 'archive_file')) for item in evidence):
         problems.append('No matched source/documentation evidence establishes the runtime and setup')
     if plan['outcome'] == 'ready' and not steps:
         problems.append('No supported preparation/packaging steps were supplied')
@@ -376,8 +398,14 @@ def run(engine, project, capture, context, config, max_calls, log, remember, ins
                    'source_paths': context.get('material', {}).get('file_tree', [])[:60],
                    'prepare_game_files': context.get('game_file_preparation', {}).get('enabled', True),
                    'capabilities': capabilities(engine), 'inputs': input_inventory(engine, project),
-                   'evidence': visible, 'instruction': instruction[:2000], 'feedback': feedback,
+                   'fact_sheet': factsheet.compact(reader.sheet), 'evidence': visible, 'instruction': instruction[:2000], 'feedback': feedback,
                    'calls_remaining_after_this': max_calls - index - 1}
+        # Trim the (regenerable) fact sheet first, dropping non-documentation facts before documentation facts,
+        # so requested evidence and archive samples survive for the quote fallback.
+        docs = {fact['id'] for fact in reader.sheet['facts'] if fact['doc']}
+        while len(SYSTEM) + len(json.dumps(payload)) > 24000 and len(payload['fact_sheet']) > 10:
+            drop = next((i for i in range(len(payload['fact_sheet']) - 1, -1, -1) if payload['fact_sheet'][i]['id'] not in docs), len(payload['fact_sheet']) - 1)
+            payload['fact_sheet'].pop(drop)
         while len(SYSTEM) + len(json.dumps(payload)) > 24000 and payload['evidence']:
             payload['evidence'].pop(0)
         while len(SYSTEM) + len(json.dumps(payload)) > 24000 and payload['archive_samples']:
@@ -393,7 +421,7 @@ def run(engine, project, capture, context, config, max_calls, log, remember, ins
         try:
             action, body = read_response(response)
             if action == 'plan':
-                result = check_plan(body, project, capture, reader)
+                result = {**check_plan(body, project, capture, reader), 'fact_sheet': reader.sheet['facts']}
                 event['result'] = result['outcome'];remember(event)
                 return result, reader.nodes, context
             if action != 'request_evidence' or not isinstance(body, list) or not 1 <= len(body) <= 3:
@@ -419,7 +447,7 @@ def run(engine, project, capture, context, config, max_calls, log, remember, ins
     return {'outcome': 'needs_evidence', 'summary': feedback or 'Investigation did not establish a supported workflow within the selected call budget.',
             'targets': [], 'steps': [], 'game_files': {'needed_to_play': None, 'needed_for_packaging': None, 'requirements': 'Not established'},
             'evidence': [], 'uncertainties': ['Increase the investigation limit or inspect the recorded requests and upstream documentation.'],
-            'capability_problems': [], 'can_draft': False, 'gameplay_test': 'not_run'}, reader.nodes, context
+            'capability_problems': [], 'can_draft': False, 'gameplay_test': 'not_run', 'fact_sheet': reader.sheet['facts']}, reader.nodes, context
 
 
 def check_definition(definition, plan, capture):

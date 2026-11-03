@@ -39,6 +39,16 @@ or subscription/local model allowances apply to every additional model request.
 
 ## Evidence the host serves
 
+Before any model call Portkeeper builds a deterministic **fact sheet** from the release
+asset list, archive listings and README/docs: assets with sizes and platform guesses,
+archive layouts (enclosing folder, folders, root files), executables with relative paths,
+bundled libraries, launch candidates, documented hashes (md5/sha1/sha256), data file and
+version names, and mentioned build or extraction tools. Each fact has a stable ID (`f1`,
+`f2`, ...) and a source file and line. The model cites IDs in plan evidence
+(`{"facts":["f3"],"supports":"..."}`); unknown IDs are rejected with the invalid IDs listed.
+Quoting (`source` + `quote`) remains the fallback for facts the sheet does not cover.
+The sheet is shown, collapsed, beside the plan. It does not change build behaviour or approval gates.
+
 The initial request includes a bounded README/source sample, source paths, release
 metadata, current runner capabilities and a sanitized inventory of inputs already
 selected in that project. The model can ask for:
