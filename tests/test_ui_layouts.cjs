@@ -85,10 +85,11 @@ async function create(saved, storageBlocked=false, source=fixture) {
     else if(endpoint.endsWith('/draft') && options.method==='POST'){requests.push({endpoint,body:JSON.parse(options.body)});payload={job:{}};}
     else if(endpoint.endsWith('/investigate') && options.method==='POST'){requests.push({endpoint,body:JSON.parse(options.body)});payload={job:{}};}
     else if(options.method==='PATCH'){const body=JSON.parse(options.body);requests.push({endpoint,body});const game=source.projects.find(p=>endpoint.includes(p.id));Object.assign(game,body);payload=game;}
+    else if(endpoint==='/api/projects' && options.method==='POST'){requests.push({endpoint,body:JSON.parse(options.body)});payload={project:source.projects[1]};}
     else if(endpoint==='/api/setup'){requests.push({endpoint,body:JSON.parse(options.body)});payload={project:source.projects[1],job:{}};}
     return {ok:true,status:200,json:async()=>JSON.parse(JSON.stringify(payload))};
   };
-  w.eval(fs.readFileSync(path.join(base,'static/app.js'),'utf8') + '\nwindow.testBrokerLinkControls = brokerLinkControls;');
+  w.eval(fs.readFileSync(path.join(base,'static/app.js'),'utf8') + '\nwindow.testBrokerLinkControls = brokerLinkControls;\n;window.__gameChecklist=gameChecklist;');
   await new Promise(resolve=>setTimeout(resolve,30));
   assert.equal(errors.length,0,errors.map(e=>e.stack).join('\n'));
   return dom;
@@ -465,6 +466,13 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   let rawCopied='';w.navigator.clipboard={writeText:async text=>rawCopied=text};responseDetails[1].querySelector('button').click();await tick();assert.equal(rawCopied,rawResponse);
   rawPreview.scrollTop=42;const selection=d.createRange();selection.setStart(rawPreview.firstChild,5);selection.setEnd(rawPreview.firstChild,25);w.getSelection().removeAllRanges();w.getSelection().addRange(selection);const selectedRaw=w.getSelection().toString();
   failedDraft.jobs[0].logs.push('New log');w.pollRefresh();await tick();await tick();assert.equal(w.getSelection().toString(),selectedRaw);assert.equal([...d.querySelectorAll('.model-responses pre')][1].scrollTop,42);
+  const retryButton=()=>[...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Retry with corrections');
+  const retryCard=retryButton().closest('.draft-card');assert(retryCard.textContent.includes('up to 3 model requests'),'Retry states its cost');
+  const failureRow=[...retryCard.children];assert(failureRow.findIndex(n=>n.contains(retryButton()))<failureRow.findIndex(n=>n.classList.contains('model-responses')),'Retry sits above the model responses');
+  retryButton().click();await tick();await tick();assert.equal(requests.at(-1).body.max_calls,3,'Retry sends the corrections limit');
+  assert(!d.getElementById('draft-corrections-'+id(2)).checked,'A one-off retry does not change the saved default');
+  failedDraft.jobs[0].status='ready';failedDraft.jobs[0].error=null;w.pollRefresh();await tick();await tick();assert(!retryButton(),'A successful retry clears the failed state');
+  failedDraft.jobs[0].status='failed';failedDraft.jobs[0].error='Operation 2 path must start with $package or $shared';w.pollRefresh();await tick();await tick();
   [...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Draft with Claude default').click();await tick();await tick();assert.equal(requests.at(-1).body.max_calls,1);
   d.getElementById('draft-corrections-'+id(2)).click();
   [...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Draft with Claude default').click();await tick();await tick();assert.equal(requests.at(-1).body.max_calls,3);
@@ -590,5 +598,85 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   assert(d.querySelector('a[href="https://recomplauncher.com/top"]'),'The reference website stays accessible when import is unavailable');
   assert(d.querySelector('.game-pick.custom'),'Manual addition stays available');dom.window.close();
   dom=await create(null,false,{...fixture,projects:[],artifacts:[]});assert(dom.window.document.getElementById('project-grid').textContent.includes('first game'));dom.window.close();
+  // First-run guidance: broker explanation, checklist, review panel, inline progress.
+  dom=await create();w=dom.window;d=w.document;
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();
+  let stepCard=d.querySelector('.next-step-card');
+  assert(!stepCard.textContent.includes('Investigate packaging'),'Without a worker broker the page does not offer automatic investigation');
+  assert(stepCard.textContent.includes('worker broker'),'The page explains why automatic setup is unavailable');
+  assert([...stepCard.querySelectorAll('button')].some(n=>n.textContent==='Draft packaging steps'),'The working draft path is offered instead');
+  const checklist=[...stepCard.querySelectorAll('.game-checklist li')];
+  assert.deepEqual(checklist.map(n=>n.dataset.step),['saved','drafted','approved','built','tested','in_romm']);
+  assert.equal(stepCard.querySelectorAll('.game-checklist li[data-state="current"]').length,1,'Exactly one step is current');
+  assert.equal(stepCard.querySelector('.game-checklist li[data-state="current"]').dataset.step,'saved','The fixture game has no saved release yet');
+  {
+    // Checklist states: preserve-only, pending draft, approved, built, built and tested.
+    const states=(project,proposal,packages,inRomm,untested)=>Object.fromEntries([...w.__gameChecklist(project,proposal,packages,inRomm,untested).querySelectorAll('li')].map(n=>[n.dataset.step,n.dataset.state]));
+    const saved={latest_version:'v1',capture_id:'c1'}, preserveOnly={...saved,packaging:{runner:'capture',revision:1}}, approvedDef={...saved,packaging:{runner:'operations',revision:2}};
+    const pkg={id:'a1',target:'linux'};
+    assert.deepEqual(states(preserveOnly,null,[],[],[]),{saved:'done',drafted:'current',approved:'todo',built:'todo',tested:'todo',in_romm:'todo'},'Preserve-only is not drafted or approved');
+    assert.deepEqual(states(preserveOnly,{id:'p1'},[],[],[]),{saved:'done',drafted:'done',approved:'current',built:'todo',tested:'todo',in_romm:'todo'},'A pending draft is drafted but not approved');
+    assert.deepEqual(states(approvedDef,null,[],[],[]),{saved:'done',drafted:'done',approved:'done',built:'current',tested:'todo',in_romm:'todo'},'Approved definition not yet built');
+    assert.deepEqual(states(approvedDef,null,[pkg],[],[pkg]),{saved:'done',drafted:'done',approved:'done',built:'done',tested:'current',in_romm:'todo'},'Built but untested');
+    assert.deepEqual(states(approvedDef,null,[pkg],[],[]),{saved:'done',drafted:'done',approved:'done',built:'done',tested:'done',in_romm:'current'},'Built and tested');
+  }
+  d.getElementById('project-advanced-tab').click();await tick();
+  const autoCard=d.querySelector('.automatic-setup');
+  assert(autoCard.textContent.includes('worker broker') && autoCard.textContent.includes('Draft packaging steps'));
+  assert(![...autoCard.querySelectorAll('button')].some(n=>n.textContent==='Set up automatically'),'No greyed automatic setup button');
+  [...autoCard.querySelectorAll('button')].find(n=>n.textContent.startsWith('Go to worker broker settings')).click();await tick();
+  assert.equal(d.getElementById('settings-storage-tab').getAttribute('aria-selected'),'true','Link lands on Advanced > Storage & runners');
+  assert(d.getElementById('automatic-settings').textContent.includes('What is a worker broker'),'The settings section defines the broker');
+  dom.window.close();
+  dom=await create(null,false,reviewed);w=dom.window;d=w.document;
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();
+  [...d.querySelector('.next-step-card').querySelectorAll('button')].find(n=>n.textContent==='Review draft').click();await tick();
+  assert(d.getElementById('draft-review-dialog').open,'Review draft opens a panel');
+  assert(w.location.hash.endsWith('/overview'),'The page stays on Play');
+  const reviewBody=d.getElementById('draft-review-body'),reviewActions=d.getElementById('draft-review-actions');
+  assert(reviewBody.textContent.includes('Review it before approving'));
+  assert([...reviewActions.querySelectorAll('button')].map(n=>n.textContent).join('|').includes('Approve'));
+  assert([...reviewActions.querySelectorAll('button')].some(n=>n.textContent==='Discard'));
+  assert(!reviewBody.querySelector('button.primary'),'Approve is pinned outside the scrolling body');
+  assert([...reviewBody.querySelectorAll('details')].every(n=>!n.open),'JSON stays collapsed');
+  [...reviewActions.querySelectorAll('button')].find(n=>n.textContent==='Approve').click();await tick();await tick();
+  assert(!d.getElementById('draft-review-dialog').open,'Approving closes the panel');
+  dom.window.close();
+  // Review investigation opens the same dialog; Inbox "Open game" lands on it too.
+  const planned=JSON.parse(JSON.stringify(editable));planned.projects[1].capture_id=id(88);planned.assistant={provider:'ollama',configured:true,drafting_model:'Local fixture'};
+  planned.proposals=[{id:id(91),kind:'investigation',project_id:id(2),status:'pending_review',prepare_game_files:true,source:'Local fixture',plan:{outcome:'ready',summary:'A supported runtime is available.',targets:[{target:'windows',method:'release',asset:'game-windows.zip'}],game_files:{needed_to_play:true,needed_for_packaging:false,requirements:'Your owned game data'},steps:[{capability:'extract',purpose:'Unpack the release'}],evidence:[{source:'e2',path:'README.md',quote:'Windows build',supports:'Runtime',matched:true}],uncertainties:[],capability_problems:[],can_draft:true}}];
+  planned.notifications=[{id:'review-note',project_id:id(2),kind:'needs_review',message:'New version',created_at:'2026-10-13T05:00:00Z'}];
+  for(const entry of ['card','inbox']){
+    dom=await create(null,false,planned);w=dom.window;d=w.document;
+    [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();
+    if(entry==='card')[...d.querySelector('.next-step-card').querySelectorAll('button')].find(n=>n.textContent==='Review investigation').click();
+    else{d.getElementById('activity-tab')?.click?.();w.location.hash='activity';await tick();d.getElementById('notifications-tab')?.click();await tick();[...d.querySelectorAll('.notification-item button')].find(n=>n.textContent.startsWith('Open game')).click();}
+    await tick();
+    const dialog=d.getElementById('draft-review-dialog');assert(dialog.open,'Review investigation opens the dialog from '+entry);
+    assert(w.location.hash.endsWith('/overview'),'The page stays on Play');
+    const body=d.getElementById('draft-review-body'),pinned=d.getElementById('draft-review-actions');
+    assert(body.textContent.includes('A supported runtime is available.'));
+    assert(!body.querySelector('button.primary'),'Actions are pinned outside the scrolling body');
+    assert.deepEqual([...pinned.querySelectorAll('button')].map(n=>n.textContent),['Draft packaging steps from this plan','Dismiss']);
+    assert([...body.querySelectorAll('details')].every(n=>!n.open),'Evidence and JSON stay collapsed');
+    if(entry==='card'){[...pinned.querySelectorAll('button')].find(n=>n.textContent==='Dismiss').click();await tick();await tick();assert(!dialog.open,'Dismissing closes the dialog');}
+    else{dialog.querySelector('[data-close]').click();assert(!dialog.open,'Closing returns to the game');}
+    dom.window.close();
+  }
+  const building=JSON.parse(JSON.stringify(fixture));
+  building.jobs=[{id:id(40),project_id:id(2),status:'packaging_linux',stage:'packaging_linux',target:'linux',kind:'build',created_at:'2026-10-11T12:00:00Z',logs:['Packaging the Linux build']}];
+  dom=await create(null,false,building);w=dom.window;d=w.document;
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();
+  stepCard=d.querySelector('.next-step-card');
+  assert(stepCard.querySelector('progress[role="status"], [role="progressbar"], progress'),'Progress is drawn on the card where the build was started');
+  assert(stepCard.textContent.includes('Packaging the Linux build'),'The latest log line is shown inline');
+  dom.window.close();
+  dom=await create();w=dom.window;d=w.document;
+  d.getElementById('add-project').click();await tick();await tick();d.querySelector('.game-pick.custom').click();await tick();[...d.querySelectorAll('#add-game-actions button')].find(n=>n.textContent.includes('Continue')).click();await tick();
+  const landRepo=d.getElementById('custom-repo');landRepo.value='example/game';landRepo.dispatchEvent(new w.Event('input'));landRepo.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));await tick();await tick();
+  d.getElementById('custom-method-handoff').click();d.getElementById('custom-method-handoff').dispatchEvent(new w.Event('change',{bubbles:true}));await tick();
+  d.getElementById('custom-add-submit').click();await tick();await tick();await tick();
+  assert(w.location.hash.endsWith('/overview'),'After adding a custom game the app lands on Play, not Advanced');
+  dom.window.close();
   console.log('UI layouts passed: add a game, next step, drafting settings, default workspace, saved preferences, collection/list switching, grouped platforms, RomM imports, correct counts, game selection, deep links, filters, empty state and blocked storage.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
