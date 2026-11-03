@@ -11,6 +11,7 @@ import copy
 import ipaddress
 import json
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -142,6 +143,8 @@ class RecipeAssistant:
         self.path = Path(data_dir) / 'secrets' / 'assistant.json'
         from .subscription_agents import SubscriptionAgents
         self.agents = SubscriptionAgents(data_dir, work_root=work_root, cache_root=cache_root)
+        self._structured_support = {}  # (provider, endpoint) -> bool, learned from the first request
+        self._last = threading.local()
 
     def _config(self):
         if not self.path.exists():
@@ -416,10 +419,37 @@ class RecipeAssistant:
         names = sorted({item['id'] for item in data.get('data', []) if isinstance(item, dict) and isinstance(item.get('id'), str) and _MODEL.fullmatch(item['id'])}, key=str.casefold)
         return {'models': names}
 
-    def chat(self, system, messages, config=None, timeout=900, response_schema=None, max_output_tokens=None, strict_budget=False):
-        """Send a conversation to the configured model and return its text reply."""
+    def structured_output(self):
+        """Whether the last chat() on this thread used schema-constrained output (None when not applicable)."""
+        return getattr(self._last, 'structured', None)
+
+    def _structured_post(self, key, url, schema_body, plain_body, headers, timeout):
+        """Try the schema-constrained request unless this endpoint is known not to support it.
+
+        Support is learned once per endpoint (an HTTP 400 means unsupported) and cached for the
+        session; unsupported endpoints get the prompt-only request."""
+        if self._structured_support.get(key) is not False:
+            try:
+                reply = self._post(url, schema_body, headers, timeout)
+                self._structured_support[key] = True
+                self._last.structured = True
+                return reply
+            except Invalid as error:
+                if 'HTTP 400' not in str(error):
+                    raise
+                self._structured_support[key] = False
+        self._last.structured = False
+        return self._post(url, plain_body, headers, timeout)
+
+    def chat(self, system, messages, config=None, timeout=900, response_schema=None, max_output_tokens=None, strict_budget=False, structured_schema=None):
+        """Send a conversation to the configured model and return its text reply.
+
+        structured_schema constrains decoding on Ollama and OpenAI-compatible endpoints; local
+        validation of the reply is still the caller's job."""
         config = config or self._config()
         provider = config['provider']
+        self._last.structured = None
+        structured_schema = None if strict_budget else structured_schema
         if provider in AGENT_PROVIDERS:
             return self.agents.chat(provider, system, messages, model=config.get('agent_models', {}).get(provider, ''),
                                     timeout=timeout, response_schema=response_schema)
@@ -429,7 +459,11 @@ class RecipeAssistant:
                     'options': {'temperature': 0.1, 'num_ctx': config.get('context_tokens', 32768)}}
             if max_output_tokens is not None:
                 body['options']['num_predict'] = max_output_tokens
-            reply = self._post(_endpoint(config['endpoint']) + '/api/chat', body, {}, timeout)
+            url = _endpoint(config['endpoint']) + '/api/chat'
+            if structured_schema is not None:
+                reply = self._structured_post(('ollama', url), url, {**body, 'format': structured_schema}, body, {}, timeout)
+            else:
+                reply = self._post(url, body, {}, timeout)
             message = reply.get('message') or {}
             text = message.get('content')
             if reply.get('done_reason') == 'length':
@@ -464,13 +498,18 @@ class RecipeAssistant:
                 parameter = 'max_completion_tokens' if urllib.parse.urlsplit(config['base_url']).hostname == 'api.openai.com' else 'max_tokens'
                 body[parameter] = max_output_tokens
             headers = {'Authorization': 'Bearer ' + config['api_key']} if config.get('api_key') else {}
+            url = config['base_url'] + '/chat/completions'
             try:
-                reply = self._post(config['base_url'] + '/chat/completions', body, headers, timeout)
+                if structured_schema is not None:
+                    schema_body = {**body, 'response_format': {'type': 'json_schema', 'json_schema': {'name': 'portkeeper_reply', 'strict': False, 'schema': structured_schema}}}
+                    reply = self._structured_post(('openai', url), url, schema_body, body, headers, timeout)
+                else:
+                    reply = self._post(url, body, headers, timeout)
             except Invalid as error:
                 if 'HTTP 400' not in str(error) or strict_budget:
                     raise
                 body.pop('response_format')  # some compatible servers do not support JSON mode
-                reply = self._post(config['base_url'] + '/chat/completions', body, headers, timeout)
+                reply = self._post(url, body, headers, timeout)
             choices = reply.get('choices') or [{}]
             text = ((choices[0] or {}).get('message') or {}).get('content')
         else:
@@ -493,6 +532,7 @@ class RecipeAssistant:
         return result
 
     def draft_definition(self, system, user, read, log, attempts=3, record=None, config=None, test=None, test_rounds=2):
+        from . import drafting
         """Ask the model, then let it fix what Portkeeper rejected. read(text) validates or raises Invalid.
 
         test(definition) optionally test-builds an accepted draft and returns feedback for the
@@ -506,13 +546,16 @@ class RecipeAssistant:
             calls += 1
             log(f'Asking {self.public_config(config)["drafting_model"]} for a draft (attempt {calls} of {attempts})')
             started = time.monotonic()
-            text = self.chat(system, messages, config)
+            text = self.chat(system, messages, config, structured_schema=drafting.DRAFT_LOCAL_SCHEMA)
             seconds = round(time.monotonic() - started, 1)
+            structured = self.structured_output()
+            if structured is False:
+                log('Structured output is off for this endpoint; relying on prompt-only JSON and local validation')
             try:
                 result = read(text)
             except Invalid as error:
                 if record:
-                    record({'kind': 'draft', 'attempt': calls, 'messages': copy.deepcopy(messages), 'response': text, 'result': 'rejected', 'error': str(error), 'seconds': seconds})
+                    record({'kind': 'draft', 'attempt': calls, 'messages': copy.deepcopy(messages), 'response': text, 'result': 'rejected', 'error': str(error), 'structured_output': structured, 'seconds': seconds})
                 log(f'Portkeeper rejected the draft: {error}')
                 if calls >= attempts:
                     if last is not None:
@@ -524,7 +567,7 @@ class RecipeAssistant:
                              {'role': 'user', 'content': f'Portkeeper rejected that definition: {error}\nCorrect the named field while keeping valid parts of the definition. Use forward-slash relative paths; omit optional empty path fields. expected_files and required_members are literal paths, never wildcards. required_members must be a JSON array of at most 50 items; choose 2-10 essential files instead of copying the archive listing. All files are unpacked regardless. expected_files has at most 100 items. strip_prefix removes the ZIP folder; required_members must not repeat it. Match the launcher executable to its final unpacked path. stage_input accepts declared file inputs only, never directories. If the player chooses a game folder on their PC, remove that input, use first_run.mode asks_user and explain how to select it. Do not invent hashes, release assets, tools or operations. Return the corrected JSON object only.'}]
                 continue
             if record:
-                    record({'kind': 'draft', 'attempt': calls, 'messages': copy.deepcopy(messages), 'response': text, 'result': 'accepted', 'seconds': seconds})
+                record({'kind': 'draft', 'attempt': calls, 'messages': copy.deepcopy(messages), 'response': text, 'result': 'accepted', 'structured_output': structured, 'seconds': seconds})
             if test is None or tested >= test_rounds:
                 return result
             last = result
