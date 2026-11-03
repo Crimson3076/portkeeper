@@ -319,6 +319,10 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   [...pkgChoice.parentElement.querySelectorAll('button')].find(n=>n.textContent==='Use this file').click();await tick();await tick();
   assert.equal(pkgProject.input_bindings.game_pkg.path,'ps4/roms/random-base.pkg');
   assert(d.getElementById('project-content').textContent.includes('(needed for the selected base)'),'Older bases make the optional update requirement explicit');
+  for(const [by,label] of [['md5','verified as USA by MD5 (weaker check)'],['sha1','verified as USA by SHA-1'],['sha256','verified as USA by SHA-256']]){
+    Object.assign(pkgProject.input_bindings.game_pkg,{accepted:'USA',verified_by:by});w.pollRefresh();await tick();await tick();
+    const shown=d.getElementById('project-content').textContent;assert(shown.includes(label),'Binding shows '+label);assert.equal(shown.includes('weaker check'),by==='md5','Only MD5 is flagged as weaker');
+  }
   const preference=d.getElementById('draft-game-files-'+id(2));assert(preference.checked);preference.click();await tick();
   assert(d.querySelector(`a[href="/api/projects/${id(2)}/draft-workspace?prepare_game_files=false"]`));
   [...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Copy prompt for my own chat').click();await tick();await tick();
@@ -480,6 +484,17 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   d.getElementById('draft-corrections-'+id(2)).click();
   [...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Draft with Claude default').click();await tick();await tick();assert.equal(requests.at(-1).body.max_calls,3);
   d.getElementById('project-activity-tab').click();await tick();assert(d.querySelector('.job-panel .model-responses'),'Model responses are accessible beside the job logs too');dom.window.close();
+  const failedInvestigation=JSON.parse(JSON.stringify(failedDraft));failedInvestigation.draft_record=null;
+  failedInvestigation.jobs=[{id:id(95),project_id:id(2),kind:'investigation',status:'failed',error:'evidence[0].quote was not found in README.md',investigation_max_calls:1,logs:[],created_at:'2026-10-13T14:00:00Z',finished_at:'2026-10-13T14:01:00Z'}];
+  dom=await create(null,false,failedInvestigation);w=dom.window;d=w.document;
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();d.getElementById('project-advanced-tab').click();await tick();
+  const investigationRetry=()=>[...d.querySelectorAll('.investigation-card button')].find(n=>n.textContent==='Retry with corrections');
+  investigationRetry().click();await tick();await tick();assert(requests.at(-1).endpoint.endsWith('/investigate'));assert.equal(requests.at(-1).body.max_calls,3,'Investigation retry raises the limit to the corrections minimum');
+  const retryLimit=d.getElementById('investigation-limit-'+id(2));retryLimit.value='6';retryLimit.dispatchEvent(new w.Event('change'));
+  investigationRetry().click();await tick();await tick();assert.equal(requests.at(-1).body.max_calls,6,'Investigation retry keeps a higher selected limit');dom.window.close();
+  failedInvestigation.jobs[0].investigation_max_calls=6;dom=await create(null,false,failedInvestigation);w=dom.window;d=w.document;
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();d.getElementById('project-advanced-tab').click();await tick();
+  [...d.querySelectorAll('.investigation-card button')].find(n=>n.textContent==='Retry with corrections').click();await tick();await tick();assert.equal(requests.at(-1).body.max_calls,6,'Investigation retry keeps the saved job limit after a reload');dom.window.close();
   const automatic=JSON.parse(JSON.stringify(fixture));
   automatic.projects=[{id:id(22),name:'Unknown engine',repo:'example/unknown',targets:['linux'],recipe:{mode:'capture'},capture_id:id(77),status:'archived',metadata:{}}];automatic.artifacts=[];automatic.romm={};
   automatic.assistant={provider:'openai',configured:true,drafting_model:'Fixture model'};

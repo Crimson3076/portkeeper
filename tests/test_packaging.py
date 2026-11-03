@@ -287,6 +287,63 @@ class PackagingEngineTests(unittest.TestCase):
         self.assertEqual(review["status"], "needs_review")
         self.assertIn("differs from the reviewed v1 file", review["problems"][0])
 
+    def test_md5_only_accepted_input_validates_and_is_marked_as_weaker(self):
+        value = definition()
+        value["inputs"][0]["accepted"] = [{"label": "USA", "md5": hashlib.md5(ROM, usedforsecurity=False).hexdigest()}]
+        packaging.validate_definition(value)
+        from portkeeper.runner import accepted, digests, hash_strength
+        path = self.root / "rom.z64"
+        path.write_bytes(ROM)
+        digest = digests(path)
+        entry = accepted(value["inputs"][0], digest)
+        self.assertEqual(entry["label"], "USA");self.assertEqual(hash_strength(entry, digest), "md5")
+        value["inputs"][0]["accepted"] = [{"label": "USA", "md5": "A" * 32}]
+        with self.assertRaisesRegex(Invalid, r"inputs\[0\]\.accepted\[0\]"):
+            packaging.validate_definition(value)
+
+    def test_input_hashes_keep_the_matched_md5_identity(self):
+        from portkeeper.engine import Engine
+        project = {"input_bindings": {"rom": {"sha1": "a" * 40, "md5": "b" * 32, "verified_by": "md5"}, "other": {"sha1": "c" * 40, "verified_by": "sha1"}}}
+        self.assertEqual(Engine.input_hashes(None, project), {"rom": "b" * 32, "other": "c" * 40})
+
+    def test_md5_release_source_checks_before_and_after_binding(self):
+        md5 = hashlib.md5(ROM, usedforsecurity=False).hexdigest()
+        value = definition()
+        value["inputs"][0]["accepted"] = [{"label": "USA", "md5": md5}]
+        self.github.publish(1, hashes=[md5])
+        for selection in ({"input": "rom"},
+                          {"input": "rom", "path": "n64/roms/Example (USA).v64"}):
+            with self.subTest(selection=selection):
+                project = self.check(self.project(packaging=value))
+                self.assertFalse(project.get("input_bindings"))
+                capture = self.engine.store.get("captures", project["capture_id"])
+                self.assertEqual(capture["review"]["status"], "compatible", capture["review"])
+
+                self.engine.bind_input(project["id"], selection)
+                project = self.engine.store.get("projects", project["id"])
+                self.assertEqual(project["input_bindings"]["rom"]["verified_by"], "md5")
+                review = packaging.evaluate_release(value, capture, self.engine.input_hashes(project))
+                self.assertEqual(review["status"], "compatible", review)
+
+                # Change only the documentation in the same preserved release.
+                source = Path(capture["root"]) / capture["source"]["file"]
+                source.write_bytes(archive_bytes({"port/docs/hashes.json": json.dumps(["0" * 32])}))
+                for identities in (None, self.engine.input_hashes(project)):
+                    review = packaging.evaluate_release(value, capture, identities)
+                    self.assertEqual(review["status"], "needs_review", review)
+                    self.assertEqual(review["problems"], [
+                        "Upstream still lists the ROM: docs/hashes.json no longer lists the accepted input hash"])
+
+    def test_sha256_is_preferred_when_present(self):
+        from portkeeper.runner import accepted, digests, hash_strength
+        path = self.root / "rom.z64"
+        path.write_bytes(ROM)
+        digest = digests(path)
+        entry = {"label": "USA", "md5": digest["md5"], "sha1": digest["sha1"], "sha256": digest["sha256"]}
+        self.assertEqual(hash_strength(entry, digest), "sha256")
+        self.assertEqual(hash_strength({"label": "x", "sha1": digest["sha1"]}, digest), "sha1")
+        self.assertIsNone(accepted({"accepted": [{"label": "x", "md5": "0" * 32}]}, digest))
+
     def test_mismatched_inputs_are_never_packaged(self):
         (self.root / "inputs/n64/roms/Example (USA).v64").unlink()
         project = self.check(self.project())

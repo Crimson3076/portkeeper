@@ -304,7 +304,7 @@ def check_plan(plan, project, capture, reader):
         matched = bool(node and ' '.join(ref['quote'].split()) in ' '.join(node['text'].split()))
         evidence.append({**ref, 'matched': matched, 'path': node['source'] if node else None})
         if not matched:
-            problems.append('Evidence quote could not be matched: ' + ref['source'])
+            problems.append(f"evidence[{len(evidence) - 1}].quote could not be matched in source {ref['source']}; quote the supplied text exactly")
     supported = set(packaging.OPERATIONS) | set(packaging.TOOLS)
     for step in steps:
         if not isinstance(step, dict) or not isinstance(step.get('capability'), str) or not isinstance(step.get('purpose'), str) or len(step['purpose']) > 1500:
@@ -364,6 +364,16 @@ def check_plan(plan, project, capture, reader):
             'can_draft': plan['outcome'] == 'ready' and not problems, 'gameplay_test': 'not_run'}
 
 
+EXPECTED = ('Expected shape: {"action": "plan", "payload_json": "<JSON-encoded plan object>"} or '
+            '{"action": "request_evidence", "payload_json": "<JSON-encoded array of 1–3 requests>"}')
+
+
+def describe(error, config, index, max_calls):
+    """Say which model produced a rejected reply, on which attempt, and what shape was expected."""
+    who = ' via '.join(str(config[key]) for key in ('drafting_model', 'provider') if config.get(key)) or 'the configured model'
+    return f'Invalid investigation response from {who} (attempt {index + 1} of {max_calls}): {error}. {EXPECTED}'
+
+
 def run(engine, project, capture, context, config, max_calls, log, remember, instruction=''):
     reader = Evidence(engine, project, capture, context)
     feedback = ''
@@ -394,6 +404,8 @@ def run(engine, project, capture, context, config, max_calls, log, remember, ins
             action, body = read_response(response)
             if action == 'plan':
                 result = check_plan(body, project, capture, reader)
+                if index < max_calls - 1 and result['capability_problems'] and (body.get('outcome') == 'ready' or not all(item['matched'] for item in result['evidence'])):
+                    raise Invalid('The plan failed validation: ' + '; '.join(result['capability_problems'][:6]))
                 event['result'] = result['outcome'];remember(event)
                 return result, reader.nodes, context
             if action != 'request_evidence' or not isinstance(body, list) or not 1 <= len(body) <= 3:
@@ -413,7 +425,7 @@ def run(engine, project, capture, context, config, max_calls, log, remember, ins
             feedback = json.dumps({'requested_evidence': results})
             event.update(result='evidence_requested', evidence_results=results);remember(event)
         except (Invalid, ValueError, TypeError, KeyError) as error:
-            feedback = 'Invalid investigation response: ' + str(error)
+            feedback = describe(error, config, index, max_calls)
             event.update(result='rejected', error=str(error));remember(event)
             log(feedback)
     return {'outcome': 'needs_evidence', 'summary': feedback or 'Investigation did not establish a supported workflow within the selected call budget.',

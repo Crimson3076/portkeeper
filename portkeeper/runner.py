@@ -35,21 +35,23 @@ COMPAT_SSL = os.environ.get("PORTKEEPER_COMPAT_SSL_DIR", "/opt/portkeeper/compat
 
 
 def digests(path, normalize=None):
-    """SHA-1 and SHA-256 of a file, optionally after N64 byte-order normalization."""
-    # SHA-1 only matches published dump checksums; integrity decisions also use SHA-256.
-    sha1, sha256 = hashlib.sha1(usedforsecurity=False), hashlib.sha256()
+    """MD5, SHA-1 and SHA-256 of a file, optionally after N64 byte-order normalization."""
+    # MD5 and SHA-1 only match published dump checksums; integrity decisions prefer SHA-256.
+    md5, sha1, sha256 = hashlib.md5(usedforsecurity=False), hashlib.sha1(usedforsecurity=False), hashlib.sha256()
     if normalize == "n64_big_endian":
         data = normalize_n64(Path(path).read_bytes())
+        md5.update(data)
         sha1.update(data)
         sha256.update(data)
-        return {"sha1": sha1.hexdigest(), "sha256": sha256.hexdigest(), "size": len(data)}
+        return {"md5": md5.hexdigest(), "sha1": sha1.hexdigest(), "sha256": sha256.hexdigest(), "size": len(data)}
     size = 0
     with open(path, "rb") as stream:
         for chunk in iter(lambda: stream.read(CHUNK), b""):
+            md5.update(chunk)
             sha1.update(chunk)
             sha256.update(chunk)
             size += len(chunk)
-    return {"sha1": sha1.hexdigest(), "sha256": sha256.hexdigest(), "size": size}
+    return {"md5": md5.hexdigest(), "sha1": sha1.hexdigest(), "sha256": sha256.hexdigest(), "size": size}
 
 
 def normalize_n64(data):
@@ -67,10 +69,10 @@ def normalize_n64(data):
 
 
 def digest_bytes(data, normalize=None):
-    """SHA-1 and SHA-256 of in-memory data, matching digests() for the same bytes."""
+    """MD5, SHA-1 and SHA-256 of in-memory data, matching digests() for the same bytes."""
     if normalize == "n64_big_endian":
         data = normalize_n64(data)
-    return {"sha1": hashlib.sha1(data, usedforsecurity=False).hexdigest(), "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+    return {"md5": hashlib.md5(data, usedforsecurity=False).hexdigest(), "sha1": hashlib.sha1(data, usedforsecurity=False).hexdigest(), "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
 
 
 def zip_members(path, limit):
@@ -108,8 +110,16 @@ def accepted_label(item, path, member):
 
 def accepted(item, digest):
     for entry in item.get("accepted", []):
-        if entry.get("sha1") == digest["sha1"] or entry.get("sha256") == digest["sha256"]:
+        if entry.get("sha1") == digest["sha1"] or entry.get("sha256") == digest["sha256"] or entry.get("md5") == digest["md5"]:
             return entry
+    return None
+
+
+def hash_strength(entry, digest):
+    """Strongest hash type that this accepted entry matched; sha256 is preferred over sha1 over md5."""
+    for key in ("sha256", "sha1", "md5"):
+        if entry.get(key) and entry[key] == digest[key]:
+            return key
     return None
 
 
@@ -431,7 +441,7 @@ class OperationRunner:
                         current = self.engine.store.get("projects", ctx.project["id"])
                         bindings = dict(current.get("input_bindings") or {})
                         if bindings.get(input_id, {}).get("path") == binding["path"]:
-                            bindings[input_id] = {**bindings[input_id], "sha1": digest["sha1"], "accepted": match["label"], "verified_at": now()}
+                            bindings[input_id] = {**bindings[input_id], "sha1": digest["sha1"], "md5": digest["md5"], "accepted": match["label"], "verified_by": hash_strength(match, digest), "verified_at": now()}
                             self.engine.store.update("projects", ctx.project["id"], input_bindings=bindings)
             else:
                 stat_result = path.stat()

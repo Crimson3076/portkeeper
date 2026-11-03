@@ -135,6 +135,14 @@ class DraftingTests(unittest.TestCase):
             drafting.check_preparation_choice(prepared, context)
         self.assertIn('Keep game files external', drafting.prompt_parts(context, packaging.bundled())[1])
 
+    def test_md5_inputs_must_appear_in_the_supplied_material(self):
+        real, invented = 'a' * 32, 'b' * 32
+        definition = {'inputs': [{'id': 'rom', 'accepted': [{'label': 'USA', 'md5': real}]}]}
+        material = json.dumps({'readme': f'ROM MD5: {real.upper()}'})
+        self.assertEqual(drafting.unsupported_hashes(definition, material), [])
+        definition['inputs'][0]['accepted'][0]['md5'] = invented
+        self.assertEqual(drafting.unsupported_hashes(definition, material), [invented])
+
     def test_ambiguous_ps4_titles_do_not_generate_guessed_preparation(self):
         context = {'material': {'readme': f'CUSA12345 or CUSA54321, version 01.07. eboot.bin SHA256: {"a" * 64}'}}
         guidance = drafting.preparation_guidance(context, packaging.bundled())

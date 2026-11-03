@@ -344,8 +344,14 @@ class Engine:
         return result[:30]
 
     def input_hashes(self, project):
-        return {key: value.get("sha1") or value.get("sha256") for key, value in (project.get("input_bindings") or {}).items()
-                if isinstance(value, dict) and (value.get("sha1") or value.get("sha256"))}
+        # Keep the identity of the algorithm the file was matched with (an MD5-only upstream doc lists no SHA-1).
+        result = {}
+        for key, value in (project.get("input_bindings") or {}).items():
+            if isinstance(value, dict):
+                identity = (value.get(value.get("verified_by") or "") if value.get("verified_by") in ("sha256", "sha1", "md5") else None) or value.get("sha1") or value.get("sha256")
+                if identity:
+                    result[key] = identity
+        return result
 
     def templates(self):
         return {"recipes": [
@@ -499,7 +505,7 @@ class Engine:
             raise Invalid("Game file selections must be an object")
         declared = {item["id"] for item in (definition or {}).get("inputs", [])}
         for key, value in bindings.items():
-            if key not in declared or not isinstance(value, dict) or value.get("source") not in ("inputs", "prepared") or set(value) - {"source", "path", "sha1", "sha256", "accepted", "verified_at", "ps4", "member"}:
+            if key not in declared or not isinstance(value, dict) or value.get("source") not in ("inputs", "prepared") or set(value) - {"source", "path", "sha1", "sha256", "md5", "accepted", "verified_by", "verified_at", "ps4", "member"}:
                 raise Invalid("Game file selections must name a declared input, its source and a relative path")
             if "member" in value and (not isinstance(value["member"], str) or not 0 < len(value["member"]) <= 500):
                 raise Invalid("Game file selections must name a declared input, its source and a relative path")
@@ -667,7 +673,7 @@ class Engine:
                         raise Invalid('Prepared game folder cannot be used: ' + problem)
                     binding.update(accepted=verified['title_id'] + ' ' + verified['app_version'], verified_at=now())
             if item["kind"] == "file" and item.get("verify", "hash") == "hash":
-                from .runner import accepted, digests
+                from .runner import accepted, digests, hash_strength
                 if member:
                     from . import packaging
                     from .runner import digest_bytes, read_zip_member
@@ -680,7 +686,7 @@ class Engine:
                 match = accepted(item, digest)
                 if not match:
                     raise Invalid(f"This file is not an accepted revision (SHA-1 {digest['sha1']})")
-                binding.update(sha1=digest["sha1"], accepted=match["label"], verified_at=now())
+                binding.update(sha1=digest["sha1"], md5=digest["md5"], accepted=match["label"], verified_by=hash_strength(match, digest), verified_at=now())
             bindings[input_id] = binding
             return self.update_project(project_id, {"input_bindings": bindings})
         found = self.packager.locate(project, definition, input_id)
