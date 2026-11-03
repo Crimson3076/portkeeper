@@ -25,6 +25,8 @@ IMAGE_HOSTS = HOSTS | {'recompstore.com', 'www.recompstore.com'}
 USER_AGENT = 'Portkeeper/0.1 (+https://github.com/Crimson3076/portkeeper; Recomp catalog reader)'
 MAX_BYTES = 8 * 1024 * 1024
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_IMAGE_CACHE = 256 * 1024 * 1024
+MAX_IMAGE_FETCHES = 4
 MAX_APPS = 5000
 REFRESH_SECONDS = 86400
 RETRY_SECONDS = 3600
@@ -258,6 +260,8 @@ class Discovery:
         self.lock = threading.RLock()
         self.thread = None
         self._loaded = None
+        self._fetching = threading.BoundedSemaphore(MAX_IMAGE_FETCHES)
+        self._image_locks = {}
         # Credential-free client, separate from the artifact download allowlist.
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), SiteRedirect())
 
@@ -385,6 +389,9 @@ class Discovery:
             with self.lock:
                 if status == 304:
                     record = self._read('recomp-catalog.json')
+                    # The saved copy may have vanished since it was loaded; never overwrite it with an empty record.
+                    if not isinstance(record.get('apps'), list) or not record['apps']:
+                        raise Invalid('The saved Recomp catalog is missing')
                     record['fetched_at'] = now()
                     self._write('recomp-catalog.json', record)
                 else:
@@ -498,23 +505,61 @@ class Discovery:
         folder = self.root / 'images'
         key = hashlib.sha256(url.encode()).hexdigest()[:40]
         data_path, meta_path = folder / (key + '.img'), folder / (key + '.json')
-        try:
-            if not data_path.is_symlink() and not meta_path.is_symlink():
-                content_type = json.loads(meta_path.read_text(encoding='utf-8')).get('content_type')
-                if content_type in IMAGE_TYPES and data_path.stat().st_size <= MAX_IMAGE_BYTES:
-                    return content_type, data_path.read_bytes()
-        except (OSError, ValueError, AttributeError):
-            pass
-        _, headers, body = self.fetch(url, accept='image/*', limit=MAX_IMAGE_BYTES)
-        if not body:
-            raise Invalid('The catalog artwork was empty')
-        folder.mkdir(parents=True, exist_ok=True)
         with self.lock:
-            part = data_path.with_suffix('.part')
-            part.write_bytes(body)
-            os.replace(part, data_path)
-            self._write_image_meta(meta_path, headers['content_type'])
+            guard = self._image_locks.setdefault(key, threading.Lock())
+        with guard:  # concurrent requests for one image download it once
+            try:
+                if not data_path.is_symlink() and not meta_path.is_symlink():
+                    content_type = json.loads(meta_path.read_text(encoding='utf-8')).get('content_type')
+                    if content_type in IMAGE_TYPES and data_path.stat().st_size <= MAX_IMAGE_BYTES:
+                        return content_type, data_path.read_bytes()
+            except (OSError, ValueError, AttributeError):
+                pass
+            with self._fetching:  # bound parallel upstream fetches
+                _, headers, body = self.fetch(url, accept='image/*', limit=MAX_IMAGE_BYTES)
+            if not body:
+                raise Invalid('The catalog artwork was empty')
+            folder.mkdir(parents=True, exist_ok=True)
+            with self.lock:
+                part = data_path.with_suffix('.part')
+                part.write_bytes(body)
+                os.replace(part, data_path)
+                self._write_image_meta(meta_path, headers['content_type'])
+                self._prune_images(folder)
         return headers['content_type'], body
+
+    def _prune_images(self, folder):
+        """Drop artwork no longer in the catalog, then evict oldest files beyond the total size cap."""
+        live = {hashlib.sha256(u.encode()).hexdigest()[:40] for a in self._catalog()['apps'] for u in a['images'].values()}
+        files = []
+        try:
+            for path in folder.iterdir():
+                if path.suffix != '.img':
+                    continue
+                try:
+                    info = path.stat()
+                except OSError:
+                    continue
+                if path.stem not in live:
+                    self._drop_image(path)
+                else:
+                    files.append((info.st_mtime, info.st_size, path))
+        except OSError:
+            return
+        total = sum(size for _, size, _ in files)
+        for _, size, path in sorted(files, key=lambda f: f[0]):
+            if total <= MAX_IMAGE_CACHE:
+                break
+            self._drop_image(path)
+            total -= size
+
+    @staticmethod
+    def _drop_image(path):
+        for victim in (path, path.with_suffix('.json')):
+            try:
+                victim.unlink()
+            except OSError:
+                pass
 
     @staticmethod
     def _write_image_meta(path, content_type):

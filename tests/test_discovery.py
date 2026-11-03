@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 import urllib.error
@@ -264,6 +265,58 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(self.discovery.image('soh', 'cover')[1], PNG)  # cached copy survives a site outage
             with self.assertRaises(Invalid):
                 self.discovery.image('sm64', 'cover')
+
+    def test_304_with_a_missing_saved_catalog_does_not_write_an_empty_one(self):
+        self.load()
+        self.discovery._write('recomp-catalog-status.json', {})
+        path = self.discovery.root / 'recomp-catalog.json'
+        orig = self.discovery._catalog()
+
+        def vanish(*args, **kwargs):
+            path.unlink()
+            return 304, {}, b''
+        with patch.object(self.discovery, '_catalog', return_value=orig):
+            self.refresh(side_effect=vanish)
+        self.assertFalse(path.exists())
+        self.assertIn('last saved copy', self.discovery.status()['error'])
+
+    def test_image_cache_prunes_stale_and_oversized_entries(self):
+        import time
+        from portkeeper import discovery as module
+        self.load()
+        folder = self.discovery.root / 'images'
+        folder.mkdir(parents=True)
+        stale = folder / ('0' * 40 + '.img')
+        stale.write_bytes(b'x')
+        stale.with_suffix('.json').write_text('{}')
+        with patch.object(self.discovery, 'fetch', return_value=(200, {'content_type': 'image/png'}, PNG)):
+            self.discovery.image('soh', 'cover')
+            self.assertFalse(stale.exists())
+            self.assertFalse(stale.with_suffix('.json').exists())
+            old = next(folder.glob('*.img'))
+            os.utime(old, (time.time() - 100, time.time() - 100))
+            with patch.object(module, 'MAX_IMAGE_CACHE', len(PNG) + 1):
+                self.discovery.image('sm64', 'cover')
+        self.assertEqual(len(list(folder.glob('*.img'))), 1)
+        self.assertFalse(old.exists())
+
+    def test_concurrent_requests_for_one_image_download_it_once(self):
+        import threading
+        import time
+        self.load()
+        calls = []
+
+        def slow(*args, **kwargs):
+            calls.append(1)
+            time.sleep(0.2)
+            return 200, {'content_type': 'image/png'}, PNG
+        with patch.object(self.discovery, 'fetch', side_effect=slow):
+            threads = [threading.Thread(target=self.discovery.image, args=('soh', 'cover')) for _ in range(5)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        self.assertEqual(len(calls), 1)
 
     def test_romm_ownership_is_best_effort_and_selects_nothing(self):
         self.load()
