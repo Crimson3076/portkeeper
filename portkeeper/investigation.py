@@ -9,6 +9,7 @@ import json
 import re
 import stat
 import tarfile
+import time
 import zipfile
 
 from . import drafting, packaging, ps4
@@ -385,11 +386,13 @@ def run(engine, project, capture, context, config, max_calls, log, remember, ins
         if len(SYSTEM) + len(json.dumps(payload)) > 24000:
             raise Invalid('Investigation metadata exceeds the bounded prompt limit')
         log(f'Investigating with {config["drafting_model"]} (request {index + 1} of {max_calls})')
+        started = time.monotonic()
         response = engine.assistant.chat(SYSTEM, [{'role': 'user', 'content': json.dumps(payload).replace('<', '\\u003c')}], config=config, response_schema=SCHEMA, structured_schema=LOCAL_SCHEMA)
+        seconds = round(time.monotonic() - started, 1)
         structured = engine.assistant.structured_output()
         if structured is False:
             log('Structured output is off for this endpoint; relying on prompt-only JSON and local validation')
-        event = {'kind': 'investigation', 'attempt': index + 1, 'response': response, 'result': 'received', 'request': payload, 'structured_output': structured}
+        event = {'kind': 'investigation', 'attempt': index + 1, 'response': response, 'result': 'received', 'request': payload, 'structured_output': structured, 'seconds': seconds}
         try:
             action, body = read_response(response)
             if action == 'plan':

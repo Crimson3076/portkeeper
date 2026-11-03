@@ -306,6 +306,8 @@ class Handler(BaseHTTPRequestHandler):
                 data = (json.dumps(self.engine.draft_record(path.split('/')[3]), indent=2) + '\n').encode()
                 self.respond_headers(200, 'application/json', len(data), 'attachment; filename="portkeeper-drafting-record.json"')
                 self.wfile.write(data)
+            elif re.fullmatch(r"/api/jobs/[a-f0-9]{32}/research-trail", path) and method == "GET":
+                self.json(200, self.engine.research_trail(path.split("/")[3]))
             elif re.fullmatch(r"/api/artifacts/[a-f0-9]{32}/pin", path) and method == "POST":
                 self.json(200, self.engine.lifecycle.pin(path.split("/")[3], self.body().get("pinned", True)))
             elif re.fullmatch(r"/api/artifacts/[a-f0-9]{32}/validation", path) and method == "POST":

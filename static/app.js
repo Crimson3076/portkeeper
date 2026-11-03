@@ -33,6 +33,8 @@ const draftModelReviews = new Map();
 const gameFileChoices = new Map(), gameFileChoiceLoading = new Set(), draftGameFileChoices = new Map(), inputChoiceDrafts = new Map();
 const draftCorrectionLimits = new Map();
 const modelResponses = new Map(), modelResponsesLoading = new Set();
+const researchTrails = new Map(), researchTrailsLoading = new Set();
+let trailDialogJobId = null;
 const investigationLimits = new Map(), investigationInputs = new Map();
 const automaticSetupDrafts = new Map(), scriptRecipeDrafts = new Map(), automaticRecords = new Map();
 const automaticReplies = new Map();
@@ -877,7 +879,7 @@ function unifiedActivity() {
     const outcome = checkOutcome(job);
     const message = job.error || job.message || (outcome === "unchanged" ? `No new release or download changes were found${job.version ? `; latest is ${job.version}` : ""}.` : job.target === "capture" ? "Upstream release and update check" : "Portable build");
     const category = activityCategory(job);
-    const title = { checks: "Update check", drafts: "Model draft", uploads: "Upload to RomM", builds: "Build" }[category];
+    const title = category === "drafts" ? runTitle(job) : { checks: "Update check", uploads: "Upload to RomM", builds: "Build" }[category] || "Build";
     const fallback = { drafts: "Packaging instructions draft", uploads: "Package upload to RomM" }[category];
     events.push({...job, kind: "build", activity_type: category, capture_check: captureCheck(job), check_outcome: outcome, message: job.error || job.message || fallback || message, title, result: job.status});
   });
@@ -2164,7 +2166,7 @@ function nextStepCard(project) {
   const working = busy.has(`setup-${project.id}`);
   if (active?.status === "waiting_user") { heading = "Setup needs your answer"; note = active.user_request?.question || "Answer the pending question to continue the same setup."; action = button("Answer & continue", "button primary small", () => navigateProject(project.id, "advanced")); }
   else if (active) { heading = "Working on it"; note = ""; progress = inlineProgress(`${String(jobStage(active)).replaceAll("_", " ")}…`, localizeTimestamps([...(active.logs || [])].reverse().find(Boolean))); action = button("View full log", "button secondary small", () => navigateProject(project.id, "activity", active.id)); }
-  else if (projectJobs(project.id)[0]?.status === "failed") { heading = "A build needs your attention"; note = projectJobs(project.id)[0].error || "Review the failed step and retry when the cause is resolved."; action = button("View failure & logs", "button primary small", () => navigateProject(project.id, "activity", projectJobs(project.id)[0].id)); }
+  else if (projectJobs(project.id)[0]?.status === "failed") { heading = "A build needs your attention"; note = projectJobs(project.id)[0].error || "Review the failed step and retry when the cause is resolved."; const failed = projectJobs(project.id)[0]; action = [button("View failure & logs", "button primary small", () => navigateProject(project.id, "activity", failed.id))]; if (failed.draft_record_available) action.push(button("View research trail", "button secondary small", () => openResearchTrail(failed.id))); }
   else if (missingGameFiles(project).length && runner === "operations") { heading = "Choose your game files"; note = "Select the required files before building packages."; action = button("Choose game files", "button primary small", () => navigateProject(project.id, "advanced")); }
   else if (proposal) { heading = "Review the drafted packaging steps"; note = "Approve these steps before they replace your saved instructions. Optional test builds use a temporary workspace."; action = button("Review draft", "button primary small", () => openDraftReview(project.id)); }
   else if (investigation && !packages.length) { heading = investigation.plan.can_draft ? "Review the packaging plan" : "Review the investigation result"; note = investigation.plan.summary; action = button("Review investigation", "button primary small", () => openPlanReview(project.id, "investigation")); }
@@ -2507,6 +2509,7 @@ function renderProposalReview(card, project, proposal, actionsHost = null) {
   } else card.append(el("p", "quiet-note", "No fresh model review was recorded for this draft. Inspect the instructions yourself before approving."));
   if (proposal.starter) card.append(disclosure(`starter:${proposal.id}`, "diagnostics-list", [el("summary", "table-action", "View starter JSON and unresolved choices"), jsonViewer(`starter:${proposal.id}`, proposal.starter, "proposal-json")]));
   if (proposal.draft_job_id && state.jobs.some(job => job.id === proposal.draft_job_id && job.draft_record_available)) card.append(draftingRecordLink(proposal.draft_job_id));
+  if (proposal.draft_job_id) card.append(researchTrailSection(proposal.draft_job_id));
   card.append(disclosure(`draft-definition:${proposal.id}`, "diagnostics-list", [el("summary", "table-action", "View definition JSON"), jsonViewer(`proposal:${proposal.id}`, definition, "proposal-json")]));
   (actionsHost || card).append(el("div", "inline-actions", [button(busy.has(`approve-${proposal.id}`) ? "Approving…" : "Approve", "button primary small", () => approveDraft(proposal, project), busy.has(`approve-${proposal.id}`)), button("Discard", "button secondary small", () => runAction(`discard-${proposal.id}`, `/api/proposals/${encodeURIComponent(proposal.id)}/discard`, {}, "Draft discarded."))]));
   card.append(el("p", "quiet-note", "After approving, Build packages creates a downloadable package. Failed builds leave existing packages in place."));
@@ -2537,6 +2540,7 @@ function renderInvestigationResult(node, project, report, actionsHost = null) {
   if (plan.steps?.length) node.append(el("ol", "instruction-steps", plan.steps.map(step => el("li", "", step.purpose + " (" + step.capability + ")"))));
   [...(plan.capability_problems || []), ...(plan.uncertainties || [])].forEach(problem => node.append(el("p", "review-notes", problem)));
   if (plan.evidence?.length) node.append(disclosure(`plan-evidence:${report.id}`, "diagnostics-list", [el("summary", "table-action", "View plan evidence"), ...plan.evidence.map(ref => el("p", "quiet-note", `${ref.matched ? "Quote found" : "Quote unconfirmed"} · ${ref.path || ref.source}: “${ref.quote}” — ${ref.supports}`))]));
+  if (report.job_id) node.append(researchTrailSection(report.job_id));
   node.append(disclosure(`plan:${report.id}`, "diagnostics-list", [el("summary", "table-action", "View investigation JSON"), jsonViewer(`plan:${report.id}`, plan)]));
   if (plan.can_draft) {
     const consent = input(`investigation-inputs-${id}`, "checkbox");consent.checked = investigationInputs.get(id) ?? false;
@@ -2576,6 +2580,51 @@ function retryDraftWithCorrections(id, report) {
   const body = {instruction:(assistantPromptDrafts.get(id) || "").trim(), prepare_game_files:prepareDraftGameFiles(id), review_model:draftModelReviews.get(id) ?? false, max_calls:3};
   if (report) { body.investigation_id = report.id; body.test_inputs = investigationInputs.get(id) ?? false; }
   return runAction(`draft-${id}`, `/api/projects/${encodeURIComponent(id)}/draft`, body, "Retrying the draft with automatic corrections.");
+}
+const trailTagLabels = { verified: "Verified", inferred: "Inferred", unverified: "Unverified" };
+const trailTagHelp = { verified: "Matched evidence backs this.", inferred: "Model reasoning with no matched evidence.", unverified: "The model flagged this, or it was not established." };
+function runTitle(job) {
+  if (!job.run_model) return job.kind === "investigation" ? "Investigation" : "Model draft"; // runs recorded before titles existed
+  const model = job.run_model, time = job.created_at ? localTime(job.created_at) : "";
+  const outcome = jobActive(job) ? "running" : job.status === "failed" ? "failed" + (job.error ? ": " + String(job.error).replace(/^The model could not produce a valid definition:\s*/, "").split(/[.\n]/)[0].slice(0, 80) : "")
+    : job.kind === "investigation" ? ({ ready: "plan ready", unsupported: "runner cannot package this", needs_evidence: "needs more evidence" }[job.outcome] || "finished") : "ready for review";
+  if (job.kind === "investigation") return ["Investigation", model, time, outcome].filter(Boolean).join(", ");
+  const attempt = job.attempts_used ? `Draft attempt ${job.attempts_used}${job.draft_max_calls > 1 ? ` of ${job.draft_max_calls}` : ""}` : "Draft";
+  return [attempt, model, time].filter(Boolean).join(", ") + ", " + outcome;
+}
+function loadResearchTrail(jobId) {
+  if (researchTrails.has(jobId) || researchTrailsLoading.has(jobId)) return;
+  researchTrailsLoading.add(jobId);
+  api(`/api/jobs/${encodeURIComponent(jobId)}/research-trail`).then(trail => researchTrails.set(jobId, trail)).catch(error => researchTrails.set(jobId, { error: error.message })).finally(() => { researchTrailsLoading.delete(jobId); lastRender = null; render(); if ($("research-trail-dialog").open) renderTrailDialog(); });
+}
+function researchTrailBody(jobId) {
+  loadResearchTrail(jobId);
+  const trail = researchTrails.get(jobId), node = el("div", "research-trail");
+  if (!trail) return node.append(el("p", "field-help", "Loading the research trail…")), node;
+  if (trail.error) return node.append(el("p", "project-error", trail.error)), node;
+  const who = [trail.provider, trail.model].filter(Boolean).join(" · ");
+  node.append(el("p", "field-help", `${trail.kind === "investigation" ? "Investigation" : "Draft"}${who ? " by " + who : ""} · ${trail.status || "unknown"}${trail.corrections ? ` · ${trail.corrections} correction${trail.corrections === 1 ? "" : "s"}` : ""}`));
+  if (trail.failure) node.append(el("p", "project-error", localizeTimestamps(trail.failure)));
+  if (trail.steps.length) node.append(el("ol", "instruction-steps trail-steps", trail.steps.map(step => {
+    const parts = [step.label];
+    if (step.type === "model_request") parts.push([step.provider, step.model, step.attempt ? `attempt ${step.attempt}` : "", step.seconds != null ? `${step.seconds}s` : "", step.result].filter(Boolean).join(" · "));
+    if (step.detail) parts.push(step.detail);
+    return el("li", `trail-step trail-${step.type}`, parts.filter(Boolean).join(" — "));
+  })));
+  else node.append(el("p", "field-help", "No steps were recorded for this run."));
+  if (trail.claims.length) node.append(el("h4", "", "Where each claim came from"), el("ul", "trail-claims", trail.claims.map(claim => el("li", `trail-claim trail-${claim.tag}`, [
+    el("span", `trail-tag trail-tag-${claim.tag}`, trailTagLabels[claim.tag]), " ", el("strong", "", claim.claim + ": "), String(claim.value ?? "Not established"), el("span", "field-help", ` — ${claim.source}${claim.detail ? ` · “${claim.detail}”` : ""} (${trailTagHelp[claim.tag]})`)]))));
+  return node;
+}
+function researchTrailSection(jobId) {
+  return disclosure(`research-trail:${jobId}`, "diagnostics-list", [el("summary", "table-action", "How this was researched"), researchTrailBody(jobId)]);
+}
+function openResearchTrail(jobId) { trailDialogJobId = jobId; renderTrailDialog(); if (!$("research-trail-dialog").open) $("research-trail-dialog").showModal(); }
+function renderTrailDialog() {
+  const body = $("research-trail-body"); body.replaceChildren();
+  const job = state.jobs.find(item => item.id === trailDialogJobId);
+  $("research-trail-heading").textContent = job ? runTitle(job) : "Research trail";
+  if (trailDialogJobId) body.append(researchTrailBody(trailDialogJobId), draftingRecordLink(trailDialogJobId));
 }
 function draftingRecordLink(jobId) {
   const node = el("div", "model-responses");
