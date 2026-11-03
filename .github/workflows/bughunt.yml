@@ -44,6 +44,7 @@ jobs:
                command/test, expected vs actual, the file/line involved and why it's a bug.
                Never put a secret value in an issue or the job log, even partially (titles, bodies, reproduction steps and
                commands included); cite the file and line only.
+               For security findings, give only the file, line and kind of problem: no payloads, exploit steps or proof-of-concept code.
             5. If you find nothing solid, create no issues. Finish with a short summary in the job log.
           claude_args: |
             --max-turns 40
