@@ -329,6 +329,9 @@ class Handler(BaseHTTPRequestHandler):
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/recipe-proposal", path) and method == "POST":
                 payload = self.body()
                 self.json(201, self.engine.recipe_proposal(path.split("/")[3], payload.get("instruction", "")))
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/release-reviews/[a-f0-9]{32}/dismiss", path) and method == "POST":
+                self.body()
+                self.json(200, self.engine.dismiss_review(path.split("/")[3], path.split("/")[5]))
             elif re.fullmatch(r"/api/proposals/[a-f0-9]{32}/apply", path) and method == "POST":
                 self.body()
                 self.json(200, self.engine.apply_proposal(path.split("/")[3]))
