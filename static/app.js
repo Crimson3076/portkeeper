@@ -2571,7 +2571,7 @@ function investigateProject(id) {
   return runAction(`investigate-${id}`, `/api/projects/${encodeURIComponent(id)}/investigate`, {instruction:(assistantPromptDrafts.get(id) || "").trim(), max_calls:investigationLimits.get(id) ?? projectJobs(id).find(job => job.kind === "investigation")?.investigation_max_calls ?? 3, prepare_game_files:prepareDraftGameFiles(id)}, "Investigation started. Review the plan before drafting.");
 }
 function retryInvestigationWithCorrections(id) {
-  const limit = Math.max(3, investigationLimits.get(id) ?? 0);
+  const limit = Math.max(3, investigationLimits.get(id) ?? projectJobs(id).find(job => job.kind === "investigation")?.investigation_max_calls ?? 0);
   return runAction(`investigate-${id}`, `/api/projects/${encodeURIComponent(id)}/investigate`, {instruction:(assistantPromptDrafts.get(id) || "").trim(), max_calls:limit, prepare_game_files:prepareDraftGameFiles(id)}, "Retrying the investigation with automatic corrections.");
 }
 function queueDraftFromPlan(id, report) {
