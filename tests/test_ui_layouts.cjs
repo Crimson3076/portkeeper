@@ -1,3 +1,4 @@
+process.env.TZ = 'America/New_York';
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
@@ -659,6 +660,14 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   d.getElementById('custom-method-handoff').click();d.getElementById('custom-method-handoff').dispatchEvent(new w.Event('change',{bubbles:true}));await tick();
   d.getElementById('custom-add-submit').click();await tick();await tick();await tick();
   assert(w.location.hash.endsWith('/overview'),'After adding a custom game the app lands on Play, not Advanced');
+  dom.window.close();
+  dom=await create();w=dom.window;
+  const raw='Investigating. 2026-11-03T03:03:21.822778+00:00 Reading the release; 2026-11-03T03:04:15Z done';
+  assert.strictEqual(w.portkeeperFormat.localTime('2026-11-03T03:03:21.822778+00:00').replace(/\s/g,' '),'10:03 PM','UTC is shown in the browser local time');
+  const localized=w.portkeeperFormat.localizeTimestamps(raw);
+  assert(!/\d{4}-\d{2}-\d{2}T/.test(localized),'No raw ISO timestamp remains: '+localized);
+  assert(/Investigating\. 10:03.PM Reading the release; 10:04.PM done/.test(localized),localized);
+  assert.strictEqual(w.portkeeperFormat.localizeTimestamps('no time here'),'no time here');
   dom.window.close();
   console.log('UI layouts passed: add a game, next step, drafting settings, default workspace, saved preferences, collection/list switching, grouped platforms, RomM imports, correct counts, game selection, deep links, filters, empty state and blocked storage.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

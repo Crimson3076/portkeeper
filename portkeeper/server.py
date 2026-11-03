@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .engine import Busy
 from .safety import Invalid, checksum
+from .version import version_info
 
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
@@ -97,7 +98,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/mcp":
                 self.mcp(method)
                 return
-            if method == "GET" and path == "/api/state":
+            if method == "GET" and path == "/api/version":
+                self.json(200, version_info())
+            elif method == "GET" and path == "/api/state":
                 self.json(200, self.engine.state())
             elif method == "POST" and path == "/api/maintenance":
                 from .maintenance import manage

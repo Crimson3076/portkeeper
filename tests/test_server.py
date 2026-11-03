@@ -31,6 +31,15 @@ class AllowedHostTests(unittest.TestCase):
 
 
 class HttpIntegrationTests(unittest.TestCase):
+    def test_version_route_reports_running_version_and_commit(self):
+        from portkeeper import __version__
+        status, _, body = self.request('GET', '/api/version')
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {'version': __version__, 'commit': None})
+        with patch.dict('os.environ', {'PORTKEEPER_VERSION': 'v0.3.0', 'PORTKEEPER_COMMIT': 'd226c9f' + '0' * 33 + 'extra'}):
+            status, _, body = self.request('GET', '/api/version')
+        self.assertEqual(json.loads(body), {'version': '0.3.0', 'commit': 'd226c9f' + '0' * 33})
+
     def test_romm_matching_routes_validate_modes_and_return_status(self):
         status, _, body = self.request('POST', '/api/romm/matching', {'mode': '5'})
         self.assertEqual(status, 200)

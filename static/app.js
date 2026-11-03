@@ -173,6 +173,15 @@ function dateLabel(value) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
+const isoTimestamp = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})/g;
+function localTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+function localizeTimestamps(text) {
+  return String(text ?? "").replace(isoTimestamp, localTime);
+}
+window.portkeeperFormat = { localTime, localizeTimestamps };
 function bytes(value) {
   if (!Number.isFinite(Number(value))) return "—";
   let size = Number(value), index = 0;
@@ -607,6 +616,18 @@ function processNotifications() {
     }
   });
 }
+let appVersion = null;
+async function loadVersion() {
+  if (appVersion) return;
+  try {
+    const info = await api("/api/version");
+    if (!info?.version) return;
+    appVersion = info;
+    const label = `v${info.version}${info.commit ? ` (${info.commit.slice(0, 7)})` : ""}`;
+    $("app-version").textContent = label;
+    $("about-version")?.replaceChildren(document.createTextNode(label));
+  } catch (error) { /* the version is informational only */ }
+}
 async function refresh(manual = false) {
   if (manual) { rommImports.clear(); lastRender = null; }
   if (refreshing) return;
@@ -624,6 +645,7 @@ async function refresh(manual = false) {
     $("load-error").hidden = true;
     $("connection").classList.remove("offline"); $("connection").replaceChildren(el("span", "status-dot"), document.createTextNode("Workspace connected"));
     $("last-refresh").textContent = `Synced ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+    loadVersion();
     processNotifications(); render();
     if (manual) toast("Workspace refreshed.");
   } catch (error) {
@@ -891,7 +913,7 @@ function activityEvent(event) {
   const result = event.kind === "test" ? el("span", `validation-label ${event.result === "failed" ? "failed" : event.result === "played" ? "confirmed" : ""}`, testResultLabels[event.result] + (event.environment === "wine_proton" ? " under Wine/Proton" : "")) : event.kind === "import" ? statusBadge("published", "In RomM") : statusBadge(event.capture_check && event.check_outcome === "needs_review" ? "unsupported_version" : event.result, jobResultLabel);
   const header = el("div", "activity-event-heading", [el("h3", "", title), result]);
   const context = event.capture_check ? "Upstream release" : event.activity_type === "drafts" ? "Build instructions" : targetLabels[event.target] || "Game";
-  const body = el("div", "activity-event-body", [header, el("p", "activity-event-game", [project?.name || event.project_name || "Game", " · ", context]), el("p", "field-help", event.notes || event.message || ""), el("span", "activity-event-date", `${event.device ? event.device + " · " : ""}${dateLabel(event.created_at)}`)]);
+  const body = el("div", "activity-event-body", [header, el("p", "activity-event-game", [project?.name || event.project_name || "Game", " · ", context]), el("p", "field-help", localizeTimestamps(event.notes || event.message || "")), el("span", "activity-event-date", `${event.device ? event.device + " · " : ""}${dateLabel(event.created_at)}`)]);
   if (event.package_name) body.append(el("p", "activity-package-name", event.package_name));
   const actions = el("div", "inline-actions", button("Open game", "text-button", () => navigateProject(event.project_id)));
   if (event.kind === "build" && !jobActive(event)) actions.append(button("Clear this entry & log", "text-button", () => maintenance("clear_activity", event.project_id, event.id)));
@@ -1269,7 +1291,7 @@ function renderAdvanced(project, content, openJobs) {
 function renderBuildDiagnostics(project, content, openJobs) {
   const diagnostic = el("section", "detail-card", [el("h2", "", "Build progress & logs"), el("p", "detail-note", "Detailed logs and errors for troubleshooting a game step.")]);
   const jobs = projectJobs(project.id); const logs = el("div", "diagnostics-list");
-  jobs.forEach((job) => { const details = disclosure(`job:${job.id}`, "job-panel"); details.dataset.jobId = job.id; details.open = openJobs.has(String(job.id)) || String(job.id) === String(selectedJobId); details.append(el("summary", "", [targetPill(job.target || "capture"), el("span", "", job.version || "Update check"), statusBadge(jobStage(job)), el("span", "job-date", dateLabel(job.created_at))]), el("pre", "", (Array.isArray(job.logs) ? job.logs.join("\n") : String(job.logs || "Waiting for log output…")) + (job.error ? `\n\nError: ${job.error}` : ""))); if (job.status === "failed") details.append(button("Retry failed step", "button secondary small", () => retryJob(job.id), busy.has(`retry-${job.id}`))); if (["draft","investigation"].includes(job.kind) && job.draft_record_available) details.append(draftingRecordLink(job.id)); logs.append(details); });
+  jobs.forEach((job) => { const details = disclosure(`job:${job.id}`, "job-panel"); details.dataset.jobId = job.id; details.open = openJobs.has(String(job.id)) || String(job.id) === String(selectedJobId); details.append(el("summary", "", [targetPill(job.target || "capture"), el("span", "", job.version || "Update check"), statusBadge(jobStage(job)), el("span", "job-date", dateLabel(job.created_at))]), el("pre", "", localizeTimestamps((Array.isArray(job.logs) ? job.logs.join("\n") : String(job.logs || "Waiting for log output…")) + (job.error ? `\n\nError: ${job.error}` : "")))); if (job.status === "failed") details.append(button("Retry failed step", "button secondary small", () => retryJob(job.id), busy.has(`retry-${job.id}`))); if (["draft","investigation"].includes(job.kind) && job.draft_record_available) details.append(draftingRecordLink(job.id)); logs.append(details); });
   diagnostic.append(jobs.length ? logs : el("p", "detail-empty", "No diagnostics yet.")); content.append(diagnostic);
 
 }
@@ -2141,7 +2163,7 @@ function nextStepCard(project) {
   let heading, note = "", action = null, progress = null;
   const working = busy.has(`setup-${project.id}`);
   if (active?.status === "waiting_user") { heading = "Setup needs your answer"; note = active.user_request?.question || "Answer the pending question to continue the same setup."; action = button("Answer & continue", "button primary small", () => navigateProject(project.id, "advanced")); }
-  else if (active) { heading = "Working on it"; note = ""; progress = inlineProgress(`${String(jobStage(active)).replaceAll("_", " ")}…`, [...(active.logs || [])].reverse().find(Boolean)); action = button("View full log", "button secondary small", () => navigateProject(project.id, "activity", active.id)); }
+  else if (active) { heading = "Working on it"; note = ""; progress = inlineProgress(`${String(jobStage(active)).replaceAll("_", " ")}…`, localizeTimestamps([...(active.logs || [])].reverse().find(Boolean))); action = button("View full log", "button secondary small", () => navigateProject(project.id, "activity", active.id)); }
   else if (projectJobs(project.id)[0]?.status === "failed") { heading = "A build needs your attention"; note = projectJobs(project.id)[0].error || "Review the failed step and retry when the cause is resolved."; action = button("View failure & logs", "button primary small", () => navigateProject(project.id, "activity", projectJobs(project.id)[0].id)); }
   else if (missingGameFiles(project).length && runner === "operations") { heading = "Choose your game files"; note = "Select the required files before building packages."; action = button("Choose game files", "button primary small", () => navigateProject(project.id, "advanced")); }
   else if (proposal) { heading = "Review the drafted packaging steps"; note = "Approve these steps before they replace your saved instructions. Optional test builds use a temporary workspace."; action = button("Review draft", "button primary small", () => openDraftReview(project.id)); }
@@ -2353,7 +2375,7 @@ function automaticSetupCard(project) {
   selection.append(overrides);
   card.append(selection);
   if (job) {
-    card.append(el("p", "field-help", job.error || (job.logs || []).slice(-1)[0] || job.status));
+    card.append(el("p", "field-help", localizeTimestamps(job.error || (job.logs || []).slice(-1)[0] || job.status)));
     if (jobActive(job)) card.append(button("Cancel setup", "button secondary small", () => runAction(`cancel-automatic-${job.id}`, `/api/jobs/${job.id}/cancel-automation`, {}, "Cancellation requested.")));
     const record = automaticRecords.get(job.id);
     const link = el("a", "text-button", "Download local setup record"); link.href = `/api/jobs/${job.id}/automation-record`; link.setAttribute("download", "");
@@ -2415,7 +2437,7 @@ function draftCard(project) {
   card.append(investigationCard(project));
   card.append(el("p", "detail-note", "Investigate first to establish a supported plan. Direct drafting and JSON import remain available below for advanced use. Current instructions stay in use until you approve a definition; optional test builds run in a temporary workspace."));
   card.append(el("p", "field-help", "A draft uses public release facts and is checked locally. You can request a separate model review; approval and packaging tests remain separate steps."));
-  if (drafting && (jobActive(drafting) || drafting.status === "failed")) card.append(el("div", "inline-actions", [statusBadge(jobActive(drafting) ? "building" : "failed", jobActive(drafting) ? "Drafting…" : "Draft failed"), el("span", "field-help", drafting.error || (drafting.logs || []).slice(-1)[0] || "")]));
+  if (drafting && (jobActive(drafting) || drafting.status === "failed")) card.append(el("div", "inline-actions", [statusBadge(jobActive(drafting) ? "building" : "failed", jobActive(drafting) ? "Drafting…" : "Draft failed"), el("span", "field-help", localizeTimestamps(drafting.error || (drafting.logs || []).slice(-1)[0] || ""))]));
   if (drafting && drafting.status === "failed" && settings.configured) {
     const plan = (state.proposals || []).find(item => item.kind === "investigation" && item.project_id === id && item.status === "pending_review");
     card.append(el("div", "inline-actions draft-retry", button("Retry with corrections", "button primary small", () => retryDraftWithCorrections(id, plan), Boolean(projectActiveJob(project)) || busy.has(`draft-${id}`))), el("p", "field-help", "Runs this draft again and lets the model fix validation errors. Uses up to 3 model requests for this attempt only; your saved setting below is unchanged."));
@@ -2537,7 +2559,7 @@ function investigationCard(project) {
   limit.addEventListener("change", () => investigationLimits.set(id, Number(limit.value)));
   field(node, "Investigation limit", limit);
   node.append(el("p", "field-help", "Each evidence follow-up uses one request from this limit. A later draft and optional review have separate limits and consume additional model usage."));
-  if (job && jobActive(job)) node.append(el("p", "field-help", "Investigating… " + (job.logs || []).slice(-1)[0]));
+  if (job && jobActive(job)) node.append(el("p", "field-help", "Investigating… " + localizeTimestamps((job.logs || []).slice(-1)[0])));
   if (settings.configured) node.append(button(report ? "Investigate again" : `Investigate with ${settings.drafting_model}`, "button primary small", () => investigateProject(id), !project.capture_id || Boolean(projectActiveJob(project)) || busy.has(`investigate-${id}`)));
   else node.append(el("p", "field-help", "Connect a local model, API or subscription agent in Settings to investigate. Manual prompts and JSON editing remain available below."));
   if (job?.draft_record_available) node.append(draftingRecordLink(job.id));
