@@ -267,7 +267,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(202, self.engine.queue_investigation(path.split('/')[3], payload.get('instruction', ''), payload.get('max_calls', 3), payload.get('prepare_game_files', True)))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/draft", path) and method == "POST":
                 payload = self.body()
-                self.json(202, self.engine.queue_draft(path.split("/")[3], payload.get("instruction", ""), prepare_game_files=payload.get('prepare_game_files', True), review_model=payload.get('review_model', False), max_calls=payload.get('max_calls'), investigation_id=payload.get('investigation_id'), test_inputs=payload.get('test_inputs', False)))
+                self.json(202, self.engine.queue_draft(path.split("/")[3], payload.get("instruction", ""), prepare_game_files=payload.get('prepare_game_files', True), review_model=payload.get('review_model', False), max_calls=payload.get('max_calls'), investigation_id=payload.get('investigation_id'), test_inputs=payload.get('test_inputs', False), skip_template=payload.get('skip_template', False)))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/draft-prompt", path) and method == "POST":
                 payload = self.body()
                 result = self.engine.draft_prompt(path.split("/")[3], payload.get("instruction", ""), prepare_game_files=payload.get('prepare_game_files', True))
@@ -282,6 +282,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(data)
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/draft-import", path) and method == "POST":
                 self.json(201, self.engine.import_draft(path.split("/")[3], self.body().get("text", "")))
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/definition-export", path) and method == "GET":
+                data = (json.dumps(self.engine.export_definition(path.split("/")[3]), indent=2) + '\n').encode()
+                self.respond_headers(200, 'application/json', len(data), 'attachment; filename="portkeeper-definition.json"')
+                self.wfile.write(data)
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/definition-import", path) and method == "POST":
+                self.json(201, self.engine.import_definition(path.split("/")[3], self.body().get("text", "")))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/test-build", path) and method == "POST":
                 self.body()
                 self.json(202, self.engine.test_build(path.split("/")[3]))
