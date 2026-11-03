@@ -87,3 +87,13 @@ class MatchedCoverTests(unittest.TestCase):
             with patch.object(romm, '_json', side_effect=lambda path: self.entries() if path.startswith('roms?') else {'path_cover_large': '/assets/n64.png'}), patch('portkeeper.romm.urllib.request.build_opener') as factory:
                 factory.return_value.open.return_value = _png_response()
                 self.assertEqual(romm.matched_cover(self.KEY, 'Perfect Dark', ['linux'])[2], 6)
+
+    def test_unreachable_cover_download_is_not_remembered_as_a_miss(self):
+        with tempfile.TemporaryDirectory() as d:
+            romm = self.romm(d)
+            def fetch(path):
+                if path.startswith('roms?'): return self.entries()
+                raise Invalid('RomM could not be reached')
+            with patch.object(romm, '_json', side_effect=fetch):
+                with self.assertRaises(Invalid): romm.matched_cover(self.KEY, 'Perfect Dark', ['n64'])
+            self.assertEqual(list((romm.cache / 'covers').glob('*.json')), [])

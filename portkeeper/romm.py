@@ -400,13 +400,18 @@ class RomM:
         candidates = [item for item in items if isinstance(item, dict) and type(item.get('id')) is int and item['id'] > 0
                       and _title_key(item.get('name') or '') == wanted and (item.get('path_cover_large') or item.get('path_cover_small'))]
         candidates.sort(key=lambda item: item.get('platform_slug') not in (platform_slugs or ()))
+        failure = None
         for item in candidates:
             try:
                 content_type, body = self.cover(item['id'])
-            except Invalid:
+            except Invalid as error:
+                failure = error
                 continue
             remember(item['id'], content_type, body)
             return content_type, body, item['id']
+        if failure is not None:
+            # Candidates existed but none could be fetched: possibly an outage, so do not cache a miss.
+            raise failure
         remember(None)
         raise Invalid('RomM has no cover for this title')
 
