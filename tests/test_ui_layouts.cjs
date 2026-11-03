@@ -353,7 +353,7 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   const activityNodes=()=>[...d.querySelectorAll('#activity-content .activity-event')];
   const logCounts={jobs:8,builds:1,checks:2,drafts:1,uploads:2,tests:1,imports:1,artifacts:4,notifications:1};
   for(const [view,count] of Object.entries(logCounts))assert.equal(d.getElementById(view+'-count').textContent,String(count),'Accurate activity count: '+view);
-  assert.equal(d.querySelectorAll('[data-activity-view]').length,9);assert.equal(activityNodes().length,8);
+  assert.equal(d.querySelectorAll('[data-activity-view]').length,10);assert.equal(activityNodes().length,8);
   assert(!d.getElementById('activity-cleanup').hidden);assert.equal(d.getElementById('activity-cleanup').textContent,'Clear all completed activity & logs');
   assert(!activityNodes().some(event=>event.textContent.includes('cleared-upload.zip')),'Indexing later does not resurrect a cleared upload');
   for(const [view,title,count] of [['builds','Build',1],['checks','Update check',2],['drafts','Model draft',1],['uploads','Upload to RomM',2],['tests','Manual test result',1],['imports','Found in RomM',1]]){
