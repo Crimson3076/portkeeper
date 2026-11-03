@@ -586,6 +586,7 @@ function render() {
   renderLibrary(); renderActivity(); renderSettings();
   if (route.page === "project") renderProject();
   if ($("inbox-dialog").open) renderNotifications($("inbox-content"));
+  if ($("draft-review-dialog").open) renderDraftReview();
   if (focusedDisclosure && content.dataset.viewKey === focusedDisclosure.view) {
     [...content.querySelectorAll("details[data-disclosure-key]")].find(node => node.dataset.disclosureKey === focusedDisclosure.key)?.querySelector("summary")?.focus({preventScroll: true});
   }
@@ -1994,7 +1995,7 @@ async function submitAddGame() {
     const files = Object.fromEntries(Object.entries(addGame.choices).filter(([, value]) => value));
     const result = await api("/api/setup", { method: "POST", body: { definition_id: addGame.pick.id, targets: addGame.targets, files, keep_updated: addGame.keep, auto_publish: addGame.autoPublish, publish: addGame.publish } });
     $("add-game-dialog").close(); await refresh(); navigateProject(result.project.id);
-    toast(`Building ${result.project.name}. Progress shows under Updates.`);
+    toast(`Building ${result.project.name}. Progress shows on the Build packages card.`);
   } catch (error) { $("add-game-error").textContent = error.message; }
   finally { if (addGame) { addGame.busy = false; renderAddGame(); } }
 }
@@ -2081,7 +2082,7 @@ async function submitCustomGame() {
     const project = result.project || result;
     await api(`/api/projects/${encodeURIComponent(project.id)}/check`, { method: "POST", body: { draft: custom.method === "assistant", automate: custom.method === "automatic" } });
     $("add-game-dialog").close(); await refresh();
-    navigateProject(project.id, custom.method === "keep" ? "overview" : "advanced");
+    navigateProject(project.id, "overview");
     if (custom.method === "manual") openRecipe(project.id);
     toast({ automatic: `${project.name} added. Source is being preserved, then automatic setup starts.`, assistant: `${project.name} added. Its release is being saved, then ${assistantSettings().drafting_model} drafts the packaging steps.`, handoff: `${project.name} added. When its release is saved, copy the prompt under Draft packaging steps.`, manual: `${project.name} added. Write its packaging steps in the editor.`, keep: `${project.name} added. Its releases are being saved.` }[custom.method]);
   } catch (error) { $("add-game-error").textContent = error.message; }
@@ -2094,7 +2095,40 @@ function latestPackages(project) {
   const artifacts = all.filter((artifact) => artifact.version === version);
   return gameTargets(project).map((target) => artifacts.find((artifact) => artifact.target === target)).filter(Boolean);
 }
-function setupProject(id) { return runAction(`setup-${id}`, `/api/projects/${encodeURIComponent(id)}/setup`, { publish: false }, "Build started. Progress shows under Updates."); }
+function setupProject(id) { return runAction(`setup-${id}`, `/api/projects/${encodeURIComponent(id)}/setup`, { publish: false }, "Build started. Progress shows on this card."); }
+function brokerConnected() { return Boolean(state.automation?.worker?.ready); }
+function scrollToSection(selector) { setTimeout(() => document.querySelector(selector)?.scrollIntoView?.({block: "start"}), 50); }
+function openWorkerSettings() { navigateSettings("storage"); scrollToSection("#automatic-settings"); }
+function goToDraftSteps(id) { navigateProject(id, "advanced"); scrollToSection(".draft-card"); }
+const BROKER_EXPLANATION = "A worker broker is a separate, isolated service that runs build scripts offline so Portkeeper can set up a port without a model touching your files. It unlocks \u201cSet up automatically\u201d. You don\u2019t need one: drafting packaging steps with a model or your own chat works without it.";
+function gameChecklist(project, proposal, packages, inRomm, untested) {
+  const approved = Boolean(project.packaging || project.profile || project.autonomous_recipe || project.demo);
+  const steps = [
+    ["saved", "Saved", Boolean(project.latest_version || project.capture_id)],
+    ["drafted", "Drafted", Boolean(proposal) || approved],
+    ["approved", "Approved", approved],
+    ["built", "Built", packages.length > 0],
+    ["tested", "Tested", packages.length > 0 && !untested.length],
+    ["in_romm", "In RomM", packages.length > 0 && inRomm.length === packages.length]];
+  const current = steps.findIndex(([, , done]) => !done);
+  const list = el("ol", "game-checklist");
+  list.setAttribute("aria-label", "Progress for this game");
+  steps.forEach(([key, label, done], index) => {
+    const state_ = done ? "done" : index === current ? "current" : "todo";
+    const item = el("li", "", [el("span", "mark", done ? "\u2713" : index === current ? "\u2192" : "\u25cb"), label]);
+    item.dataset.step = key; item.dataset.state = state_;
+    if (state_ === "current") item.setAttribute("aria-current", "step");
+    list.append(item);
+  });
+  return list;
+}
+function inlineProgress(label, detail) {
+  const box = el("div", "inline-progress");
+  box.setAttribute("role", "status");
+  const bar = el("progress"); bar.setAttribute("aria-label", label);
+  box.append(bar, el("p", "field-help", detail ? `${label} \u00b7 ${detail}` : label));
+  return box;
+}
 function nextStepCard(project) {
   const card = el("section", "detail-card next-step-card");
   const active = projectActiveJob(project), proposal = pendingProposal(project), packages = latestPackages(project);
@@ -2104,23 +2138,29 @@ function nextStepCard(project) {
   const untested = packages.filter((artifact) => testStatus(artifact, null) === "untested");
   const parts = [project.latest_version || "No release saved yet"];
   if (packages.length) parts.push(packages.map((artifact) => targetLabels[artifact.target] || artifact.target).join(" & "), inRomm.length === packages.length ? "in RomM" : inRomm.length ? "partly in RomM" : "not in RomM", untested.length ? "not tested yet" : "tested");
-  let heading, note = "", action = null;
+  let heading, note = "", action = null, progress = null;
   const working = busy.has(`setup-${project.id}`);
   if (active?.status === "waiting_user") { heading = "Setup needs your answer"; note = active.user_request?.question || "Answer the pending question to continue the same setup."; action = button("Answer & continue", "button primary small", () => navigateProject(project.id, "advanced")); }
-  else if (active) { heading = "Working on it"; note = `${String(jobStage(active)).replaceAll("_", " ")}…`; action = button("View build progress", "button primary small", () => navigateProject(project.id, "activity", active.id)); }
+  else if (active) { heading = "Working on it"; note = ""; progress = inlineProgress(`${String(jobStage(active)).replaceAll("_", " ")}…`, [...(active.logs || [])].reverse().find(Boolean)); action = button("View full log", "button secondary small", () => navigateProject(project.id, "activity", active.id)); }
   else if (projectJobs(project.id)[0]?.status === "failed") { heading = "A build needs your attention"; note = projectJobs(project.id)[0].error || "Review the failed step and retry when the cause is resolved."; action = button("View failure & logs", "button primary small", () => navigateProject(project.id, "activity", projectJobs(project.id)[0].id)); }
   else if (missingGameFiles(project).length && runner === "operations") { heading = "Choose your game files"; note = "Select the required files before building packages."; action = button("Choose game files", "button primary small", () => navigateProject(project.id, "advanced")); }
-  else if (proposal) { heading = "Review the drafted packaging steps"; note = "Approve these steps before they replace your saved instructions. Optional test builds use a temporary workspace."; action = button("Review draft", "button primary small", () => navigateProject(project.id, "advanced")); }
+  else if (proposal) { heading = "Review the drafted packaging steps"; note = "Approve these steps before they replace your saved instructions. Optional test builds use a temporary workspace."; action = button("Review draft", "button primary small", () => openDraftReview(project.id)); }
   else if (investigation && !packages.length) { heading = investigation.plan.can_draft ? "Review the packaging plan" : "Review the investigation result"; note = investigation.plan.summary; action = button("Review investigation", "button primary small", () => navigateProject(project.id, "advanced")); }
   else if (automaticAvailable() && !project.profile && !project.demo && !packages.length) { heading = "Set up automatically"; note = "Investigate the port, prepare your owned files and test a reusable build recipe."; action = button("Set up automatically", "button primary small", () => startAutomaticSetup(project.id), !project.capture_id || busy.has(`automatic-${project.id}`)); }
-  else if (runner === "capture" && !project.demo && !project.autonomous_recipe) { heading = "Add packaging steps"; note = "Portkeeper keeps this game's releases, but doesn't know how to package it yet."; action = button("Investigate packaging", "button primary small", () => navigateProject(project.id, "advanced")); }
-  else if (!packages.length && !project.demo) { heading = "Build packages"; note = "Check the latest release and build your selected platforms. Packages stay here; uploading is a separate action unless automatic publishing is enabled."; action = button(working ? "Starting…" : "Build packages", "button primary small", () => setupProject(project.id), working); }
+  else if (runner === "capture" && !project.demo && !project.autonomous_recipe) {
+    heading = "Add packaging steps";
+    if (brokerConnected()) { note = "Portkeeper keeps this game's releases, but doesn't know how to package it yet."; action = button("Investigate packaging", "button primary small", () => navigateProject(project.id, "advanced")); }
+    else { note = "Portkeeper keeps this game's releases, but doesn't know how to package it yet. Draft the steps with a model or your own chat, then approve them. Automatic setup isn't offered because no worker broker is connected (an isolated service that runs build scripts offline)."; action = button("Draft packaging steps", "button primary small", () => goToDraftSteps(project.id)); }
+  }
+  else if (!packages.length && !project.demo) { heading = "Build packages"; note = "Check the latest release and build your selected platforms. Packages stay here; uploading is a separate action unless automatic publishing is enabled."; action = button(working ? "Starting…" : "Build packages", "button primary small", () => setupProject(project.id), working); if (working) progress = inlineProgress("Starting the build…"); }
   else if (rommReady() && !project.demo && inRomm.length < packages.length) { heading = "Send to RomM"; note = "These packages are built but aren't in RomM yet."; action = button("Send to RomM", "button primary small", () => packages.filter((artifact) => !inRomm.includes(artifact)).forEach((artifact) => publishToRomM(artifact.id))); }
   else if (untested.length) { heading = "Try it and record how it ran"; note = "A result helps you and others know this exact download works."; action = button("Record test result", "button primary small", () => openReview(project, untested[0], null)); }
   else { heading = "Downloads available"; note = project.auto_build ? "New compatible releases are built automatically." : "Check upstream to look for a new release."; }
   card.append(el("h2", "", heading), el("p", "next-step-line", parts.join(" · ")));
   if (note) card.append(el("p", "field-help", note));
+  if (progress) card.append(progress);
   if (action) card.append(el("div", "inline-actions", action));
+  card.append(gameChecklist(project, proposal, packages, inRomm, untested));
   return card;
 }
 
@@ -2141,6 +2181,7 @@ function renderAutomaticSettings(parent) {
   const change = (key, value) => { automaticPolicyDraft = {...saved, ...(automaticPolicyDraft || {}), [key]: value}; };
   card.replaceChildren(el("h3", "", "Automatic port setup"),
     el("p", "field-help", "Runs preparation and build scripts in a separate offline worker. Successful recipes replay without a model."),
+    el("p", "field-help", [el("strong", "", "What is a worker broker? "), BROKER_EXPLANATION]),
     el("p", worker.ready ? "field-help" : "review-notes", worker.ready ? `Worker ready · ${worker.backend} · ${Math.round((worker.limits?.workspace_bytes || 0) / 1024**3)} GiB temporary workspace` : worker.error || "Worker not connected."),
     externalLink("Worker installation & privacy settings ↗", "https://github.com/Crimson3076/portkeeper/blob/main/docs/AUTOMATION.md"));
   const enabled = input("automatic-enabled", "checkbox"); enabled.checked = Boolean(draft.enabled);
@@ -2268,7 +2309,12 @@ function automaticSetupCard(project) {
   const jobs = projectJobs(id).filter(job => job.kind === "automation" && !job.activity_hidden), job = jobs[0];
   const card = el("section", "detail-card automatic-setup", [el("h2", "", "Automatic setup"),
     el("p", "detail-note", "Investigate this port, prepare owned data, build and save reusable scripts. Every generated program stays visible below; existing downloads are retained.")]);
-  if (!config.worker?.ready || !config.policy?.enabled) card.append(el("p", "field-help", config.worker?.error || "Enable automatic setup in Advanced settings."), button("Worker & automation settings →", "text-button", () => navigateSettings("storage")));
+  if (!config.worker?.ready) {
+    card.append(el("p", "field-help", BROKER_EXPLANATION), el("p", "review-notes", "No worker broker is connected, so automatic setup isn\u2019t available. Use Draft packaging steps below instead."),
+      el("div", "inline-actions", [button("Draft packaging steps", "button primary small", () => scrollToSection(".draft-card")), button("Go to worker broker settings \u2192", "text-button", openWorkerSettings)]));
+    return card;
+  }
+  if (!config.policy?.enabled) card.append(el("p", "field-help", "Enable automatic setup in Advanced settings."), button("Worker & automation settings \u2192", "text-button", openWorkerSettings));
   const draft = automaticSetupDrafts.get(id) || {instruction: "", inputs: project.autonomous_inputs || []};
   const notes = el("textarea", "assistant-prompt"); notes.id = `automatic-notes-${id}`; notes.rows = 2; notes.value = draft.instruction;
   notes.placeholder = "Optional: data preparation, target requirements or documented input version";
@@ -2404,7 +2450,7 @@ function draftCard(project) {
   if (!settings.configured) card.append(button("Connect a local or cloud model →", "text-button", () => navigateSettings("assistant")));
   return card;
 }
-function renderProposalReview(card, project, proposal) {
+function renderProposalReview(card, project, proposal, actionsHost = null) {
   const definition = proposal.definition, view = proposal.view || {};
   card.append(el("p", "detail-note", `Drafted by ${proposal.source} · ${dateLabel(proposal.created_at)}. Nothing has run. Review it before approving.`));
   if (proposal.explanation) card.append(el("p", "review-notes", proposal.explanation));
@@ -2436,8 +2482,19 @@ function renderProposalReview(card, project, proposal) {
   if (proposal.starter) card.append(disclosure(`starter:${proposal.id}`, "diagnostics-list", [el("summary", "table-action", "View starter JSON and unresolved choices"), jsonViewer(`starter:${proposal.id}`, proposal.starter, "proposal-json")]));
   if (proposal.draft_job_id && state.jobs.some(job => job.id === proposal.draft_job_id && job.draft_record_available)) card.append(draftingRecordLink(proposal.draft_job_id));
   card.append(disclosure(`draft-definition:${proposal.id}`, "diagnostics-list", [el("summary", "table-action", "View definition JSON"), jsonViewer(`proposal:${proposal.id}`, definition, "proposal-json")]));
-  card.append(el("div", "inline-actions", [button(busy.has(`approve-${proposal.id}`) ? "Approving…" : "Approve", "button primary small", () => approveDraft(proposal, project), busy.has(`approve-${proposal.id}`)), button("Discard", "button secondary small", () => runAction(`discard-${proposal.id}`, `/api/proposals/${encodeURIComponent(proposal.id)}/discard`, {}, "Draft discarded."))]));
+  (actionsHost || card).append(el("div", "inline-actions", [button(busy.has(`approve-${proposal.id}`) ? "Approving…" : "Approve", "button primary small", () => approveDraft(proposal, project), busy.has(`approve-${proposal.id}`)), button("Discard", "button secondary small", () => runAction(`discard-${proposal.id}`, `/api/proposals/${encodeURIComponent(proposal.id)}/discard`, {}, "Draft discarded."))]));
   card.append(el("p", "quiet-note", "After approving, Build packages creates a downloadable package. Failed builds leave existing packages in place."));
+}
+let draftReviewProjectId = null;
+function openDraftReview(id) { draftReviewProjectId = id; renderDraftReview(); if (!$("draft-review-dialog").open) $("draft-review-dialog").showModal(); }
+function renderDraftReview() {
+  const dialog = $("draft-review-dialog"), project = projectById(draftReviewProjectId), proposal = project && pendingProposal(project);
+  if (!proposal) { if (dialog.open) dialog.close(); return; }
+  const body = $("draft-review-body"), actions = $("draft-review-actions");
+  $("draft-review-heading").textContent = `Review the packaging steps for ${project.name}`;
+  body.replaceChildren(); actions.replaceChildren();
+  const card = el("div", "draft-card"); renderProposalReview(card, project, proposal, actions);
+  body.append(card);
 }
 function investigationCard(project) {
   const id = project.id, settings = assistantSettings();
@@ -2509,7 +2566,7 @@ async function loadModelResponses(jobId) {
 }
 async function approveDraft(proposal, project) {
   const result = await runAction(`approve-${proposal.id}`, `/api/proposals/${encodeURIComponent(proposal.id)}/apply`, {}, "Packaging steps approved. Use Build packages to build it.");
-  if (result) navigateProject(project.id, "overview");
+  if (result) { if ($("draft-review-dialog").open) $("draft-review-dialog").close(); navigateProject(project.id, "overview"); }
 }
 function prepareDraftGameFiles(id) { return draftGameFileChoices.get(id) ?? projectJobs(id).find(job => job.kind === "draft")?.prepare_game_files ?? true; }
 function queueDraft(id) { return runAction(`draft-${id}`, `/api/projects/${encodeURIComponent(id)}/draft`, { instruction: (assistantPromptDrafts.get(id) || "").trim(), prepare_game_files:prepareDraftGameFiles(id), review_model:draftModelReviews.get(id) ?? false, max_calls:draftCorrectionLimits.get(id) ?? projectJobs(id).find(job => job.kind === "draft")?.draft_max_calls ?? 1 }, "Drafting started. The draft appears here when it's ready."); }

@@ -84,6 +84,7 @@ async function create(saved, storageBlocked=false, source=fixture) {
     else if(endpoint.endsWith('/draft') && options.method==='POST'){requests.push({endpoint,body:JSON.parse(options.body)});payload={job:{}};}
     else if(endpoint.endsWith('/investigate') && options.method==='POST'){requests.push({endpoint,body:JSON.parse(options.body)});payload={job:{}};}
     else if(options.method==='PATCH'){const body=JSON.parse(options.body);requests.push({endpoint,body});const game=source.projects.find(p=>endpoint.includes(p.id));Object.assign(game,body);payload=game;}
+    else if(endpoint==='/api/projects' && options.method==='POST'){requests.push({endpoint,body:JSON.parse(options.body)});payload={project:source.projects[1]};}
     else if(endpoint==='/api/setup'){requests.push({endpoint,body:JSON.parse(options.body)});payload={project:source.projects[1],job:{}};}
     return {ok:true,status:200,json:async()=>JSON.parse(JSON.stringify(payload))};
   };
@@ -572,5 +573,53 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   assert(d.querySelector('a[href="https://recomplauncher.com/top"]'),'The reference website stays accessible when import is unavailable');
   assert(d.querySelector('.game-pick.custom'),'Manual addition stays available');dom.window.close();
   dom=await create(null,false,{...fixture,projects:[],artifacts:[]});assert(dom.window.document.getElementById('project-grid').textContent.includes('first game'));dom.window.close();
+  // First-run guidance: broker explanation, checklist, review panel, inline progress.
+  dom=await create();w=dom.window;d=w.document;
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();
+  let stepCard=d.querySelector('.next-step-card');
+  assert(!stepCard.textContent.includes('Investigate packaging'),'Without a worker broker the page does not offer automatic investigation');
+  assert(stepCard.textContent.includes('worker broker'),'The page explains why automatic setup is unavailable');
+  assert([...stepCard.querySelectorAll('button')].some(n=>n.textContent==='Draft packaging steps'),'The working draft path is offered instead');
+  const checklist=[...stepCard.querySelectorAll('.game-checklist li')];
+  assert.deepEqual(checklist.map(n=>n.dataset.step),['saved','drafted','approved','built','tested','in_romm']);
+  assert.equal(stepCard.querySelectorAll('.game-checklist li[data-state="current"]').length,1,'Exactly one step is current');
+  assert.equal(stepCard.querySelector('.game-checklist li[data-state="current"]').dataset.step,'saved','The fixture game has no saved release yet');
+  d.getElementById('project-advanced-tab').click();await tick();
+  const autoCard=d.querySelector('.automatic-setup');
+  assert(autoCard.textContent.includes('worker broker') && autoCard.textContent.includes('Draft packaging steps'));
+  assert(![...autoCard.querySelectorAll('button')].some(n=>n.textContent==='Set up automatically'),'No greyed automatic setup button');
+  [...autoCard.querySelectorAll('button')].find(n=>n.textContent.startsWith('Go to worker broker settings')).click();await tick();
+  assert.equal(d.getElementById('settings-storage-tab').getAttribute('aria-selected'),'true','Link lands on Advanced > Storage & runners');
+  assert(d.getElementById('automatic-settings').textContent.includes('What is a worker broker'),'The settings section defines the broker');
+  dom.window.close();
+  dom=await create(null,false,reviewed);w=dom.window;d=w.document;
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();
+  [...d.querySelector('.next-step-card').querySelectorAll('button')].find(n=>n.textContent==='Review draft').click();await tick();
+  assert(d.getElementById('draft-review-dialog').open,'Review draft opens a panel');
+  assert(w.location.hash.endsWith('/overview'),'The page stays on Play');
+  const reviewBody=d.getElementById('draft-review-body'),reviewActions=d.getElementById('draft-review-actions');
+  assert(reviewBody.textContent.includes('Review it before approving'));
+  assert([...reviewActions.querySelectorAll('button')].map(n=>n.textContent).join('|').includes('Approve'));
+  assert([...reviewActions.querySelectorAll('button')].some(n=>n.textContent==='Discard'));
+  assert(!reviewBody.querySelector('button.primary'),'Approve is pinned outside the scrolling body');
+  assert([...reviewBody.querySelectorAll('details')].every(n=>!n.open),'JSON stays collapsed');
+  [...reviewActions.querySelectorAll('button')].find(n=>n.textContent==='Approve').click();await tick();await tick();
+  assert(!d.getElementById('draft-review-dialog').open,'Approving closes the panel');
+  dom.window.close();
+  const building=JSON.parse(JSON.stringify(fixture));
+  building.jobs=[{id:id(40),project_id:id(2),status:'packaging_linux',stage:'packaging_linux',target:'linux',kind:'build',created_at:'2026-10-11T12:00:00Z',logs:['Packaging the Linux build']}];
+  dom=await create(null,false,building);w=dom.window;d=w.document;
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();
+  stepCard=d.querySelector('.next-step-card');
+  assert(stepCard.querySelector('progress[role="status"], [role="progressbar"], progress'),'Progress is drawn on the card where the build was started');
+  assert(stepCard.textContent.includes('Packaging the Linux build'),'The latest log line is shown inline');
+  dom.window.close();
+  dom=await create();w=dom.window;d=w.document;
+  d.getElementById('add-project').click();await tick();await tick();d.querySelector('.game-pick.custom').click();await tick();[...d.querySelectorAll('#add-game-actions button')].find(n=>n.textContent.includes('Continue')).click();await tick();
+  const landRepo=d.getElementById('custom-repo');landRepo.value='example/game';landRepo.dispatchEvent(new w.Event('input'));landRepo.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));await tick();await tick();
+  d.getElementById('custom-method-handoff').click();d.getElementById('custom-method-handoff').dispatchEvent(new w.Event('change',{bubbles:true}));await tick();
+  d.getElementById('custom-add-submit').click();await tick();await tick();await tick();
+  assert(w.location.hash.endsWith('/overview'),'After adding a custom game the app lands on Play, not Advanced');
+  dom.window.close();
   console.log('UI layouts passed: add a game, next step, drafting settings, default workspace, saved preferences, collection/list switching, grouped platforms, RomM imports, correct counts, game selection, deep links, filters, empty state and blocked storage.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
