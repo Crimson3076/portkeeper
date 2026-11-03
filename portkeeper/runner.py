@@ -357,7 +357,7 @@ class OperationRunner:
                         current = self.engine.store.get("projects", ctx.project["id"])
                         bindings = dict(current.get("input_bindings") or {})
                         if bindings.get(input_id, {}).get("path") == binding["path"]:
-                            bindings[input_id] = {**bindings[input_id], "sha1": digest["sha1"], "accepted": match["label"], "verified_by": hash_strength(match, digest), "verified_at": now()}
+                            bindings[input_id] = {**bindings[input_id], "sha1": digest["sha1"], "md5": digest["md5"], "accepted": match["label"], "verified_by": hash_strength(match, digest), "verified_at": now()}
                             self.engine.store.update("projects", ctx.project["id"], input_bindings=bindings)
             else:
                 stat_result = path.stat()

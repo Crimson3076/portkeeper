@@ -301,6 +301,11 @@ class PackagingEngineTests(unittest.TestCase):
         with self.assertRaisesRegex(Invalid, r"inputs\[0\]\.accepted\[0\]"):
             packaging.validate_definition(value)
 
+    def test_input_hashes_keep_the_matched_md5_identity(self):
+        from portkeeper.engine import Engine
+        project = {"input_bindings": {"rom": {"sha1": "a" * 40, "md5": "b" * 32, "verified_by": "md5"}, "other": {"sha1": "c" * 40, "verified_by": "sha1"}}}
+        self.assertEqual(Engine.input_hashes(None, project), {"rom": "b" * 32, "other": "c" * 40})
+
     def test_sha256_is_preferred_when_present(self):
         from portkeeper.runner import accepted, digests, hash_strength
         path = self.root / "rom.z64"
