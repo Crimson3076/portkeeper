@@ -606,6 +606,27 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   [...reviewActions.querySelectorAll('button')].find(n=>n.textContent==='Approve').click();await tick();await tick();
   assert(!d.getElementById('draft-review-dialog').open,'Approving closes the panel');
   dom.window.close();
+  // Review investigation opens the same dialog; Inbox "Open game" lands on it too.
+  const planned=JSON.parse(JSON.stringify(editable));planned.projects[1].capture_id=id(88);planned.assistant={provider:'ollama',configured:true,drafting_model:'Local fixture'};
+  planned.proposals=[{id:id(91),kind:'investigation',project_id:id(2),status:'pending_review',prepare_game_files:true,source:'Local fixture',plan:{outcome:'ready',summary:'A supported runtime is available.',targets:[{target:'windows',method:'release',asset:'game-windows.zip'}],game_files:{needed_to_play:true,needed_for_packaging:false,requirements:'Your owned game data'},steps:[{capability:'extract',purpose:'Unpack the release'}],evidence:[{source:'e2',path:'README.md',quote:'Windows build',supports:'Runtime',matched:true}],uncertainties:[],capability_problems:[],can_draft:true}}];
+  planned.notifications=[{id:'review-note',project_id:id(2),kind:'needs_review',message:'New version',created_at:'2026-10-13T05:00:00Z'}];
+  for(const entry of ['card','inbox']){
+    dom=await create(null,false,planned);w=dom.window;d=w.document;
+    [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();
+    if(entry==='card')[...d.querySelector('.next-step-card').querySelectorAll('button')].find(n=>n.textContent==='Review investigation').click();
+    else{d.getElementById('activity-tab')?.click?.();w.location.hash='activity';await tick();d.getElementById('notifications-tab')?.click();await tick();[...d.querySelectorAll('.notification-item button')].find(n=>n.textContent.startsWith('Open game')).click();}
+    await tick();
+    const dialog=d.getElementById('draft-review-dialog');assert(dialog.open,'Review investigation opens the dialog from '+entry);
+    assert(w.location.hash.endsWith('/overview'),'The page stays on Play');
+    const body=d.getElementById('draft-review-body'),pinned=d.getElementById('draft-review-actions');
+    assert(body.textContent.includes('A supported runtime is available.'));
+    assert(!body.querySelector('button.primary'),'Actions are pinned outside the scrolling body');
+    assert.deepEqual([...pinned.querySelectorAll('button')].map(n=>n.textContent),['Draft packaging steps from this plan','Dismiss']);
+    assert([...body.querySelectorAll('details')].every(n=>!n.open),'Evidence and JSON stay collapsed');
+    if(entry==='card'){[...pinned.querySelectorAll('button')].find(n=>n.textContent==='Dismiss').click();await tick();await tick();assert(!dialog.open,'Dismissing closes the dialog');}
+    else{dialog.querySelector('[data-close]').click();assert(!dialog.open,'Closing returns to the game');}
+    dom.window.close();
+  }
   const building=JSON.parse(JSON.stringify(fixture));
   building.jobs=[{id:id(40),project_id:id(2),status:'packaging_linux',stage:'packaging_linux',target:'linux',kind:'build',created_at:'2026-10-11T12:00:00Z',logs:['Packaging the Linux build']}];
   dom=await create(null,false,building);w=dom.window;d=w.document;
