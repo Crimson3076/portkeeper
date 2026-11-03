@@ -154,7 +154,8 @@ class InvestigationTests(unittest.TestCase):
         self.assertTrue(plan['can_draft'])
         self.assertEqual(len(server.requests), 2)
         second = server.requests[1]['body']
-        self.assertEqual(second['format'], 'json')
+        self.assertEqual(second['format'], investigation.LOCAL_SCHEMA)
+        self.assertTrue(all(event['structured_output'] for event in events if event.get('kind') == 'investigation'))
         self.assertEqual(len(second['messages']), 2)
         self.assertIn('game_dir', second['messages'][1]['content'])
         self.assertNotIn(str(self.root), json.dumps(server.requests))
@@ -174,6 +175,13 @@ class InvestigationTests(unittest.TestCase):
                 self.assertEqual(chat.call_count, 1)
                 self.assertEqual(chat.call_args.kwargs['response_schema'], investigation.SCHEMA)
                 self.assertEqual(events[0]['response'], response)
+
+    def test_object_and_array_payload_json_parse_from_schema_constrained_ollama_reply(self):
+        request = [{'kind': 'source', 'path': 'README.md', 'offset': 0}]
+        for body, expected in (({'action': 'plan', 'payload_json': self.plan}, ('plan', self.plan)),
+                               ({'action': 'request_evidence', 'payload_json': request}, ('request_evidence', request))):
+            self.assertEqual(investigation.read_response(json.dumps(body)), expected)
+        self.assertEqual(investigation.LOCAL_SCHEMA['properties']['payload_json']['anyOf'][0], {'type': 'object'})
 
     def test_natural_flattened_and_bare_plan_variants_keep_the_same_facts(self):
         replies = [{'action': 'plan', 'plan': self.plan}, {'action': 'plan', 'plan': json.dumps(self.plan)},

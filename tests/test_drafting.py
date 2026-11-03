@@ -365,11 +365,12 @@ class Server:
             def do_POST(self):
                 state.requests.append({"path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()},
                                        "body": json.loads(self.rfile.read(int(self.headers["Content-Length"])))})
-                self.reply(state.replies.pop(0))
+                payload = state.replies.pop(0)
+                self.reply(payload.get("__error__", payload), 400 if "__error__" in payload else 200)
 
-            def reply(self, payload):
+            def reply(self, payload, status=200):
                 data = json.dumps(payload).encode()
-                self.send_response(200)
+                self.send_response(status)
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
@@ -489,7 +490,43 @@ class ProviderTests(unittest.TestCase):
                 self.assertIn('literal paths, never wildcards', feedback)
                 if provider == 'ollama':
                     self.assertEqual(server.requests[1]['path'], '/api/chat')
-                    self.assertEqual(server.requests[1]['body']['format'], 'json')
+                    self.assertEqual(server.requests[1]['body']['format'], drafting.DRAFT_LOCAL_SCHEMA)
+
+    def test_ollama_draft_sends_schema_and_records_structured_output(self):
+        reply = {'message': {'content': json.dumps({'explanation': 'e', 'definition': definition()})}}
+        server = self.serve([reply])
+        self.assistant.configure_provider({'provider': 'ollama', 'endpoint': server.url, 'model': 'qwen3:8b'})
+        events = []
+        checked, _ = self.assistant.draft_definition('S', 'U', lambda t: drafting.read_reply(t, PROJECT), lambda _: None, record=events.append)
+        self.assertEqual(checked['id'], 'example-port')
+        self.assertEqual(server.requests[0]['body']['format'], drafting.DRAFT_LOCAL_SCHEMA)
+        self.assertIs(events[0]['structured_output'], True)
+
+    def test_ollama_without_schema_support_falls_back_and_says_so_once_cached(self):
+        plain = {'message': {'content': json.dumps({'explanation': 'e', 'definition': definition()})}}
+        server = self.serve([{'__error__': {'error': 'invalid format'}}, plain, plain])
+        self.assistant.configure_provider({'provider': 'ollama', 'endpoint': server.url, 'model': 'old'})
+        events, logs = [], []
+        for _ in range(2):
+            self.assistant.draft_definition('S', 'U', lambda t: drafting.read_reply(t, PROJECT), logs.append, record=events.append)
+        self.assertEqual([r['body']['format'] for r in server.requests], [drafting.DRAFT_LOCAL_SCHEMA, 'json', 'json'])
+        self.assertEqual([e['structured_output'] for e in events], [False, False])
+        self.assertTrue(any('Structured output is off' in line for line in logs))
+
+    def test_openai_compatible_uses_json_schema_then_falls_back(self):
+        plain = {'choices': [{'message': {'content': json.dumps({'explanation': 'e', 'definition': definition()})}}]}
+        server = self.serve([plain, {'__error__': {'error': 'unsupported'}}, plain, plain])
+        self.assistant.configure_provider({'provider': 'openai', 'base_url': server.url + '/v1', 'model': 'm'})
+        self.assistant.draft_definition('S', 'U', lambda t: drafting.read_reply(t, PROJECT), lambda _: None)
+        self.assertEqual(server.requests[0]['body']['response_format']['type'], 'json_schema')
+        self.assertIs(self.assistant.structured_output(), True)
+        self.assistant._structured_support.clear()
+        server.replies[:] = [{'__error__': {'error': 'unsupported'}}, plain, plain]
+        self.assistant.draft_definition('S', 'U', lambda t: drafting.read_reply(t, PROJECT), lambda _: None)
+        self.assistant.draft_definition('S', 'U', lambda t: drafting.read_reply(t, PROJECT), lambda _: None)
+        self.assertEqual(server.requests[-1]['body']['response_format'], {'type': 'json_object'})
+        self.assertIs(self.assistant.structured_output(), False)
+        self.assertEqual(len(server.requests), 4)  # the unsupported endpoint is probed only once
 
     def test_claude_api_request_uses_structured_output_and_fallbacks(self):
         reply = {"stop_reason": "end_turn", "content": [{"type": "thinking", "thinking": ""},

@@ -715,6 +715,11 @@ def unsupported_hashes(definition, material):
     return found
 
 
+# Constrains local decoding (Ollama format / OpenAI json_schema). The definition is a real object,
+# not a JSON string; packaging validation still decides whether it is acceptable.
+DRAFT_LOCAL_SCHEMA = {'type': 'object', 'required': ['explanation', 'definition'],
+                      'properties': {'explanation': {'type': 'string'}, 'definition': {'type': 'object'}}}
+
 REVIEW_SCHEMA = {
     'type': 'object', 'additionalProperties': False, 'required': ['summary', 'findings'],
     'properties': {'summary': {'type': 'string'}, 'findings': {'type': 'array', 'maxItems': 12, 'items': {

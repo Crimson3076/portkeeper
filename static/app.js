@@ -181,7 +181,15 @@ function localTime(value) {
 function localizeTimestamps(text) {
   return String(text ?? "").replace(isoTimestamp, localTime);
 }
-window.portkeeperFormat = { localTime, localizeTimestamps };
+const bareDate = /\b(\d{4})-(\d{2})-(\d{2})\b(?!T)/g;
+function localizeDates(text) {
+  return String(text ?? "").replace(isoTimestamp, (value) => dateLabelFull(value)).replace(bareDate, (_, year, month, day) => new Date(Number(year), Number(month) - 1, Number(day)).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" }));
+}
+function dateLabelFull(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString([], { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+}
+window.portkeeperFormat = { localTime, localizeTimestamps, localizeDates };
 function bytes(value) {
   if (!Number.isFinite(Number(value))) return "—";
   let size = Number(value), index = 0;
@@ -214,16 +222,25 @@ function repoLink(repo) {
   if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo || "")) { node.href = `https://github.com/${repo}`; node.target = "_blank"; node.rel = "noopener noreferrer"; }
   return node;
 }
-function projectCover(project, className) {
+function gameInitials(project) { return String(project.name || "P").split(/\s+/).map((word) => word[0]).filter(Boolean).slice(0, 2).join("").toUpperCase() || "P"; }
+function coverPlaceholder(project, className) {
+  const node = el("span", `cover-placeholder ${className}`, gameInitials(project));
+  node.setAttribute("role", "img"); node.setAttribute("aria-label", `${project.name} (no cover art)`);
+  return node;
+}
+// A user-chosen cover wins; otherwise the server uses the linked or title-matched RomM entry and caches it.
+// With placeholder set, a game without a cover gets a neutral tile with its initials instead of nothing.
+function projectCover(project, className, placeholder = false, onLoad = null) {
   const metadata = project.metadata || {};
   const custom = metadata.cover_policy === "custom" && metadata.url_cover;
-  if (!metadata.romm_rom_id && !custom) return null;
+  if (!custom && !metadata.romm_rom_id && (project.demo || !rommReady())) return placeholder ? coverPlaceholder(project, className) : null;
   const image = el("img", className);
-  const version = custom ? `art=${encodeURIComponent(metadata.url_cover.slice(-80))}` : `rom=${encodeURIComponent(metadata.romm_rom_id)}`;
+  const version = custom ? `art=${encodeURIComponent(metadata.url_cover.slice(-80))}` : `rom=${encodeURIComponent(metadata.romm_rom_id || "match")}`;
   image.src = `/api/projects/${encodeURIComponent(project.id)}/cover?${version}`;
   image.alt = `${project.name} cover art`;
   image.loading = "lazy"; image.decoding = "async";
-  image.addEventListener("error", () => image.remove(), {once: true});
+  if (onLoad) image.addEventListener("load", () => onLoad(custom ? "user" : "romm"), {once: true});
+  image.addEventListener("error", () => { if (placeholder) image.replaceWith(coverPlaceholder(project, className)); else image.remove(); }, {once: true});
   return image;
 }
 function projectSource(project) { return project.demo ? el("span", "repo-link", "Synthetic sample files") : repoLink(project.repo); }
@@ -385,7 +402,11 @@ function parseRoute() {
   return { page: ["activity", "settings"].includes(parts[0]) ? parts[0] : parts[0] === "storage" ? "settings" : "library", projectId: null, tab: "overview" };
 }
 function navigateProject(id, tab = "overview", jobId = null) { if (tab === "versions") tab = "activity"; selectedJobId = jobId; location.hash = `project/${encodeURIComponent(id)}/${tab}`; if (route.projectId === id && route.tab === tab) renderProject(); }
-function navigateSettings(tab = "romm") { settingsView = tab; location.hash = "settings"; renderSettingsTabs(); }
+function navigateSettings(tab = "romm", focus = null) {
+  settingsView = tab; location.hash = "settings"; renderSettingsTabs();
+  if (tab === "assistant") recoverAgentLogin();
+  if (focus) setTimeout(() => { const node = document.querySelector(focus); node?.scrollIntoView?.({block: "center"}); node?.focus?.(); }, 50);
+}
 function renderRoute() {
   route = parseRoute();
   if (location.hash === "#storage") settingsView = "storage";
@@ -397,6 +418,40 @@ function renderRoute() {
   if (route.page === "activity") renderActivity();
 }
 function restoreProjectPage() { if (projectPageElement.parentElement !== projectPageHome) projectPageHome.insertBefore(projectPageElement, projectPageHome.querySelector("footer")); }
+function openRommSettings() { navigateSettings("romm", "#romm-url"); }
+function openAssistantSettings() { navigateSettings("assistant", "#assistant-form"); }
+// Why drafting would fail right now, in words that say what to do. Empty when it can run.
+function assistantNeeds(settings = assistantSettings()) {
+  if (settings.configured || !settings.provider || settings.provider === "handoff") return "";
+  const label = settings.provider_label || settings.drafting_model || "the assistant", account = settings.agents?.[settings.provider];
+  if (account) return account.installed === false ? `${label} isn\u2019t installed on this server. Choose another assistant in Settings, or use your own chat.` : `${label} isn\u2019t signed in. Sign in under Settings \u2192 Drafting assistant, or use your own chat.`;
+  return `${label} needs its connection details (address, model or API key) under Settings \u2192 Drafting assistant, or use your own chat.`;
+}
+function firstRunEmptyState() {
+  const connected = rommReady();
+  const empty = emptyState("▦", connected ? "Add your first game" : "Welcome to Portkeeper", connected ? "RomM is connected. Add your first game and Portkeeper will keep its builds ready." : "Connect RomM first so Portkeeper can find your game files, then add your first game.");
+  empty.id = "library-empty";
+  empty.append(el("div", "onboarding-steps", [el("span", connected ? "done" : "", [el("b", "", connected ? "✓" : "1"), "Connect RomM"]), el("span", "", [el("b", "", "2"), "Add a game"]), el("span", "", [el("b", "", "3"), "Test a build"])]));
+  empty.append(connected ? button("Add your first game", "button primary", openAddGame) : button("Connect RomM", "button primary", openRommSettings));
+  if (!connected) empty.append(button("Add a game without RomM", "text-button", openAddGame));
+  empty.append(button("Explore with a synthetic demo", "text-button", () => navigateSettings("demo")));
+  const optional = [];
+  if (!assistantSettings().configured) optional.push("a drafting assistant (only for custom games)");
+  if (!brokerConnected()) optional.push("a worker broker (only for automatic setup)");
+  if (optional.length) empty.append(el("p", "field-help", `Optional, later: ${optional.join(" and ")}. Catalog games need neither.`));
+  return empty;
+}
+// One sentence and one action for the most useful missing piece when games already exist.
+function renderLibraryNextStep(games) {
+  const node = $("library-next-step"); node.replaceChildren(); node.hidden = true;
+  if (!state.projects.length) return;
+  let message, action;
+  if (!rommReady()) { message = "Connect RomM to see your downloads and cover art."; action = button("Connect RomM", "button primary small", openRommSettings); }
+  else if (!assistantSettings().configured && games.some((game) => !hasDownloads(game) && !game.packaging && !game.profile && !game.autonomous_recipe && !game.demo)) {
+    message = "Some games still need packaging steps. Connect a drafting assistant, or use your own chat."; action = button("Set up drafting assistant", "button primary small", openAssistantSettings);
+  } else return;
+  node.append(el("span", "", message), action); node.hidden = false;
+}
 function renderLibrary() {
   const grid = $("project-grid");
   const workspaceActive = libraryLayout === "workspace" && ["library", "project"].includes(route.page);
@@ -412,13 +467,16 @@ function renderLibrary() {
   $("attention-summary").classList.toggle("attention-active", attention > 0);
   if (!retainedMain) grid.replaceChildren(); grid.className = `project-grid layout-${libraryLayout}`;
   if (workspaceActive) $("library-page").hidden = false;
-  $("library-results").textContent = "0 games";
-  if (!state.projects.length) {
+  renderLibraryNextStep(games);
+  const noGames = !state.projects.length;
+  // "0 games, 0 platform downloads, 0 need attention" says nothing to a new user; say what is missing instead.
+  document.querySelectorAll("#library-summary-counts").forEach((node) => { node.hidden = noGames; });
+  $("summary-empty").hidden = !noGames;
+  $("summary-empty").textContent = rommReady() ? "No games yet. Add your first game to begin." : "Nothing here yet. Connect RomM to begin.";
+  $("library-results").textContent = noGames ? "" : "0 games";
+  if (noGames) {
     if (retainedMain) { restoreProjectPage(); grid.replaceChildren(); }
-    const empty = emptyState("▦", "A home for your next playthrough", "Connect your RomM library, choose a game, and preserve its updates.");
-    empty.append(el("div", "onboarding-steps", [el("span", "", [el("b", "", "1"), "Connect RomM"]), el("span", "", [el("b", "", "2"), "Select a game"]), el("span", "", [el("b", "", "3"), "Test a build"])]));
-    empty.append(button("Set up your first game →", "button primary", openAddGame), button("Explore with a synthetic demo", "text-button", () => navigateSettings("demo")));
-    grid.append(empty); return;
+    grid.append(firstRunEmptyState()); return;
   }
   const matches = games.filter((project) => {
     const hasPackages = hasDownloads(project);
@@ -437,8 +495,7 @@ function renderLibrary() {
     matches.forEach((project) => {
       const choose = button("", "workspace-game-button", () => { workspaceProjectId = project.id; savePreference("portkeeper.selected-game", project.id); navigateProject(project.id); });
       choose.setAttribute("aria-pressed", String(project.id === selected.id));
-      const cover = projectCover(project, "workspace-game-cover");
-      if (cover) choose.append(cover);
+      choose.append(projectCover(project, "workspace-game-cover", true));
       choose.append(el("span", "", [el("strong", "", project.name), el("small", "", gameAvailability(project))]));
       sidebar.append(choose);
     });
@@ -452,7 +509,7 @@ function renderLibrary() {
     const newest = artifacts[0];
     const good = artifacts.find((artifact) => knownGood(artifact, project));
     const title = button(project.name, "project-name", () => navigateProject(project.id));
-    const avatar = el("div", "project-avatar", String(project.name || "P").split(/\s+/).map((word) => word[0]).slice(0, 2).join("").toUpperCase());
+    const avatar = el("div", "project-avatar", gameInitials(project));
     const cover = projectCover(project, "project-cover-thumb");
     if (cover) {
       const initials = avatar.textContent;
@@ -623,7 +680,7 @@ async function loadVersion() {
     const info = await api("/api/version");
     if (!info?.version) return;
     appVersion = info;
-    const label = `v${info.version}${info.commit ? ` (${info.commit.slice(0, 7)})` : ""}`;
+    const label = `v${info.version} (${info.commit ? info.commit.slice(0, 7) : "dev"})`;
     $("app-version").textContent = label;
     $("about-version")?.replaceChildren(document.createTextNode(label));
   } catch (error) { /* the version is informational only */ }
@@ -653,11 +710,24 @@ async function refresh(manual = false) {
     $("load-error").textContent = `Could not refresh: ${error.message}. Retrying automatically.`; $("load-error").hidden = false;
   } finally { refreshing = false; }
 }
-async function runAction(key, path, body, message) {
+// Errors that stay next to the control that caused them until dismissed or superseded; toasts are for confirmations.
+const actionErrors = new Map();
+function actionErrorNode(key) {
+  const entry = actionErrors.get(key);
+  if (!entry) return null;
+  const dismiss = () => { actionErrors.delete(key); lastRender = null; lastProjectRender = null; render(); };
+  const actions = [];
+  if (entry.fix) actions.push(button(entry.fix.label, "button primary small", () => { actionErrors.delete(key); entry.fix.run(); }));
+  actions.push(button("Dismiss", "button secondary small", dismiss));
+  const node = el("div", "action-error", [el("p", "project-error", entry.message), el("div", "inline-actions", actions)]);
+  node.setAttribute("role", "alert");
+  return node;
+}
+async function runAction(key, path, body, message, inlineFix = null) {
   if (busy.has(key)) return null;
   busy.add(key); render();
-  try { const result = await api(path, { method: "POST", body }); if (message) toast(message); await refresh(); return result; }
-  catch (error) { toast(error.message, true); return null; }
+  try { const result = await api(path, { method: "POST", body }); actionErrors.delete(key); if (message) toast(message); await refresh(); return result; }
+  catch (error) { if (inlineFix) actionErrors.set(key, { message: error.message, fix: inlineFix }); else toast(error.message, true); return null; }
   finally { busy.delete(key); render(); }
 }
 function checkProject(id) { return runAction(`check-${id}`, `/api/projects/${encodeURIComponent(id)}/check`, {}, "Update check queued."); }
@@ -693,8 +763,12 @@ function renderProject() {
   content.setAttribute("aria-labelledby", `project-${route.tab}-tab`);
   if (!project) { heading.append(el("div", "", [el("h1", "", "Game unavailable"), el("p", "", "Return to the library to choose a game.")])); return; }
   const title = el("div", "project-title-detail", [el("h1", "", project.name), projectSource(project), el("div", "project-targets", gameTargets(project).map(targetPill))]);
-  const cover = projectCover(project, "project-hero-cover");
-  if (cover) title.prepend(cover);
+  const cover = projectCover(project, "project-hero-cover", true, (source) => {
+    if (source !== "romm" || !project.id) return;
+    const note = document.getElementById("cover-source-note");
+    if (note) note.hidden = false;
+  });
+  title.prepend(cover);
   const working = Boolean(projectActiveJob(project)) || busy.has(`check-${project.id}`) || busy.has(`build-${project.id}`);
   const actions = el("div", "project-header-actions");
   if (!project.demo) actions.append(button("Check for a new version", "button secondary small", () => checkProject(project.id), working));
@@ -757,7 +831,8 @@ function renderOverview(project, content) {
   packageCard.append(el("p", "compact-note", "Download availability does not confirm gameplay. A launch check confirms startup only."));
   if (projectActiveJob(project)?.status !== "waiting_user") left.append(nextStepCard(project));
   left.append(packageCard);
-  right.append(button("Change cover art", "button secondary", () => openCoverSearch(project.id)));
+  const fromRomm = el("p", "compact-note", "Cover from RomM. Choose your own to replace it; your choice is never overwritten."); fromRomm.id = "cover-source-note"; fromRomm.hidden = true;
+  right.append(fromRomm, button("Change cover art", "button secondary", () => openCoverSearch(project.id)));
   grid.append(left, right); content.append(grid);
 }
 function progressSteps(job, project) {
@@ -982,7 +1057,7 @@ function definitionInstructions(project) {
     return el("div", "instruction-platform", [el("h4", "", targetLabels[target] || target), el("p", "field-help", `Launch: ${launch.command || "not recorded"}${launch.instructions ? " — " + launch.instructions : ""}`), el("p", "field-help", `Expected files: ${(output.expected_files || []).join(", ") || "not recorded"}`), el("p", "field-help", `Requirements: ${dependencies.join("; ") || "not recorded"}`)]);
   })]);
   group("6. Saves, new-release checks & known limitations", [el("p", "field-help", `Saves & settings: ${definition.saves || "Not recorded."}`), ...(definition.source_checks || []).map((check) => el("p", "field-help", `New-release check: ${check.description} (${check.path})`)), ...(definition.limitations || []).map((item) => el("p", "review-notes", item))]);
-  if ((definition.history || []).length) group("History", definition.history.map((item) => el("p", "field-help", item)));
+  if ((definition.history || []).length) group("History", definition.history.map((item) => el("p", "field-help", localizeDates(item))));
   section.append(list);
   return section;
 }
@@ -1010,7 +1085,7 @@ function inputsSection(project) {
     if (choices) {
       const select = el("select"); select.id = `input-choice-${project.id}-${item.id}`; select.setAttribute("aria-label", `${item.label} found files`);
       select.append(el("option", "", "Choose a matching file…")); select.firstChild.value = "";
-      (choices.found || []).forEach(found => { const option = el("option", "", `${found.path}${found.ps4 ? ` · ${found.ps4.title_id} · ${found.ps4.app_version || "version checked after extraction"} · ${found.ps4.role}` : ""}`); option.value = JSON.stringify({path:found.path, source:found.source || (item.kind === "directory" ? "prepared" : "inputs")}); select.append(option); });
+      (choices.found || []).forEach(found => { const option = el("option", "", `${found.path}${found.ps4 ? ` · ${found.ps4.title_id} · ${found.ps4.app_version || "version checked after extraction"} · ${found.ps4.role}` : ""}${found.member ? ` · ${found.member}` : ""}`); option.value = JSON.stringify({path:found.path, ...(found.member ? {member:found.member} : {}), source:found.source || (item.kind === "directory" ? "prepared" : "inputs")}); select.append(option); });
       select.value = inputChoiceDrafts.get(`${project.id}-${item.id}`) || "";
       const use = button("Use this file", "button secondary small", () => bindInput(project.id, item.id, JSON.parse(select.value)), !select.value);
       select.addEventListener("change", () => { inputChoiceDrafts.set(`${project.id}-${item.id}`, select.value); use.disabled = !select.value; });
@@ -2069,7 +2144,11 @@ function renderCustomGame(content, actions) {
     radio.addEventListener("change", () => { custom.method = value; renderAddGame(); });
     list.append(el("label", "choice-card", [radio, el("div", "", [el("h3", "", label), el("p", "", help)])]));
   });
-  if (!settings.configured) list.append(button("Connect a local or cloud model in Settings →", "text-button", () => { $("add-game-dialog").close(); navigateSettings("assistant"); }));
+  if (!settings.configured) {
+    const needs = assistantNeeds(settings);
+    if (needs) list.prepend(el("div", "choice-card disabled", [el("div", "", [el("h3", "", `Draft with ${settings.drafting_model} (not available yet)`), el("p", "", needs)])]));
+    list.append(button("Connect a local or cloud model in Settings →", "text-button", () => { $("add-game-dialog").close(); openAssistantSettings(); }));
+  }
   method.append(list);
   content.append(method, el("p", "first-run-note warn", "A custom game is marked as not packaged until its packaging steps are approved and a build succeeds."));
   const submit = button(addGame.busy ? "Adding…" : "Add game", "button primary", submitCustomGame, addGame.busy || !custom.targets.length || !custom.name.trim()); submit.id = "custom-add-submit"; actions.append(submit);
@@ -2478,7 +2557,7 @@ function draftCard(project) {
 }
 function renderProposalReview(card, project, proposal, actionsHost = null) {
   const definition = proposal.definition, view = proposal.view || {};
-  card.append(el("p", "detail-note", `Drafted by ${proposal.source} · ${dateLabel(proposal.created_at)}. Nothing has run. Review it before approving.`));
+  card.append(el("p", "detail-note", `Drafted by ${localizeDates(proposal.source)} · ${dateLabel(proposal.created_at)}. Nothing has run. Review it before approving.`));
   if (proposal.explanation) card.append(el("p", "review-notes", proposal.explanation));
   if (proposal.investigation_plan) card.append(disclosure(`investigation-plan:${proposal.id}`, "diagnostics-list", [el("summary", "table-action", "Reviewed investigation plan"), jsonViewer(`investigation:${proposal.id}`, proposal.investigation_plan)]));
   card.append(el("div", "detail-facts", [meta("Platforms", definition.targets.map((target) => targetLabels[target] || target).join(", ")), meta("Files for packaging", definition.inputs.filter((item) => item.required !== false).map((item) => item.label).join("; ") || "None"), meta("First launch", view.first_run?.text || definition.first_run?.summary || "Not stated", true)]));
@@ -2542,8 +2621,9 @@ function renderInvestigationResult(node, project, report, actionsHost = null) {
     const consent = input(`investigation-inputs-${id}`, "checkbox");consent.checked = investigationInputs.get(id) ?? false;
     consent.addEventListener("change", () => investigationInputs.set(id, consent.checked));
     node.append(el("label", "check-label", [consent, "Use my selected game files in disposable draft tests"]), el("p", "field-help", "Off: test public runtime files and mark game-data steps unverified. On: the runner may use your selected inputs. Nothing is published by a test."));
-    const draft = button("Draft packaging steps from this plan", "button primary small", () => { if (actionsHost && $("draft-review-dialog").open) $("draft-review-dialog").close(); return queueDraftFromPlan(id, report); }, Boolean(projectActiveJob(project)) || busy.has(`draft-${id}`));
-    if (actionsHost) actions.append(draft); else node.append(draft);
+    const draft = button("Draft packaging steps from this plan", "button primary small", async () => { const result = await queueDraftFromPlan(id, report); if (result && actionsHost && $("draft-review-dialog").open) $("draft-review-dialog").close(); }, Boolean(projectActiveJob(project)) || busy.has(`draft-${id}`));
+    const failure = actionErrorNode(`draft-${id}`);
+    if (actionsHost) actions.append(...(failure ? [failure] : []), draft); else node.append(...(failure ? [failure] : []), draft);
   }
   if (actionsHost) { actions.append(button("Dismiss", "button secondary small", async () => { const result = await runAction(`discard-${report.id}`, `/api/proposals/${encodeURIComponent(report.id)}/discard`, {}, "Investigation dismissed."); if (result && $("draft-review-dialog").open) $("draft-review-dialog").close(); }, busy.has(`discard-${report.id}`))); actionsHost.append(actions); }
   node.append(el("p", "quiet-note", "Matched quotations and capability checks do not establish that every claim is correct or that gameplay works. Review the plan before drafting; the resulting definition needs its own approval."));
@@ -2575,7 +2655,7 @@ function retryInvestigationWithCorrections(id) {
   return runAction(`investigate-${id}`, `/api/projects/${encodeURIComponent(id)}/investigate`, {instruction:(assistantPromptDrafts.get(id) || "").trim(), max_calls:limit, prepare_game_files:prepareDraftGameFiles(id)}, "Retrying the investigation with automatic corrections.");
 }
 function queueDraftFromPlan(id, report) {
-  return runAction(`draft-${id}`, `/api/projects/${encodeURIComponent(id)}/draft`, {instruction:(assistantPromptDrafts.get(id) || "").trim(), investigation_id:report.id, prepare_game_files:prepareDraftGameFiles(id), review_model:draftModelReviews.get(id) ?? false, max_calls:draftCorrectionLimits.get(id) ?? 1, test_inputs:investigationInputs.get(id) ?? false}, "Drafting from the reviewed plan. Review the checked definition before approval.");
+  return runAction(`draft-${id}`, `/api/projects/${encodeURIComponent(id)}/draft`, {instruction:(assistantPromptDrafts.get(id) || "").trim(), investigation_id:report.id, prepare_game_files:prepareDraftGameFiles(id), review_model:draftModelReviews.get(id) ?? false, max_calls:draftCorrectionLimits.get(id) ?? 1, test_inputs:investigationInputs.get(id) ?? false}, "Drafting from the reviewed plan. Review the checked definition before approval.", { label: "Investigate again", run: () => { if ($("draft-review-dialog").open) $("draft-review-dialog").close(); investigateProject(id); } });
 }
 function retryDraftWithCorrections(id, report) {
   const body = {instruction:(assistantPromptDrafts.get(id) || "").trim(), prepare_game_files:prepareDraftGameFiles(id), review_model:draftModelReviews.get(id) ?? false, max_calls:3};
