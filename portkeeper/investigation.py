@@ -299,13 +299,13 @@ def check_plan(plan, project, capture, reader):
         raise Invalid('Plan evidence must be an array of at most 12 quotations')
     nodes = {node['id']: node for node in reader.nodes}
     evidence, problems = [], []
-    invalid = []
+    invalid, known = [], factsheet.by_id(reader.sheet)
     for ref in references:
         if isinstance(ref, dict) and 'facts' in ref:
             ids = ref['facts']
             if not isinstance(ids, list) or not 1 <= len(ids) <= 10 or any(not isinstance(item, str) or len(item) > 20 for item in ids):
                 raise Invalid('Evidence facts must be a list of 1–10 fact IDs such as ["f1","f2"]')
-            invalid += [item for item in ids if item not in factsheet.by_id(reader.sheet) and item not in invalid]
+            invalid += [item for item in ids if item not in known and item not in invalid]
     if invalid:
         raise Invalid('Unknown fact IDs: ' + ', '.join(invalid[:20]) + '. Cite only IDs listed in fact_sheet, or quote evidence you requested.')
     for ref in references:
@@ -314,7 +314,7 @@ def check_plan(plan, project, capture, reader):
                 raise Invalid('Evidence references need the fact IDs and the claim they support')
             facts, _ = factsheet.cited(ref['facts'], reader.sheet)
             evidence.append({'source': facts[0]['id'], 'facts': [fact['id'] for fact in facts], 'quote': ' | '.join(fact['text'] for fact in facts)[:1000],
-                             'supports': ref['supports'], 'matched': True, 'path': facts[0]['source']['file'], 'doc_fact': any(fact['doc'] for fact in facts)})
+                             'supports': ref['supports'], 'matched': True, 'path': facts[0]['source']['file'], 'doc_fact': any(fact['doc'] and fact['kind'] in factsheet.EVIDENCE_KINDS for fact in facts)})
             continue
         if not isinstance(ref, dict) or any(not isinstance(ref.get(key), str) for key in ('source', 'quote', 'supports')) or not 1 <= len(ref['quote']) <= 1000 or len(ref['supports']) > 1000:
             raise Invalid('Evidence references need fact IDs, or a source id with an exact quote, and the claim it supports')

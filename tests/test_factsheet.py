@@ -54,6 +54,14 @@ class FactSheetTests(unittest.TestCase):
         self.assertTrue(any('ntsc-final' in text for text in texts(sheet, 'version_name')))
         self.assertEqual({f['data']['tool'] for f in sheet['facts'] if f['kind'] == 'tool_mention'}, {'cmake', 'python'})
 
+    def test_long_lines_are_bounded_and_secrets_redacted(self):
+        import time
+        start = time.time()
+        sheet = build({}, 'a' * 200000 + '\n' + ('a.' * 100000), assets=[])
+        self.assertLess(time.time() - start, 2)
+        sheet = build({}, 'api_key: ' + 'ab' * 16 + ' rom.z64', assets=[])
+        self.assertNotIn('ab' * 16, json.dumps(sheet))
+
     def test_sheet_is_deterministic(self):
         args = ({'pd.zip': ['pd.exe']}, README)
         self.assertEqual(build(*args), build(*args))
@@ -95,6 +103,19 @@ class FactCitationTests(Base):
         self.assertTrue(request['evidence'])
         self.assertEqual(len(request['archive_samples']), 4)
 
+
+    def test_fact_citation_validation_errors(self):
+        for bad in ('f1', [], ['f1'] * 11, ['f' * 21]):
+            with self.assertRaises(investigation.Invalid):
+                investigation.check_plan(self.cited_plan(bad), self.project, self.capture, self.reader())
+
+    def test_weak_or_non_documentation_facts_do_not_satisfy_the_evidence_gate(self):
+        reader = self.reader()
+        weak = [f['id'] for f in reader.sheet['facts'] if not f['doc'] or f['kind'] == 'tool_mention']
+        self.assertTrue(weak)
+        plan = self.cited_plan(weak[:1])
+        result = investigation.check_plan(plan, self.project, self.capture, reader)
+        self.assertFalse(result['can_draft'])
 
     def test_unknown_fact_ids_are_rejected_listing_each_invalid_id(self):
         with self.assertRaisesRegex(investigation.Invalid, r'Unknown fact IDs: f998, f999'):

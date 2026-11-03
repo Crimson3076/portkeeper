@@ -11,11 +11,13 @@ from pathlib import PurePosixPath
 from . import packaging
 
 MAX_FACTS = 120
+MAX_LINE = 500
+EVIDENCE_KINDS = ('hash', 'data_file', 'version_name', 'setup_line')
 EXECUTABLE = re.compile(r'(?i)\.(?:exe|appimage|x86_64|x86|bat|cmd|sh)$')
 LIBRARY = re.compile(r'(?i)\.(?:dll|dylib|so(?:\.\d+)*)$')
 HASH = re.compile(r'(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{64}|[0-9A-Fa-f]{40}|[0-9A-Fa-f]{32})(?![0-9A-Fa-f])')
 HASH_NAMES = {32: 'md5', 40: 'sha1', 64: 'sha256'}
-DATA_FILE = re.compile(r'(?i)(?<![\w.-])(?:[\w.+()-]+/)*[\w.+()-]+\.(?:z64|n64|v64|rom|iso|ciso|bin|cue|chd|sfc|smc|nes|gba|nds|wad|pkg|wud|wux|rpx|o2r|otr)\b')
+DATA_FILE = re.compile(r'(?i)(?<![\w.-])(?:[^\s/]+/)*[\w.+()-]+\.(?:z64|n64|v64|rom|iso|ciso|bin|cue|chd|sfc|smc|nes|gba|nds|wad|pkg|wud|wux|rpx|o2r|otr)\b')
 VERSION_NAME = re.compile(r'(?i)\b(?:ntsc|pal|jpn)-[a-z0-9][a-z0-9.]*')
 SETUP_LINE = re.compile(r'(?i)\b(?:place|put|copy|folder|directory|rom|required|requires|need|needs)\b')
 BACKTICKED = re.compile(r'`([^`\n]{1,120})`')
@@ -95,7 +97,9 @@ def _documents(context):
 
 
 def _scan(sheet, file, text, seen):
+    from .assistant import redact_text
     for number, line in enumerate(text.splitlines(), 1):
+        line = redact_text(line[:MAX_LINE])
         stripped = line.strip()
         if not stripped:
             continue
