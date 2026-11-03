@@ -2267,15 +2267,16 @@ function nextStepCard(project) {
 
 function automaticAvailable() {
   const config = state.automation || {};
-  return Boolean(config.policy?.enabled && config.worker?.ready &&
+  return Boolean(config.policy?.enabled && (config.worker?.ready || config.worker?.offline) &&
     (assistantSettings().configured && config.policy.eligible_providers?.includes(assistantSettings().provider)));
 }
+let brokerDraft = {};
 function renderAutomaticSettings(parent) {
   const config = state.automation || {}, saved = config.policy || {}, worker = config.worker || {};
   let card = $("automatic-settings");
   if (!card) { card = el("section", "settings-card"); card.id = "automatic-settings"; parent.append(card); }
   // Keep controls while other jobs update; changing the connection rebuilds them.
-  const fingerprint = JSON.stringify([config, assistantSettings().provider, busy.has("automatic-policy")]);
+  const fingerprint = JSON.stringify([config, assistantSettings().provider, busy.has("automatic-policy"), busy.has("broker-pair")]);
   if (card.dataset.fingerprint === fingerprint) return;
   card.dataset.fingerprint = fingerprint;
   const draft = automaticPolicyDraft || saved;
@@ -2285,6 +2286,22 @@ function renderAutomaticSettings(parent) {
     el("p", "field-help", [el("strong", "", "What is a worker broker? "), BROKER_EXPLANATION]),
     el("p", worker.ready ? "field-help" : "review-notes", worker.ready ? `Worker ready · ${worker.backend} · ${Math.round((worker.limits?.workspace_bytes || 0) / 1024**3)} GiB temporary workspace` : worker.error || "Worker not connected."),
     externalLink("Worker installation & privacy settings ↗", "https://github.com/Crimson3076/portkeeper/blob/main/docs/AUTOMATION.md"));
+  if (worker.version) card.append(el("p", "field-help", `Broker version ${worker.version} · protocol ${worker.protocol} · rootless check ${worker.ready ? "passed" : "not passed"}`));
+  if (worker.offline) card.append(el("p", "field-help", "The broker is offline. New builds wait in the queue and start when it returns."));
+  const link = config.link || {};
+  if (link.mode !== "local") {
+    const url = input("broker-url", "text"); url.value = brokerDraft.url ?? link.url ?? link.default_url ?? ""; url.placeholder = "https://broker-vm:8799";
+    url.addEventListener("input", () => { brokerDraft.url = url.value; });
+    const code = input("broker-code", "text"); code.placeholder = "Pairing code printed by the broker"; code.autocomplete = "off";
+    field(card, "Broker address", url); field(card, link.paired ? "New pairing code" : "Pairing code", code);
+    card.append(el("div", "inline-actions", [
+      button(link.paired ? "Pair again" : "Pair with broker", "button secondary small", async () => {
+        const result = await runAction("broker-pair", "/api/automation/broker/pair", {url: url.value.trim(), code: code.value.trim()}, "Paired with the build broker.");
+        if (result) { brokerDraft = {}; await refresh(); }
+      }, busy.has("broker-pair")),
+      ...(link.paired ? [button("Forget broker", "text-button", async () => { if (await runAction("broker-forget", "/api/automation/broker/forget", {}, "Broker pairing removed.")) await refresh(); })] : [])]));
+    card.append(el("p", "field-help", "Run the pairing command on the broker machine (see the installation guide) to get a one-time code. The code is not stored here; only a revocable access token is."));
+  }
   const enabled = input("automatic-enabled", "checkbox"); enabled.checked = Boolean(draft.enabled);
   enabled.addEventListener("change", () => change("enabled", enabled.checked));
   card.append(el("label", "check-label", [enabled, "Enable automatic setup"]));
@@ -2478,7 +2495,7 @@ function automaticSetupCard(project) {
     }
   }
   card.append(el("div", "inline-actions", [button(recipe ? "Investigate & create a new recipe" : "Set up automatically", "button primary small", () => startAutomaticSetup(id), !automaticAvailable() || Boolean(projectActiveJob(project)) || !project.capture_id),
-    ...(recipe ? [button("Replay saved recipe (no model)", "button secondary small", () => startAutomaticSetup(id, true), !config.worker?.ready || !config.policy?.enabled || Boolean(projectActiveJob(project)))] : [])]));
+    ...(recipe ? [button("Replay saved recipe (no model)", "button secondary small", () => startAutomaticSetup(id, true), !(config.worker?.ready || config.worker?.offline) || !config.policy?.enabled || Boolean(projectActiveJob(project)))] : [])]));
   if (recipe) {
     const scripts = disclosure(`automatic-scripts:${id}`, "diagnostics-list", el("summary", "table-action", `Saved scripts & recipe JSON · version ${recipe.revision}`));
     recipe.steps.forEach((step, index) => { const copy = button("Copy script", "button secondary small", () => copyJson(step.script, copy)); scripts.append(el("h4", "", `${index + 1}. ${step.phase} · ${targetLabels[step.target] || step.target}`), copy, el("pre", "json-preview", step.script)); });
