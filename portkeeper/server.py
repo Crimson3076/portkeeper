@@ -236,13 +236,18 @@ class Handler(BaseHTTPRequestHandler):
                 metadata = project.get("metadata") or {}
                 rom_id = metadata.get("romm_rom_id")
                 if metadata.get("cover_policy") == "custom" and metadata.get("url_cover"):
-                    self.image(*self.engine.romm.artwork_preview(metadata["url_cover"]))
-                elif not rom_id:
-                    self.json(404, {"error": "Link a RomM entry to display its cover"})
+                    # A cover the user chose always wins and is never replaced by a RomM match.
+                    self.image(*self.engine.romm.artwork_preview(metadata["url_cover"]), source="user")
+                elif rom_id:
+                    self.image(*self.engine.romm.cover(rom_id), source="romm")
                 else:
-                    content_type, body = self.engine.romm.cover(rom_id)
-                    self.respond_headers(200, content_type, len(body), cache_control="private, max-age=60")
-                    self.wfile.write(body)
+                    slugs = [{"windows": "win"}.get(target, target) for target in project.get("targets") or []]
+                    try:
+                        content_type, body, _ = self.engine.romm.matched_cover(project["id"], metadata.get("game") or project["name"], slugs)
+                    except Invalid:
+                        self.json(404, {"error": "No RomM entry with a cover matches this game"})
+                    else:
+                        self.image(content_type, body, source="romm")
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/cover", path) and method == "POST":
                 self.json(200, self.engine.choose_cover(path.split("/")[3], self.body()))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/metadata-link", path) and method == "POST":
@@ -383,8 +388,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.json(200, reply)
 
-    def image(self, content_type, body):
-        self.respond_headers(200, content_type, len(body), cache_control="private, max-age=60")
+    def image(self, content_type, body, source=None):
+        self.respond_headers(200, content_type, len(body), cache_control="private, max-age=60",
+                             extra_headers={"X-Cover-Source": source} if source else None)
         self.wfile.write(body)
 
     def import_download(self, project_id, rom_id, file_id):

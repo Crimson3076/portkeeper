@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from portkeeper.engine import Engine
 from portkeeper.server import Handler, make_server
-from portkeeper.safety import checksum
+from portkeeper.safety import Invalid, checksum
 
 
 class AllowedHostTests(unittest.TestCase):
@@ -382,6 +382,27 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(headers["Cache-Control"], "private, max-age=60")
         self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
         cover.assert_called_once_with(10)
+
+    def test_cover_precedence_custom_then_linked_then_romm_match_then_none(self):
+        project = self.engine.create_project({"name": "Perfect Dark", "repo": "example/pd", "targets": ["linux"]})
+        path = f"/api/projects/{project['id']}/cover"
+        with patch.object(self.engine.romm, "matched_cover", return_value=("image/png", b"matched", 6)) as matched:
+            status, headers, body = self.request("GET", path)
+            self.assertEqual((status, body, headers["X-Cover-Source"]), (200, b"matched", "romm"))
+            self.assertEqual(matched.call_args.args, (project["id"], "Perfect Dark", ["linux"]))
+            self.engine.store.update("projects", project["id"], metadata={"romm_rom_id": 10, "cover_policy": "romm"})
+            with patch.object(self.engine.romm, "cover", return_value=("image/png", b"linked")):
+                self.assertEqual(self.request("GET", path)[2], b"linked")
+            matched.reset_mock()
+            self.engine.store.update("projects", project["id"], metadata={"romm_rom_id": 10, "cover_policy": "custom", "url_cover": "https://cdn.example/mine.png"})
+            with patch.object(self.engine.romm, "artwork_preview", return_value=("image/png", b"mine")) as chosen:
+                status, headers, body = self.request("GET", path)
+            self.assertEqual((body, headers["X-Cover-Source"]), (b"mine", "user"))
+            chosen.assert_called_once()
+            matched.assert_not_called()
+        self.engine.store.update("projects", project["id"], metadata={})
+        with patch.object(self.engine.romm, "matched_cover", side_effect=Invalid("no match")):
+            self.assertEqual(self.request("GET", path)[0], 404)
 
     def test_cover_preview_only_proxies_offered_artwork(self):
         status, _, body = self.request("GET", "/api/romm/cover-preview?url=https%3A%2F%2Finternal.example%2Fx.png")
