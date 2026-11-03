@@ -33,7 +33,7 @@ const draftModelReviews = new Map();
 const gameFileChoices = new Map(), gameFileChoiceLoading = new Set(), draftGameFileChoices = new Map(), inputChoiceDrafts = new Map();
 const draftCorrectionLimits = new Map();
 const modelResponses = new Map(), modelResponsesLoading = new Set();
-const researchTrails = new Map(), researchTrailsLoading = new Set();
+const researchTrails = new Map(), researchTrailsLoading = new Set(), researchTrailTimes = new Map();
 let trailDialogJobId = null;
 const investigationLimits = new Map(), investigationInputs = new Map();
 const automaticSetupDrafts = new Map(), scriptRecipeDrafts = new Map(), automaticRecords = new Map();
@@ -2593,8 +2593,10 @@ function runTitle(job) {
   return [attempt, model, time].filter(Boolean).join(", ") + ", " + outcome;
 }
 function loadResearchTrail(jobId) {
-  if (researchTrails.has(jobId) || researchTrailsLoading.has(jobId)) return;
+  const known = researchTrails.get(jobId), settled = known && !known.error && ["ready", "failed"].includes(known.status);
+  if (researchTrailsLoading.has(jobId) || (known && (settled || Date.now() - (researchTrailTimes.get(jobId) || 0) < 5000))) return; // errors and unfinished runs are refetched after 5s
   researchTrailsLoading.add(jobId);
+  researchTrailTimes.set(jobId, Date.now());
   api(`/api/jobs/${encodeURIComponent(jobId)}/research-trail`).then(trail => researchTrails.set(jobId, trail)).catch(error => researchTrails.set(jobId, { error: error.message })).finally(() => { researchTrailsLoading.delete(jobId); lastRender = null; render(); if ($("research-trail-dialog").open) renderTrailDialog(); });
 }
 function researchTrailBody(jobId) {
@@ -2612,7 +2614,7 @@ function researchTrailBody(jobId) {
     return el("li", `trail-step trail-${step.type}`, parts.filter(Boolean).join(" — "));
   })));
   else node.append(el("p", "field-help", "No steps were recorded for this run."));
-  if (trail.claims.length) node.append(el("h4", "", "Where each claim came from"), el("ul", "trail-claims", trail.claims.map(claim => el("li", `trail-claim trail-${claim.tag}`, [
+  if (trail.claims.length) node.append(el("h4", "", "Where each claim came from"), ...(trail.claims_note ? [el("p", "field-help", trail.claims_note)] : []), el("ul", "trail-claims", trail.claims.map(claim => el("li", `trail-claim trail-${claim.tag}`, [
     el("span", `trail-tag trail-tag-${claim.tag}`, trailTagLabels[claim.tag]), " ", el("strong", "", claim.claim + ": "), String(claim.value ?? "Not established"), el("span", "field-help", ` — ${claim.source}${claim.detail ? ` · “${claim.detail}”` : ""} (${trailTagHelp[claim.tag]})`)]))));
   return node;
 }

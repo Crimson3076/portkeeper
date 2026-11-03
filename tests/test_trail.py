@@ -99,6 +99,42 @@ class TrailTests(unittest.TestCase):
         with self.assertRaises(Exception):
             self.engine.research_trail(job_id)
 
+    def test_platform_support_needs_positive_evidence(self):
+        plan = copy.deepcopy(self.plan)
+        plan['targets'][0]['asset'] = 'nonexistent-windows.zip'
+        plan['capability_problems'] = ['windows: runtime asset is not in the preserved release']
+        claims = {c['claim']: c for c in trail.build({'kind': 'investigation', 'attempts': [], 'plan': plan})['claims']}
+        self.assertEqual(claims['Windows platform support']['tag'], 'unverified')
+        plan['capability_problems'] = []
+        claims = {c['claim']: c for c in trail.build({'kind': 'investigation', 'attempts': [], 'plan': plan})['claims']}
+        self.assertEqual(claims['Windows platform support']['tag'], 'inferred')
+
+    def test_game_data_is_not_verified_by_model_authored_supports_text(self):
+        plan = copy.deepcopy(self.plan)
+        plan['evidence'] = [{'source': 'F1', 'path': 'README.md', 'quote': 'Run Game.exe.', 'supports': 'game data included', 'matched': True}]
+        claims = {c['claim']: c for c in trail.build({'kind': 'investigation', 'attempts': [], 'plan': plan})['claims']}
+        self.assertEqual(claims['Required game data']['tag'], 'inferred')
+
+    def test_draft_that_changed_the_launch_path_is_unverified(self):
+        record = {'kind': 'draft', 'attempts': [], 'accepted_definition': {'launch': {'windows': {'command': 'Other.exe'}}, 'operations': []}}
+        result = trail.build(record, plan=self.plan)
+        claims = {c['claim']: c for c in result['claims']}
+        self.assertEqual(claims['Windows launch path']['tag'], 'unverified')
+        self.assertIn('investigation plan', result['claims_note'])
+
+    def test_malformed_records_do_not_raise(self):
+        record = {'kind': 'investigation', 'attempts': [{'kind': 'investigation', 'evidence_results': [{'id': 'x'}, 'junk']}],
+                  'evidence': [{}, {'id': 'a', 'kind': 'source'}], 'plan': {'targets': [{}], 'evidence': [{}]}}
+        self.assertIsInstance(trail.build(record)['steps'], list)
+
+    def test_trail_for_unknown_job_is_a_key_error(self):
+        with self.assertRaises(KeyError):
+            self.engine.research_trail('0' * 32)
+
+    def test_engine_persists_run_model(self):
+        job = self.engine.store.get('jobs', self.investigate([self.plan_reply()]))
+        self.assertEqual(job.get('run_model'), 'fixture')
+
 
 if __name__ == '__main__':
     unittest.main()
