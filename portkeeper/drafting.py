@@ -492,6 +492,8 @@ def prompt_parts(context, definitions, instruction=""):
                 'documentation': [{**item, 'text': item.get('text', '')[:1000]} for item in source.get('documentation', [])[:2]],
                 'runtime_documentation': [{**item, 'text': item['text'][:1800]} for item in source.get('runtime_documentation', [])[:4]],
                 'source_excerpts': [{**item, 'lines': item.get('lines', '')[:1000]} for item in relevant_excerpts(source.get('source_excerpts', []))[:6]]}
+    if context.get('examples'):
+        material['similar_approved_definitions'] = context['examples']
     preparation = context.get('game_file_preparation', {})
     candidate = preparation.get('catalog_candidate') or {}
     material['preparation_requested'] = preparation.get('enabled', True)
@@ -519,11 +521,15 @@ def prompt_parts(context, definitions, instruction=""):
              'Prepare and include owned game files when supported.' if preparation.get('enabled', True) else 'Keep game files external and describe first-launch requirements.',
              'Use literal inspected filenames. Keep required_members and expected_files short. Return one JSON object with explanation and definition. Leave verified_releases empty.',
              instruction[:4000]]
+    if context.get('examples'):
+        parts.append('similar_approved_definitions are working definitions for other projects, shown only as examples. Reuse their shape (archive unpacking, launcher writing, staging a user file) but take every file name, path, hash and launch executable from THIS project\'s material.')
     if context.get('investigation_plan'):
         parts.append('Turn the reviewed plan into packaging JSON. Use its actual runtime assets and capabilities. Retrieved evidence and a fact_sheet are supplied below; cite fact IDs (for example f3) in the explanation for each claim about files, launch paths or data. Never substitute a build helper for the game, add arbitrary compilation, or silently change the preparation workflow.')
     # Bound the entire request, including instructions/schema, not only source material.
     while len(SYSTEM) + len('\n'.join(parts)) + len(json.dumps(material)) > 24000:
-        if len(material.get('fact_sheet', [])) > max(15, material.get('fact_sheet_cited', 0)):
+        if material.get('similar_approved_definitions'):
+            material['similar_approved_definitions'].pop()
+        elif len(material.get('fact_sheet', [])) > max(15, material.get('fact_sheet_cited', 0)):
             material['fact_sheet'].pop()
         elif material['source_excerpts']:
             material['source_excerpts'].pop()
@@ -722,6 +728,11 @@ def unsupported_hashes(definition, material):
                     found.append(value)
     return found
 
+
+# Constrains local decoding (Ollama format / OpenAI json_schema). The definition is a real object,
+# not a JSON string; packaging validation still decides whether it is acceptable.
+DRAFT_LOCAL_SCHEMA = {'type': 'object', 'required': ['explanation', 'definition'],
+                      'properties': {'explanation': {'type': 'string'}, 'definition': {'type': 'object'}}}
 
 REVIEW_SCHEMA = {
     'type': 'object', 'additionalProperties': False, 'required': ['summary', 'findings'],

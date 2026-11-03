@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 from portkeeper import packaging
 from portkeeper.engine import Engine
-from portkeeper.runner import normalize_n64, overlay, read_sfo
+from portkeeper.runner import normalize_n64, overlay, read_sfo, read_zip_member, zip_members
 from portkeeper.safety import Invalid
 from portkeeper.storage import now
 
@@ -445,6 +445,107 @@ class PackagingEngineTests(unittest.TestCase):
         self.assertEqual([f["path"] for f in found[0]["found"]], ["n64/roms/Example (USA).v64"])
         self.assertEqual(found[0]["found"][0]["accepted"], "USA")
         self.assertEqual([(r["path"], r["reason"]) for r in found[0]["rejected"]], [("n64/roms/Other.z64", "not an accepted version")])
+
+    def zipped_rom(self, name, body):
+        (self.root / "inputs/n64/roms" / name).write_bytes(archive_bytes({"readme.txt": b"hi", "Game.v64": body}))
+
+    def test_find_automatically_matches_by_hash_inside_a_zip_with_any_name(self):
+        for path in (self.root / "inputs/n64/roms").iterdir():
+            path.unlink()
+        self.zipped_rom("Totally Different Name.zip", byteswapped(ROM))
+        project = self.project()
+        result = self.engine.bind_input(project["id"], {"input": "rom"})
+        binding = result["project"]["input_bindings"]["rom"]
+        self.assertEqual((binding["path"], binding["member"], binding["accepted"]), ("n64/roms/Totally Different Name.zip", "Game.v64", "USA"))
+
+    def test_zipped_rom_without_an_accepted_hash_is_not_selected(self):
+        for path in (self.root / "inputs/n64/roms").iterdir():
+            path.unlink()
+        self.zipped_rom("Wrong.zip", b"\x80\x37\x12\x40" + b"\x01" * 64)
+        project = self.project()
+        result = self.engine.bind_input(project["id"], {"input": "rom"})
+        self.assertEqual(result["found"], [])
+        self.assertIn("No file matches any accepted Example ROM hash (USA)", result["message"])
+        with self.assertRaisesRegex(Invalid, "not an accepted revision"):
+            self.engine.bind_input(project["id"], {"input": "rom", "path": "n64/roms/Wrong.zip", "member": "Game.v64"})
+
+    def test_ambiguous_hash_matches_are_reported_without_unrelated_files(self):
+        (self.root / "inputs/n64/roms/Copy.z64").write_bytes(ROM)
+        project = self.project()
+        result = self.engine.bind_input(project["id"], {"input": "rom"})
+        self.assertEqual(sorted(f["path"] for f in result["found"]), ["n64/roms/Copy.z64", "n64/roms/Example (USA).v64"])
+        self.assertEqual(result["message"], "2 files match Example ROM by hash; choose one.")
+
+    def test_member_choice_is_only_for_zipped_roms(self):
+        project = self.project()
+        with self.assertRaisesRegex(Invalid, "Only a ZIP archive"):
+            self.engine.bind_input(project["id"], {"input": "rom", "path": "n64/roms/Example (USA).v64", "member": "x"})
+
+    def test_build_extracts_the_zipped_rom_member(self):
+        for path in (self.root / "inputs/n64/roms").iterdir():
+            path.unlink()
+        self.zipped_rom("Game.zip", byteswapped(ROM))
+        project = self.check(self.project())
+        self.engine.bind_input(project["id"], {"input": "rom"})
+        result = self.engine.build(project["id"])
+        self.wait(project["id"])
+        jobs = [self.engine.store.get("jobs", job["id"]) for job in result["jobs"]]
+        self.assertEqual([job["status"] for job in jobs], ["ready", "ready"], [job.get("error") for job in jobs])
+        artifact = self.engine.store.all("artifacts")[0]
+        with zipfile.ZipFile(artifact["file"]) as bundle:
+            self.assertEqual(bundle.read("game.z64"), ROM)
+        self.assertEqual(self.engine.store.get("projects", project["id"])["input_bindings"]["rom"]["member"], "Game.v64")
+
+    def test_malformed_zip_members_do_not_abort_discovery(self):
+        for path in (self.root / "inputs/n64/roms").iterdir():
+            path.unlink()
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as bundle:
+            bundle.writestr("a_odd.v64", b"\x37\x80\x40\x12\x00")
+            bundle.writestr("b_bad.bin", bytes(range(256)) * 20)
+            bundle.writestr("c_good.v64", byteswapped(ROM))
+        raw = bytearray(buffer.getvalue())
+        start = raw.index(b"b_bad.bin") + len(b"b_bad.bin")
+        raw[start + 2:start + 12] = b"\xff" * 10  # corrupt the deflate stream
+        (self.root / "inputs/n64/roms/Damaged.zip").write_bytes(bytes(raw))
+        found = self.engine.packager.find_files(definition())[0]["found"]
+        self.assertEqual([(f["path"], f["member"]) for f in found], [("n64/roms/Damaged.zip", "c_good.v64")])
+
+    def test_find_files_lists_a_zipped_rom_with_its_member(self):
+        for path in (self.root / "inputs/n64/roms").iterdir():
+            path.unlink()
+        self.zipped_rom("Unrelated.zip", byteswapped(ROM))
+        found = self.engine.packager.find_files(definition())[0]["found"]
+        self.assertEqual([(f["path"], f["member"], f["accepted"]) for f in found], [("n64/roms/Unrelated.zip", "Game.v64", "USA")])
+
+    def test_build_key_changes_with_the_selected_zip_member(self):
+        self.zipped_rom("Two.zip", byteswapped(ROM))
+        project = self.project()
+        capture = {"commit": "c", "assets": []}
+        keys = []
+        for member in ("Game.v64", "readme.txt"):
+            project["input_bindings"] = {"rom": {"source": "inputs", "path": "n64/roms/Two.zip", "member": member}}
+            keys.append(self.engine.packager.build_key(project, definition(), capture, "linux"))
+        self.assertNotEqual(keys[0], keys[1])
+
+    def test_zip_member_safeguards_reject_unsafe_members(self):
+        path = self.root / "inputs/n64/roms/Limits.zip"
+        path.write_bytes(archive_bytes({"small.bin": b"abcd", "big.bin": b"x" * 100, "empty.bin": b""}))
+        self.assertEqual(zip_members(path, 100), ["small.bin", "big.bin"])
+        self.assertEqual(zip_members(path, 10), ["small.bin"])
+        self.assertEqual(read_zip_member(path, "big.bin", 100), b"x" * 100)
+        with self.assertRaisesRegex(Invalid, "cannot be used"):
+            read_zip_member(path, "big.bin", 99)
+        with patch("portkeeper.runner.MAX_MEMBERS", 2):
+            self.assertEqual(zip_members(path, 100), [])
+        flagged = self.root / "inputs/n64/roms/Flagged.zip"
+        raw = bytearray(archive_bytes({"secret.bin": b"abcd"}))
+        for signature, offset in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
+            raw[raw.index(signature) + offset] |= 0x1
+        flagged.write_bytes(bytes(raw))
+        self.assertEqual(zip_members(flagged, 100), [])
+        with self.assertRaisesRegex(Invalid, "cannot be used"):
+            read_zip_member(flagged, "secret.bin", 100)
 
     def test_add_from_catalog_binds_files_and_sets_up_in_one_step(self):
         self.engine.catalog.definitions = lambda: {"example-port": definition(first_run={"mode": "preloaded"})}

@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from portkeeper.engine import Engine
 from portkeeper.server import Handler, make_server
-from portkeeper.safety import checksum
+from portkeeper.safety import Invalid, checksum
 
 
 class AllowedHostTests(unittest.TestCase):
@@ -89,6 +89,14 @@ class HttpIntegrationTests(unittest.TestCase):
             self.assertEqual(resolve.call_count, 1)
         self.assertEqual(self.request('POST', '/api/discovery/resolve', {'url': 'http://localhost/secrets'})[0], 400)
         self.assertEqual(self.engine.store.all('projects'), [])
+
+    def test_unpair_requires_same_origin_json(self):
+        with patch.object(self.engine.automation, 'unpair', return_value={}) as unpair:
+            self.assertEqual(self.request('POST', '/api/automation/broker/unpair', {}, {'Origin': 'https://other.test'})[0], 400)
+            self.assertEqual(self.request('POST', '/api/automation/broker/unpair', {}, {'Content-Type': 'text/plain'})[0], 400)
+            self.assertEqual(unpair.call_count, 0)
+            self.assertEqual(self.request('POST', '/api/automation/broker/unpair', {})[0], 200)
+            self.assertEqual(unpair.call_count, 1)
 
     def test_automation_routes_preserve_origin_and_path_boundaries(self):
         worker = self.engine.automation
@@ -187,6 +195,16 @@ class HttpIntegrationTests(unittest.TestCase):
         status, _, body = self.request('POST', route, {'input': 'game_pkg', 'path': base.relative_to(self.engine.input_root).as_posix()})
         self.assertEqual(status, 200, body.decode())
         self.assertEqual(json.loads(body)['input_bindings']['game_pkg']['ps4']['app_version'], '01.00')
+
+    def test_release_review_dismiss_route_checks_project_and_capture(self):
+        project = self.engine.create_project({'name': 'Fixture', 'repo': 'example/game', 'targets': ['windows']})
+        capture = '1' * 32
+        route = f'/api/projects/{project["id"]}/release-reviews/{capture}/dismiss'
+        with patch.object(self.engine, 'dismiss_review', return_value={'id': capture}) as dismiss:
+            self.assertEqual(self.request('POST', route, {})[0], 200)
+            dismiss.assert_called_once_with(project['id'], capture)
+        # Unknown capture: the engine rejects it and the route answers 400.
+        self.assertEqual(self.request('POST', route, {})[0], 400)
 
     def test_draft_prompt_passes_game_file_preference_and_rejects_non_boolean(self):
         project = self.engine.create_project({'name': 'Fixture', 'repo': 'example/game', 'targets': ['windows']})
@@ -382,6 +400,27 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(headers["Cache-Control"], "private, max-age=60")
         self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
         cover.assert_called_once_with(10)
+
+    def test_cover_precedence_custom_then_linked_then_romm_match_then_none(self):
+        project = self.engine.create_project({"name": "Perfect Dark", "repo": "example/pd", "targets": ["linux"]})
+        path = f"/api/projects/{project['id']}/cover"
+        with patch.object(self.engine.romm, "matched_cover", return_value=("image/png", b"matched", 6)) as matched:
+            status, headers, body = self.request("GET", path)
+            self.assertEqual((status, body, headers["X-Cover-Source"]), (200, b"matched", "romm"))
+            self.assertEqual(matched.call_args.args, (project["id"], "Perfect Dark", ["linux"]))
+            self.engine.store.update("projects", project["id"], metadata={"romm_rom_id": 10, "cover_policy": "romm"})
+            with patch.object(self.engine.romm, "cover", return_value=("image/png", b"linked")):
+                self.assertEqual(self.request("GET", path)[2], b"linked")
+            matched.reset_mock()
+            self.engine.store.update("projects", project["id"], metadata={"romm_rom_id": 10, "cover_policy": "custom", "url_cover": "https://cdn.example/mine.png"})
+            with patch.object(self.engine.romm, "artwork_preview", return_value=("image/png", b"mine")) as chosen:
+                status, headers, body = self.request("GET", path)
+            self.assertEqual((body, headers["X-Cover-Source"]), (b"mine", "user"))
+            chosen.assert_called_once()
+            matched.assert_not_called()
+        self.engine.store.update("projects", project["id"], metadata={})
+        with patch.object(self.engine.romm, "matched_cover", side_effect=Invalid("no match")):
+            self.assertEqual(self.request("GET", path)[0], 404)
 
     def test_cover_preview_only_proxies_offered_artwork(self):
         status, _, body = self.request("GET", "/api/romm/cover-preview?url=https%3A%2F%2Finternal.example%2Fx.png")

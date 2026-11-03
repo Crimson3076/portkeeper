@@ -140,5 +140,25 @@ class DraftingFactTests(unittest.TestCase):
         self.assertIn('"id":"f106"', prompt)
 
 
+    def test_budget_trims_examples_and_uncited_facts_but_keeps_citations(self):
+        from portkeeper import drafting
+        sheet = [{'id': f'f{i}', 'kind': 'data_file', 'text': f'fact {i} ' + 'x' * 300}
+                 for i in range(1, 121)]
+        plan = {'outcome': 'ready', 'summary': 's', 'targets': [],
+                'game_files': {'requirements': ''}, 'steps': [],
+                'evidence': [{'source': 'f106', 'quote': 'fact 106', 'supports': 'x', 'facts': ['f106']}],
+                'fact_sheet': sheet}
+        context = {'project': {'repository': 'o/r', 'targets': ['linux']},
+                   'release': {'version': '1', 'archive_contents': {}},
+                   'investigation_plan': plan,
+                   'examples': [{'description': 'example ' * 4000}]}
+        system, prompt = drafting.prompt_parts(context, {})
+        material = json.loads(prompt.split('<project_material>\n', 1)[1].split('\n</project_material>', 1)[0])
+        self.assertLessEqual(len(system) + len(prompt), 24000)
+        self.assertEqual(material['similar_approved_definitions'], [])
+        self.assertLess(len(material['fact_sheet']), 60)
+        self.assertIn('f106', [fact['id'] for fact in material['fact_sheet']])
+
+
 if __name__ == '__main__':
     unittest.main()

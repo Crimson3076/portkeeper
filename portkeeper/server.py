@@ -167,6 +167,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(200, self.engine.assistant.test())
             elif method == 'POST' and path == '/api/automation/config':
                 self.json(200, self.engine.automation.configure(self.body()))
+            elif method == 'POST' and path == '/api/automation/broker/pair':
+                self.json(200, self.engine.automation.pair(self.body()))
+            elif method == 'POST' and path == '/api/automation/broker/unpair':
+                self.body()
+                self.json(200, self.engine.automation.unpair())
             elif method == 'GET' and path == '/api/automation/inputs':
                 query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
                 self.json(200, self.engine.automation.input_choices(query.get('path', [''])[0]))
@@ -236,13 +241,18 @@ class Handler(BaseHTTPRequestHandler):
                 metadata = project.get("metadata") or {}
                 rom_id = metadata.get("romm_rom_id")
                 if metadata.get("cover_policy") == "custom" and metadata.get("url_cover"):
-                    self.image(*self.engine.romm.artwork_preview(metadata["url_cover"]))
-                elif not rom_id:
-                    self.json(404, {"error": "Link a RomM entry to display its cover"})
+                    # A cover the user chose always wins and is never replaced by a RomM match.
+                    self.image(*self.engine.romm.artwork_preview(metadata["url_cover"]), source="user")
+                elif rom_id:
+                    self.image(*self.engine.romm.cover(rom_id), source="romm")
                 else:
-                    content_type, body = self.engine.romm.cover(rom_id)
-                    self.respond_headers(200, content_type, len(body), cache_control="private, max-age=60")
-                    self.wfile.write(body)
+                    slugs = [{"windows": "win"}.get(target, target) for target in project.get("targets") or []]
+                    try:
+                        content_type, body, _ = self.engine.romm.matched_cover(project["id"], metadata.get("game") or project["name"], slugs)
+                    except Invalid:
+                        self.json(404, {"error": "No RomM entry with a cover matches this game"})
+                    else:
+                        self.image(content_type, body, source="romm")
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/cover", path) and method == "POST":
                 self.json(200, self.engine.choose_cover(path.split("/")[3], self.body()))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/metadata-link", path) and method == "POST":
@@ -262,7 +272,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(202, self.engine.queue_investigation(path.split('/')[3], payload.get('instruction', ''), payload.get('max_calls', 3), payload.get('prepare_game_files', True)))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/draft", path) and method == "POST":
                 payload = self.body()
-                self.json(202, self.engine.queue_draft(path.split("/")[3], payload.get("instruction", ""), prepare_game_files=payload.get('prepare_game_files', True), review_model=payload.get('review_model', False), max_calls=payload.get('max_calls'), investigation_id=payload.get('investigation_id'), test_inputs=payload.get('test_inputs', False)))
+                self.json(202, self.engine.queue_draft(path.split("/")[3], payload.get("instruction", ""), prepare_game_files=payload.get('prepare_game_files', True), review_model=payload.get('review_model', False), max_calls=payload.get('max_calls'), investigation_id=payload.get('investigation_id'), test_inputs=payload.get('test_inputs', False), skip_template=payload.get('skip_template', False)))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/draft-prompt", path) and method == "POST":
                 payload = self.body()
                 result = self.engine.draft_prompt(path.split("/")[3], payload.get("instruction", ""), prepare_game_files=payload.get('prepare_game_files', True))
@@ -277,6 +287,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(data)
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/draft-import", path) and method == "POST":
                 self.json(201, self.engine.import_draft(path.split("/")[3], self.body().get("text", "")))
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/definition-export", path) and method == "GET":
+                data = (json.dumps(self.engine.export_definition(path.split("/")[3]), indent=2) + '\n').encode()
+                self.respond_headers(200, 'application/json', len(data), 'attachment; filename="portkeeper-definition.json"')
+                self.wfile.write(data)
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/definition-import", path) and method == "POST":
+                self.json(201, self.engine.import_definition(path.split("/")[3], self.body().get("text", "")))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/test-build", path) and method == "POST":
                 self.body()
                 self.json(202, self.engine.test_build(path.split("/")[3]))
@@ -329,6 +345,9 @@ class Handler(BaseHTTPRequestHandler):
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/recipe-proposal", path) and method == "POST":
                 payload = self.body()
                 self.json(201, self.engine.recipe_proposal(path.split("/")[3], payload.get("instruction", "")))
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/release-reviews/[a-f0-9]{32}/dismiss", path) and method == "POST":
+                self.body()
+                self.json(200, self.engine.dismiss_review(path.split("/")[3], path.split("/")[5]))
             elif re.fullmatch(r"/api/proposals/[a-f0-9]{32}/apply", path) and method == "POST":
                 self.body()
                 self.json(200, self.engine.apply_proposal(path.split("/")[3]))
@@ -383,8 +402,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.json(200, reply)
 
-    def image(self, content_type, body):
-        self.respond_headers(200, content_type, len(body), cache_control="private, max-age=60")
+    def image(self, content_type, body, source=None):
+        self.respond_headers(200, content_type, len(body), cache_control="private, max-age=60",
+                             extra_headers={"X-Cover-Source": source} if source else None)
         self.wfile.write(body)
 
     def import_download(self, project_id, rom_id, file_id):
