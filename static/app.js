@@ -173,6 +173,23 @@ function dateLabel(value) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
+const isoTimestamp = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})/g;
+function localTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+function localizeTimestamps(text) {
+  return String(text ?? "").replace(isoTimestamp, localTime);
+}
+const bareDate = /\b(\d{4})-(\d{2})-(\d{2})\b(?!T)/g;
+function localizeDates(text) {
+  return String(text ?? "").replace(isoTimestamp, (value) => dateLabelFull(value)).replace(bareDate, (_, year, month, day) => new Date(Number(year), Number(month) - 1, Number(day)).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" }));
+}
+function dateLabelFull(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString([], { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+}
+window.portkeeperFormat = { localTime, localizeTimestamps, localizeDates };
 function bytes(value) {
   if (!Number.isFinite(Number(value))) return "—";
   let size = Number(value), index = 0;
@@ -205,16 +222,25 @@ function repoLink(repo) {
   if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo || "")) { node.href = `https://github.com/${repo}`; node.target = "_blank"; node.rel = "noopener noreferrer"; }
   return node;
 }
-function projectCover(project, className) {
+function gameInitials(project) { return String(project.name || "P").split(/\s+/).map((word) => word[0]).filter(Boolean).slice(0, 2).join("").toUpperCase() || "P"; }
+function coverPlaceholder(project, className) {
+  const node = el("span", `cover-placeholder ${className}`, gameInitials(project));
+  node.setAttribute("role", "img"); node.setAttribute("aria-label", `${project.name} (no cover art)`);
+  return node;
+}
+// A user-chosen cover wins; otherwise the server uses the linked or title-matched RomM entry and caches it.
+// With placeholder set, a game without a cover gets a neutral tile with its initials instead of nothing.
+function projectCover(project, className, placeholder = false, onLoad = null) {
   const metadata = project.metadata || {};
   const custom = metadata.cover_policy === "custom" && metadata.url_cover;
-  if (!metadata.romm_rom_id && !custom) return null;
+  if (!custom && !metadata.romm_rom_id && (project.demo || !rommReady())) return placeholder ? coverPlaceholder(project, className) : null;
   const image = el("img", className);
-  const version = custom ? `art=${encodeURIComponent(metadata.url_cover.slice(-80))}` : `rom=${encodeURIComponent(metadata.romm_rom_id)}`;
+  const version = custom ? `art=${encodeURIComponent(metadata.url_cover.slice(-80))}` : `rom=${encodeURIComponent(metadata.romm_rom_id || "match")}`;
   image.src = `/api/projects/${encodeURIComponent(project.id)}/cover?${version}`;
   image.alt = `${project.name} cover art`;
   image.loading = "lazy"; image.decoding = "async";
-  image.addEventListener("error", () => image.remove(), {once: true});
+  if (onLoad) image.addEventListener("load", () => onLoad(custom ? "user" : "romm"), {once: true});
+  image.addEventListener("error", () => { if (placeholder) image.replaceWith(coverPlaceholder(project, className)); else image.remove(); }, {once: true});
   return image;
 }
 function projectSource(project) { return project.demo ? el("span", "repo-link", "Synthetic sample files") : repoLink(project.repo); }
@@ -376,7 +402,11 @@ function parseRoute() {
   return { page: ["activity", "settings"].includes(parts[0]) ? parts[0] : parts[0] === "storage" ? "settings" : "library", projectId: null, tab: "overview" };
 }
 function navigateProject(id, tab = "overview", jobId = null) { if (tab === "versions") tab = "activity"; selectedJobId = jobId; location.hash = `project/${encodeURIComponent(id)}/${tab}`; if (route.projectId === id && route.tab === tab) renderProject(); }
-function navigateSettings(tab = "romm") { settingsView = tab; location.hash = "settings"; renderSettingsTabs(); }
+function navigateSettings(tab = "romm", focus = null) {
+  settingsView = tab; location.hash = "settings"; renderSettingsTabs();
+  if (tab === "assistant") recoverAgentLogin();
+  if (focus) setTimeout(() => { const node = document.querySelector(focus); node?.scrollIntoView?.({block: "center"}); node?.focus?.(); }, 50);
+}
 function renderRoute() {
   route = parseRoute();
   if (location.hash === "#storage") settingsView = "storage";
@@ -388,6 +418,40 @@ function renderRoute() {
   if (route.page === "activity") renderActivity();
 }
 function restoreProjectPage() { if (projectPageElement.parentElement !== projectPageHome) projectPageHome.insertBefore(projectPageElement, projectPageHome.querySelector("footer")); }
+function openRommSettings() { navigateSettings("romm", "#romm-url"); }
+function openAssistantSettings() { navigateSettings("assistant", "#assistant-form"); }
+// Why drafting would fail right now, in words that say what to do. Empty when it can run.
+function assistantNeeds(settings = assistantSettings()) {
+  if (settings.configured || !settings.provider || settings.provider === "handoff") return "";
+  const label = settings.provider_label || settings.drafting_model || "the assistant", account = settings.agents?.[settings.provider];
+  if (account) return account.installed === false ? `${label} isn\u2019t installed on this server. Choose another assistant in Settings, or use your own chat.` : `${label} isn\u2019t signed in. Sign in under Settings \u2192 Drafting assistant, or use your own chat.`;
+  return `${label} needs its connection details (address, model or API key) under Settings \u2192 Drafting assistant, or use your own chat.`;
+}
+function firstRunEmptyState() {
+  const connected = rommReady();
+  const empty = emptyState("▦", connected ? "Add your first game" : "Welcome to Portkeeper", connected ? "RomM is connected. Add your first game and Portkeeper will keep its builds ready." : "Connect RomM first so Portkeeper can find your game files, then add your first game.");
+  empty.id = "library-empty";
+  empty.append(el("div", "onboarding-steps", [el("span", connected ? "done" : "", [el("b", "", connected ? "✓" : "1"), "Connect RomM"]), el("span", "", [el("b", "", "2"), "Add a game"]), el("span", "", [el("b", "", "3"), "Test a build"])]));
+  empty.append(connected ? button("Add your first game", "button primary", openAddGame) : button("Connect RomM", "button primary", openRommSettings));
+  if (!connected) empty.append(button("Add a game without RomM", "text-button", openAddGame));
+  empty.append(button("Explore with a synthetic demo", "text-button", () => navigateSettings("demo")));
+  const optional = [];
+  if (!assistantSettings().configured) optional.push("a drafting assistant (only for custom games)");
+  if (!brokerConnected()) optional.push("a worker broker (only for automatic setup)");
+  if (optional.length) empty.append(el("p", "field-help", `Optional, later: ${optional.join(" and ")}. Catalog games need neither.`));
+  return empty;
+}
+// One sentence and one action for the most useful missing piece when games already exist.
+function renderLibraryNextStep(games) {
+  const node = $("library-next-step"); node.replaceChildren(); node.hidden = true;
+  if (!state.projects.length) return;
+  let message, action;
+  if (!rommReady()) { message = "Connect RomM to see your downloads and cover art."; action = button("Connect RomM", "button primary small", openRommSettings); }
+  else if (!assistantSettings().configured && games.some((game) => !hasDownloads(game) && !game.packaging && !game.profile && !game.autonomous_recipe && !game.demo)) {
+    message = "Some games still need packaging steps. Connect a drafting assistant, or use your own chat."; action = button("Set up drafting assistant", "button primary small", openAssistantSettings);
+  } else return;
+  node.append(el("span", "", message), action); node.hidden = false;
+}
 function renderLibrary() {
   const grid = $("project-grid");
   const workspaceActive = libraryLayout === "workspace" && ["library", "project"].includes(route.page);
@@ -403,13 +467,16 @@ function renderLibrary() {
   $("attention-summary").classList.toggle("attention-active", attention > 0);
   if (!retainedMain) grid.replaceChildren(); grid.className = `project-grid layout-${libraryLayout}`;
   if (workspaceActive) $("library-page").hidden = false;
-  $("library-results").textContent = "0 games";
-  if (!state.projects.length) {
+  renderLibraryNextStep(games);
+  const noGames = !state.projects.length;
+  // "0 games, 0 platform downloads, 0 need attention" says nothing to a new user; say what is missing instead.
+  document.querySelectorAll("#library-summary-counts").forEach((node) => { node.hidden = noGames; });
+  $("summary-empty").hidden = !noGames;
+  $("summary-empty").textContent = rommReady() ? "No games yet. Add your first game to begin." : "Nothing here yet. Connect RomM to begin.";
+  $("library-results").textContent = noGames ? "" : "0 games";
+  if (noGames) {
     if (retainedMain) { restoreProjectPage(); grid.replaceChildren(); }
-    const empty = emptyState("▦", "A home for your next playthrough", "Connect your RomM library, choose a game, and preserve its updates.");
-    empty.append(el("div", "onboarding-steps", [el("span", "", [el("b", "", "1"), "Connect RomM"]), el("span", "", [el("b", "", "2"), "Select a game"]), el("span", "", [el("b", "", "3"), "Test a build"])]));
-    empty.append(button("Set up your first game →", "button primary", openAddGame), button("Explore with a synthetic demo", "text-button", () => navigateSettings("demo")));
-    grid.append(empty); return;
+    grid.append(firstRunEmptyState()); return;
   }
   const matches = games.filter((project) => {
     const hasPackages = hasDownloads(project);
@@ -428,8 +495,7 @@ function renderLibrary() {
     matches.forEach((project) => {
       const choose = button("", "workspace-game-button", () => { workspaceProjectId = project.id; savePreference("portkeeper.selected-game", project.id); navigateProject(project.id); });
       choose.setAttribute("aria-pressed", String(project.id === selected.id));
-      const cover = projectCover(project, "workspace-game-cover");
-      if (cover) choose.append(cover);
+      choose.append(projectCover(project, "workspace-game-cover", true));
       choose.append(el("span", "", [el("strong", "", project.name), el("small", "", gameAvailability(project))]));
       sidebar.append(choose);
     });
@@ -443,7 +509,7 @@ function renderLibrary() {
     const newest = artifacts[0];
     const good = artifacts.find((artifact) => knownGood(artifact, project));
     const title = button(project.name, "project-name", () => navigateProject(project.id));
-    const avatar = el("div", "project-avatar", String(project.name || "P").split(/\s+/).map((word) => word[0]).slice(0, 2).join("").toUpperCase());
+    const avatar = el("div", "project-avatar", gameInitials(project));
     const cover = projectCover(project, "project-cover-thumb");
     if (cover) {
       const initials = avatar.textContent;
@@ -485,26 +551,40 @@ function renderActivity() {
   Object.entries(tabs).forEach(([key, node]) => {
     const selected = activityView === key;
     node.classList.toggle("selected", selected); node.setAttribute("aria-selected", String(selected)); node.tabIndex = selected ? 0 : -1;
-    node.querySelector("span").textContent = key === "jobs" ? familyEvents.length : key === "packages" ? artifacts.length : key === "notifications" ? state.notifications.filter(notificationUnread).length : familyEvents.filter(event => event.activity_type === key).length;
+    node.querySelector("span").textContent = key === "jobs" ? familyEvents.length : key === "packages" ? artifacts.length : key === "notifications" ? state.notifications.filter(notificationUnread).length : key === "reviews" ? (state.review_queue || []).length : familyEvents.filter(event => event.activity_type === key).length;
   });
   const content = $("activity-content"); content.setAttribute("aria-labelledby", tabs[activityView].id);
-  $("activity-filters").hidden = activityView === "notifications";
+  $("activity-filters").hidden = ["notifications", "reviews"].includes(activityView);
   $("activity-type-field").hidden = activityView !== "jobs";
   $("activity-type-filter").value = activityTypeFilter;
   const notes = { jobs: "Update checks, builds and uploads are recorded separately.", builds: "A completed build creates a downloadable package. Uploads to RomM have their own view.", checks: "Checks look for upstream release changes. A successful check does not mean a new package was built or uploaded.", drafts: "Model drafts propose build instructions. Saving, building and testing a draft are separate steps.", uploads: "Package uploads are recorded here. RomM may still be indexing an uploaded file.", tests: "Recorded startup and gameplay results apply to the package and device that were tested.", imports: "Packages found in RomM appear here.", packages: "Download previously completed packages and inspect their validation level." };
+  notes.reviews = "New releases that were preserved but not packaged. Approve a proposed patch, open the full review, or dismiss it.";
   $("activity-view-note").hidden = activityView === "notifications"; $("activity-view-note").textContent = notes[activityView] || "";
   let cleanup = $("activity-cleanup");
   if (!cleanup) { cleanup = button("Clear all completed activity & logs", "button secondary small", () => maintenance("clear_activity")); cleanup.id = "activity-cleanup"; $("activity-content").before(cleanup); }
   cleanup.hidden = activityView !== "jobs" || Boolean(activityGameFilter);
   const filter = $("activity-game-filter"); filter.replaceChildren(el("option", "", "All games")); filter.firstChild.value = "";
   libraryGames().forEach((game) => { const option = el("option", "", game.name); option.value = game.id; filter.append(option); }); filter.value = activityGameFilter;
-  if (!["packages", "notifications"].includes(activityView)) {
+  if (!["packages", "notifications", "reviews"].includes(activityView)) {
     const category = activityView === "jobs" ? activityTypeFilter : activityView;
     const events = familyEvents.filter(event => !category || event.activity_type === category);
     content.replaceChildren(events.length ? el("div", "activity-timeline", events.map(activityEvent)) : emptyState("◷", "No activity matches", "Events of this type will appear here. Try All games or All activity to see other events."));
   }
   if (activityView === "packages") content.replaceChildren(artifacts.length ? table(["Game / package", "Validation", "Size", ""], artifacts.map(packageRow)) : emptyState("▱", "No build archives", "Completed packages for the selected game will appear here with their validation level."));
   if (activityView === "notifications") renderNotifications(content);
+  if (activityView === "reviews") renderReviewQueue(content);
+}
+function renderReviewQueue(parent) {
+  const items = state.review_queue || [];
+  if (!items.length) { parent.replaceChildren(emptyState("✓", "Nothing needs review", "When a new release no longer fits a game’s approved instructions, it is listed here with what changed.")); return; }
+  const kinds = { patch: "Proposed patch · version strings only", investigate: "Layout or files changed", review: "Needs review" };
+  parent.replaceChildren(...items.map((item) => {
+    const actions = el("div", "notification-actions");
+    if (item.proposal_id) actions.append(button("Approve patch", "button primary small", () => { if (confirm(`Approve the proposed patch for ${item.project_name}? Nothing is built until you check or build again.`)) runAction("approve-" + item.proposal_id, `/api/proposals/${item.proposal_id}/apply`, {}, "Patch approved. Check for updates to continue."); }, busy.has("approve-" + item.proposal_id)));
+    actions.append(button("Open", "button secondary small", () => { navigateProject(item.project_id); if (!openPendingReview(item.project_id)) toast("Open the game and use Review investigation or investigate again."); }));
+    actions.append(button("Dismiss", "text-button", () => runAction("dismiss-" + item.capture_id, `/api/projects/${item.project_id}/release-reviews/${item.capture_id}/dismiss`, {}, "Dismissed."), busy.has("dismiss-" + item.capture_id)));
+    return el("article", "notification", [el("div", "notification-body", [el("h3", "", `${item.project_name} · ${item.version}`), el("p", "field-help", kinds[item.kind] || kinds.review), el("p", "", item.summary)]), actions]);
+  }));
 }
 function renderNotifications(parent) {
   parent.replaceChildren();
@@ -607,6 +687,18 @@ function processNotifications() {
     }
   });
 }
+let appVersion = null;
+async function loadVersion() {
+  if (appVersion) return;
+  try {
+    const info = await api("/api/version");
+    if (!info?.version) return;
+    appVersion = info;
+    const label = `v${info.version} (${info.commit ? info.commit.slice(0, 7) : "dev"})`;
+    $("app-version").textContent = label;
+    $("about-version")?.replaceChildren(document.createTextNode(label));
+  } catch (error) { /* the version is informational only */ }
+}
 async function refresh(manual = false) {
   if (manual) { rommImports.clear(); lastRender = null; }
   if (refreshing) return;
@@ -624,6 +716,7 @@ async function refresh(manual = false) {
     $("load-error").hidden = true;
     $("connection").classList.remove("offline"); $("connection").replaceChildren(el("span", "status-dot"), document.createTextNode("Workspace connected"));
     $("last-refresh").textContent = `Synced ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+    loadVersion();
     processNotifications(); render();
     if (manual) toast("Workspace refreshed.");
   } catch (error) {
@@ -631,11 +724,24 @@ async function refresh(manual = false) {
     $("load-error").textContent = `Could not refresh: ${error.message}. Retrying automatically.`; $("load-error").hidden = false;
   } finally { refreshing = false; }
 }
-async function runAction(key, path, body, message) {
+// Errors that stay next to the control that caused them until dismissed or superseded; toasts are for confirmations.
+const actionErrors = new Map();
+function actionErrorNode(key) {
+  const entry = actionErrors.get(key);
+  if (!entry) return null;
+  const dismiss = () => { actionErrors.delete(key); lastRender = null; lastProjectRender = null; render(); };
+  const actions = [];
+  if (entry.fix) actions.push(button(entry.fix.label, "button primary small", () => { actionErrors.delete(key); entry.fix.run(); }));
+  actions.push(button("Dismiss", "button secondary small", dismiss));
+  const node = el("div", "action-error", [el("p", "project-error", entry.message), el("div", "inline-actions", actions)]);
+  node.setAttribute("role", "alert");
+  return node;
+}
+async function runAction(key, path, body, message, inlineFix = null) {
   if (busy.has(key)) return null;
   busy.add(key); render();
-  try { const result = await api(path, { method: "POST", body }); if (message) toast(message); await refresh(); return result; }
-  catch (error) { toast(error.message, true); return null; }
+  try { const result = await api(path, { method: "POST", body }); actionErrors.delete(key); if (message) toast(message); await refresh(); return result; }
+  catch (error) { if (inlineFix) actionErrors.set(key, { message: error.message, fix: inlineFix }); else toast(error.message, true); return null; }
   finally { busy.delete(key); render(); }
 }
 function checkProject(id) { return runAction(`check-${id}`, `/api/projects/${encodeURIComponent(id)}/check`, {}, "Update check queued."); }
@@ -671,8 +777,12 @@ function renderProject() {
   content.setAttribute("aria-labelledby", `project-${route.tab}-tab`);
   if (!project) { heading.append(el("div", "", [el("h1", "", "Game unavailable"), el("p", "", "Return to the library to choose a game.")])); return; }
   const title = el("div", "project-title-detail", [el("h1", "", project.name), projectSource(project), el("div", "project-targets", gameTargets(project).map(targetPill))]);
-  const cover = projectCover(project, "project-hero-cover");
-  if (cover) title.prepend(cover);
+  const cover = projectCover(project, "project-hero-cover", true, (source) => {
+    if (source !== "romm" || !project.id) return;
+    const note = document.getElementById("cover-source-note");
+    if (note) note.hidden = false;
+  });
+  title.prepend(cover);
   const working = Boolean(projectActiveJob(project)) || busy.has(`check-${project.id}`) || busy.has(`build-${project.id}`);
   const actions = el("div", "project-header-actions");
   if (!project.demo) actions.append(button("Check for a new version", "button secondary small", () => checkProject(project.id), working));
@@ -735,7 +845,8 @@ function renderOverview(project, content) {
   packageCard.append(el("p", "compact-note", "Download availability does not confirm gameplay. A launch check confirms startup only."));
   if (projectActiveJob(project)?.status !== "waiting_user") left.append(nextStepCard(project));
   left.append(packageCard);
-  right.append(button("Change cover art", "button secondary", () => openCoverSearch(project.id)));
+  const fromRomm = el("p", "compact-note", "Cover from RomM. Choose your own to replace it; your choice is never overwritten."); fromRomm.id = "cover-source-note"; fromRomm.hidden = true;
+  right.append(fromRomm, button("Change cover art", "button secondary", () => openCoverSearch(project.id)));
   grid.append(left, right); content.append(grid);
 }
 function progressSteps(job, project) {
@@ -891,7 +1002,7 @@ function activityEvent(event) {
   const result = event.kind === "test" ? el("span", `validation-label ${event.result === "failed" ? "failed" : event.result === "played" ? "confirmed" : ""}`, testResultLabels[event.result] + (event.environment === "wine_proton" ? " under Wine/Proton" : "")) : event.kind === "import" ? statusBadge("published", "In RomM") : statusBadge(event.capture_check && event.check_outcome === "needs_review" ? "unsupported_version" : event.result, jobResultLabel);
   const header = el("div", "activity-event-heading", [el("h3", "", title), result]);
   const context = event.capture_check ? "Upstream release" : event.activity_type === "drafts" ? "Build instructions" : targetLabels[event.target] || "Game";
-  const body = el("div", "activity-event-body", [header, el("p", "activity-event-game", [project?.name || event.project_name || "Game", " · ", context]), el("p", "field-help", event.notes || event.message || ""), el("span", "activity-event-date", `${event.device ? event.device + " · " : ""}${dateLabel(event.created_at)}`)]);
+  const body = el("div", "activity-event-body", [header, el("p", "activity-event-game", [project?.name || event.project_name || "Game", " · ", context]), el("p", "field-help", localizeTimestamps(event.notes || event.message || "")), el("span", "activity-event-date", `${event.device ? event.device + " · " : ""}${dateLabel(event.created_at)}`)]);
   if (event.package_name) body.append(el("p", "activity-package-name", event.package_name));
   const actions = el("div", "inline-actions", button("Open game", "text-button", () => navigateProject(event.project_id)));
   if (event.kind === "build" && !jobActive(event)) actions.append(button("Clear this entry & log", "text-button", () => maintenance("clear_activity", event.project_id, event.id)));
@@ -960,7 +1071,7 @@ function definitionInstructions(project) {
     return el("div", "instruction-platform", [el("h4", "", targetLabels[target] || target), el("p", "field-help", `Launch: ${launch.command || "not recorded"}${launch.instructions ? " — " + launch.instructions : ""}`), el("p", "field-help", `Expected files: ${(output.expected_files || []).join(", ") || "not recorded"}`), el("p", "field-help", `Requirements: ${dependencies.join("; ") || "not recorded"}`)]);
   })]);
   group("6. Saves, new-release checks & known limitations", [el("p", "field-help", `Saves & settings: ${definition.saves || "Not recorded."}`), ...(definition.source_checks || []).map((check) => el("p", "field-help", `New-release check: ${check.description} (${check.path})`)), ...(definition.limitations || []).map((item) => el("p", "review-notes", item))]);
-  if ((definition.history || []).length) group("History", definition.history.map((item) => el("p", "field-help", item)));
+  if ((definition.history || []).length) group("History", definition.history.map((item) => el("p", "field-help", localizeDates(item))));
   section.append(list);
   return section;
 }
@@ -988,7 +1099,7 @@ function inputsSection(project) {
     if (choices) {
       const select = el("select"); select.id = `input-choice-${project.id}-${item.id}`; select.setAttribute("aria-label", `${item.label} found files`);
       select.append(el("option", "", "Choose a matching file…")); select.firstChild.value = "";
-      (choices.found || []).forEach(found => { const option = el("option", "", `${found.path}${found.ps4 ? ` · ${found.ps4.title_id} · ${found.ps4.app_version || "version checked after extraction"} · ${found.ps4.role}` : ""}`); option.value = JSON.stringify({path:found.path, source:found.source || (item.kind === "directory" ? "prepared" : "inputs")}); select.append(option); });
+      (choices.found || []).forEach(found => { const option = el("option", "", `${found.path}${found.ps4 ? ` · ${found.ps4.title_id} · ${found.ps4.app_version || "version checked after extraction"} · ${found.ps4.role}` : ""}${found.member ? ` · ${found.member}` : ""}`); option.value = JSON.stringify({path:found.path, ...(found.member ? {member:found.member} : {}), source:found.source || (item.kind === "directory" ? "prepared" : "inputs")}); select.append(option); });
       select.value = inputChoiceDrafts.get(`${project.id}-${item.id}`) || "";
       const use = button("Use this file", "button secondary small", () => bindInput(project.id, item.id, JSON.parse(select.value)), !select.value);
       select.addEventListener("change", () => { inputChoiceDrafts.set(`${project.id}-${item.id}`, select.value); use.disabled = !select.value; });
@@ -1269,7 +1380,7 @@ function renderAdvanced(project, content, openJobs) {
 function renderBuildDiagnostics(project, content, openJobs) {
   const diagnostic = el("section", "detail-card", [el("h2", "", "Build progress & logs"), el("p", "detail-note", "Detailed logs and errors for troubleshooting a game step.")]);
   const jobs = projectJobs(project.id); const logs = el("div", "diagnostics-list");
-  jobs.forEach((job) => { const details = disclosure(`job:${job.id}`, "job-panel"); details.dataset.jobId = job.id; details.open = openJobs.has(String(job.id)) || String(job.id) === String(selectedJobId); details.append(el("summary", "", [targetPill(job.target || "capture"), el("span", "", job.version || "Update check"), statusBadge(jobStage(job)), el("span", "job-date", dateLabel(job.created_at))]), el("pre", "", (Array.isArray(job.logs) ? job.logs.join("\n") : String(job.logs || "Waiting for log output…")) + (job.error ? `\n\nError: ${job.error}` : ""))); if (job.status === "failed") details.append(button("Retry failed step", "button secondary small", () => retryJob(job.id), busy.has(`retry-${job.id}`))); if (["draft","investigation"].includes(job.kind) && job.draft_record_available) details.append(draftingRecordLink(job.id)); logs.append(details); });
+  jobs.forEach((job) => { const details = disclosure(`job:${job.id}`, "job-panel"); details.dataset.jobId = job.id; details.open = openJobs.has(String(job.id)) || String(job.id) === String(selectedJobId); details.append(el("summary", "", [targetPill(job.target || "capture"), el("span", "", job.version || "Update check"), statusBadge(jobStage(job)), el("span", "job-date", dateLabel(job.created_at))]), el("pre", "", localizeTimestamps((Array.isArray(job.logs) ? job.logs.join("\n") : String(job.logs || "Waiting for log output…")) + (job.error ? `\n\nError: ${job.error}` : "")))); if (job.status === "failed") details.append(button("Retry failed step", "button secondary small", () => retryJob(job.id), busy.has(`retry-${job.id}`))); if (["draft","investigation"].includes(job.kind) && job.draft_record_available) details.append(draftingRecordLink(job.id)); logs.append(details); });
   diagnostic.append(jobs.length ? logs : el("p", "detail-empty", "No diagnostics yet.")); content.append(diagnostic);
 
 }
@@ -2047,7 +2158,11 @@ function renderCustomGame(content, actions) {
     radio.addEventListener("change", () => { custom.method = value; renderAddGame(); });
     list.append(el("label", "choice-card", [radio, el("div", "", [el("h3", "", label), el("p", "", help)])]));
   });
-  if (!settings.configured) list.append(button("Connect a local or cloud model in Settings →", "text-button", () => { $("add-game-dialog").close(); navigateSettings("assistant"); }));
+  if (!settings.configured) {
+    const needs = assistantNeeds(settings);
+    if (needs) list.prepend(el("div", "choice-card disabled", [el("div", "", [el("h3", "", `Draft with ${settings.drafting_model} (not available yet)`), el("p", "", needs)])]));
+    list.append(button("Connect a local or cloud model in Settings →", "text-button", () => { $("add-game-dialog").close(); openAssistantSettings(); }));
+  }
   method.append(list);
   content.append(method, el("p", "first-run-note warn", "A custom game is marked as not packaged until its packaging steps are approved and a build succeeds."));
   const submit = button(addGame.busy ? "Adding…" : "Add game", "button primary", submitCustomGame, addGame.busy || !custom.targets.length || !custom.name.trim()); submit.id = "custom-add-submit"; actions.append(submit);
@@ -2141,7 +2256,7 @@ function nextStepCard(project) {
   let heading, note = "", action = null, progress = null;
   const working = busy.has(`setup-${project.id}`);
   if (active?.status === "waiting_user") { heading = "Setup needs your answer"; note = active.user_request?.question || "Answer the pending question to continue the same setup."; action = button("Answer & continue", "button primary small", () => navigateProject(project.id, "advanced")); }
-  else if (active) { heading = "Working on it"; note = ""; progress = inlineProgress(`${String(jobStage(active)).replaceAll("_", " ")}…`, [...(active.logs || [])].reverse().find(Boolean)); action = button("View full log", "button secondary small", () => navigateProject(project.id, "activity", active.id)); }
+  else if (active) { heading = "Working on it"; note = ""; progress = inlineProgress(`${String(jobStage(active)).replaceAll("_", " ")}…`, localizeTimestamps([...(active.logs || [])].reverse().find(Boolean))); action = button("View full log", "button secondary small", () => navigateProject(project.id, "activity", active.id)); }
   else if (projectJobs(project.id)[0]?.status === "failed") { heading = "A build needs your attention"; note = projectJobs(project.id)[0].error || "Review the failed step and retry when the cause is resolved."; action = button("View failure & logs", "button primary small", () => navigateProject(project.id, "activity", projectJobs(project.id)[0].id)); }
   else if (missingGameFiles(project).length && runner === "operations") { heading = "Choose your game files"; note = "Select the required files before building packages."; action = button("Choose game files", "button primary small", () => navigateProject(project.id, "advanced")); }
   else if (proposal) { heading = "Review the drafted packaging steps"; note = "Approve these steps before they replace your saved instructions. Optional test builds use a temporary workspace."; action = button("Review draft", "button primary small", () => openDraftReview(project.id)); }
@@ -2174,7 +2289,7 @@ function renderAutomaticSettings(parent) {
   let card = $("automatic-settings");
   if (!card) { card = el("section", "settings-card"); card.id = "automatic-settings"; parent.append(card); }
   // Keep controls while other jobs update; changing the connection rebuilds them.
-  const fingerprint = JSON.stringify([config, assistantSettings().provider, busy.has("automatic-policy")]);
+  const fingerprint = JSON.stringify([config, assistantSettings().provider, busy.has("automatic-policy"), busy.has("broker-pair")]);
   if (card.dataset.fingerprint === fingerprint) return;
   card.dataset.fingerprint = fingerprint;
   const draft = automaticPolicyDraft || saved;
@@ -2330,7 +2445,7 @@ function automaticSetupCard(project) {
   const jobs = projectJobs(id).filter(job => job.kind === "automation" && !job.activity_hidden), job = jobs[0];
   const card = el("section", "detail-card automatic-setup", [el("h2", "", "Automatic setup"),
     el("p", "detail-note", "Investigate this port, prepare owned data, build and save reusable scripts. Every generated program stays visible below; existing downloads are retained.")]);
-  if (!config.worker?.ready) {
+  if (!(config.worker?.ready || config.worker?.offline)) {
     card.append(el("p", "field-help", BROKER_EXPLANATION), el("p", "review-notes", "No worker broker is connected, so automatic setup isn\u2019t available. Use Draft packaging steps below instead."),
       el("div", "inline-actions", [button("Draft packaging steps", "button primary small", () => scrollToSection(".draft-card")), button("Go to worker broker settings \u2192", "text-button", openWorkerSettings)]));
     return card;
@@ -2374,7 +2489,7 @@ function automaticSetupCard(project) {
   selection.append(overrides);
   card.append(selection);
   if (job) {
-    card.append(el("p", "field-help", job.error || (job.logs || []).slice(-1)[0] || job.status));
+    card.append(el("p", "field-help", localizeTimestamps(job.error || (job.logs || []).slice(-1)[0] || job.status)));
     if (jobActive(job)) card.append(button("Cancel setup", "button secondary small", () => runAction(`cancel-automatic-${job.id}`, `/api/jobs/${job.id}/cancel-automation`, {}, "Cancellation requested.")));
     const record = automaticRecords.get(job.id);
     const link = el("a", "text-button", "Download local setup record"); link.href = `/api/jobs/${job.id}/automation-record`; link.setAttribute("download", "");
@@ -2398,7 +2513,7 @@ function automaticSetupCard(project) {
     }
   }
   card.append(el("div", "inline-actions", [button(recipe ? "Investigate & create a new recipe" : "Set up automatically", "button primary small", () => startAutomaticSetup(id), !automaticAvailable() || Boolean(projectActiveJob(project)) || !project.capture_id),
-    ...(recipe ? [button("Replay saved recipe (no model)", "button secondary small", () => startAutomaticSetup(id, true), !config.worker?.ready || !config.policy?.enabled || Boolean(projectActiveJob(project)))] : [])]));
+    ...(recipe ? [button("Replay saved recipe (no model)", "button secondary small", () => startAutomaticSetup(id, true), !(config.worker?.ready || config.worker?.offline) || !config.policy?.enabled || Boolean(projectActiveJob(project)))] : [])]));
   if (recipe) {
     const scripts = disclosure(`automatic-scripts:${id}`, "diagnostics-list", el("summary", "table-action", `Saved scripts & recipe JSON · version ${recipe.revision}`));
     recipe.steps.forEach((step, index) => { const copy = button("Copy script", "button secondary small", () => copyJson(step.script, copy)); scripts.append(el("h4", "", `${index + 1}. ${step.phase} · ${targetLabels[step.target] || step.target}`), copy, el("pre", "json-preview", step.script)); });
@@ -2436,7 +2551,7 @@ function draftCard(project) {
   card.append(investigationCard(project));
   card.append(el("p", "detail-note", "Investigate first to establish a supported plan. Direct drafting and JSON import remain available below for advanced use. Current instructions stay in use until you approve a definition; optional test builds run in a temporary workspace."));
   card.append(el("p", "field-help", "A draft uses public release facts and is checked locally. You can request a separate model review; approval and packaging tests remain separate steps."));
-  if (drafting && (jobActive(drafting) || drafting.status === "failed")) card.append(el("div", "inline-actions", [statusBadge(jobActive(drafting) ? "building" : "failed", jobActive(drafting) ? "Drafting…" : "Draft failed"), el("span", "field-help", drafting.error || (drafting.logs || []).slice(-1)[0] || "")]));
+  if (drafting && (jobActive(drafting) || drafting.status === "failed")) card.append(el("div", "inline-actions", [statusBadge(jobActive(drafting) ? "building" : "failed", jobActive(drafting) ? "Drafting…" : "Draft failed"), el("span", "field-help", localizeTimestamps(drafting.error || (drafting.logs || []).slice(-1)[0] || ""))]));
   if (drafting && drafting.status === "failed" && settings.configured) {
     const plan = (state.proposals || []).find(item => item.kind === "investigation" && item.project_id === id && item.status === "pending_review");
     card.append(el("div", "inline-actions draft-retry", button("Retry with corrections", "button primary small", () => retryDraftWithCorrections(id, plan), Boolean(projectActiveJob(project)) || busy.has(`draft-${id}`))), el("p", "field-help", "Runs this draft again and lets the model fix validation errors. Uses up to 3 model requests for this attempt only; your saved setting below is unchanged."));
@@ -2470,15 +2585,23 @@ function draftCard(project) {
   paste.addEventListener("input", () => draftImports.set(id, paste.value));
   field(card, "Paste the answer from your chat or agent", paste);
   card.append(el("div", "inline-actions", button(busy.has(`import-${id}`) ? "Checking…" : "Check and review", "button secondary small", () => importDraft(id), busy.has(`import-${id}`))));
+  const share = el("div", "inline-actions");
+  if (project.packaging?.runner === "operations") { const exported = el("a", "button secondary small", "Export definition (JSON)"); exported.href = `/api/projects/${encodeURIComponent(id)}/definition-export`; exported.setAttribute("download", ""); share.append(exported); }
+  const picker = el("input"); picker.type = "file"; picker.accept = "application/json,.json"; picker.hidden = true;
+  picker.addEventListener("change", async () => { const file = picker.files[0]; if (!file) return; const result = await runAction(`share-${id}`, `/api/projects/${encodeURIComponent(id)}/definition-import`, { text: await file.text() }, "Definition checked. Review it below."); if (result) render(); });
+  share.append(picker, button("Import definition (JSON)", "button secondary small", () => picker.click(), busy.has(`share-${id}`)));
+  card.append(share, el("p", "field-help", "A shared definition is checked and shown for review like any draft; nothing runs until you approve it."));
   const where = settings.provider === "ollama" ? " Drafts run on your local model." : ["anthropic", "openai"].includes(settings.provider) ? ` Drafts are sent to ${settings.provider_label}.` : "";
-  card.append(el("p", "quiet-note", "Models receive public project evidence and limited selected-input metadata: formats, sizes and recognized identities. Game contents, locations and credentials stay on the server." + where));
+  card.append(el("p", "quiet-note", "Models receive public project evidence and limited selected-input metadata: formats, sizes and recognized identities. Game contents, locations and credentials stay on the server. Your other saved definitions are only used as examples with a local model." + where));
   if (!settings.configured) card.append(button("Connect a local or cloud model →", "text-button", () => navigateSettings("assistant")));
   return card;
 }
 function renderProposalReview(card, project, proposal, actionsHost = null) {
   const definition = proposal.definition, view = proposal.view || {};
-  card.append(el("p", "detail-note", `Drafted by ${proposal.source} · ${dateLabel(proposal.created_at)}. Nothing has run. Review it before approving.`));
+  card.append(el("p", "detail-note", `Drafted by ${localizeDates(proposal.source)} · ${dateLabel(proposal.created_at)}. Nothing has run. Review it before approving.`));
   if (proposal.explanation) card.append(el("p", "review-notes", proposal.explanation));
+  if (proposal.from_template) card.append(el("p", "info-note", `From template: ${proposal.from_template.name} (${proposal.from_template.origin}). No model was asked.`), button("Ask the model to refine", "button secondary small", () => runAction(`draft-${project.id}`, `/api/projects/${encodeURIComponent(project.id)}/draft`, { skip_template: true, prepare_game_files: prepareDraftGameFiles(project.id) }, "Drafting started. The model's draft appears here when it's ready."), busy.has(`draft-${project.id}`) || Boolean(projectActiveJob(project))));
+  if (proposal.examples_used?.length && !proposal.from_template) card.append(el("p", "field-help", `Examples shown to the model: ${proposal.examples_used.map(item => item.name).join(", ")}.`));
   if (proposal.investigation_plan) card.append(disclosure(`investigation-plan:${proposal.id}`, "diagnostics-list", [el("summary", "table-action", "Reviewed investigation plan"), jsonViewer(`investigation:${proposal.id}`, proposal.investigation_plan)]));
   card.append(el("div", "detail-facts", [meta("Platforms", definition.targets.map((target) => targetLabels[target] || target).join(", ")), meta("Files for packaging", definition.inputs.filter((item) => item.required !== false).map((item) => item.label).join("; ") || "None"), meta("First launch", view.first_run?.text || definition.first_run?.summary || "Not stated", true)]));
   const asks = definition.inputs.filter((item) => item.required !== false).map((item) => item.label);
@@ -2541,8 +2664,9 @@ function renderInvestigationResult(node, project, report, actionsHost = null) {
     const consent = input(`investigation-inputs-${id}`, "checkbox");consent.checked = investigationInputs.get(id) ?? false;
     consent.addEventListener("change", () => investigationInputs.set(id, consent.checked));
     node.append(el("label", "check-label", [consent, "Use my selected game files in disposable draft tests"]), el("p", "field-help", "Off: test public runtime files and mark game-data steps unverified. On: the runner may use your selected inputs. Nothing is published by a test."));
-    const draft = button("Draft packaging steps from this plan", "button primary small", () => { if (actionsHost && $("draft-review-dialog").open) $("draft-review-dialog").close(); return queueDraftFromPlan(id, report); }, Boolean(projectActiveJob(project)) || busy.has(`draft-${id}`));
-    if (actionsHost) actions.append(draft); else node.append(draft);
+    const draft = button("Draft packaging steps from this plan", "button primary small", async () => { const result = await queueDraftFromPlan(id, report); if (result && actionsHost && $("draft-review-dialog").open) $("draft-review-dialog").close(); }, Boolean(projectActiveJob(project)) || busy.has(`draft-${id}`));
+    const failure = actionErrorNode(`draft-${id}`);
+    if (actionsHost) actions.append(...(failure ? [failure] : []), draft); else node.append(...(failure ? [failure] : []), draft);
   }
   if (actionsHost) { actions.append(button("Dismiss", "button secondary small", async () => { const result = await runAction(`discard-${report.id}`, `/api/proposals/${encodeURIComponent(report.id)}/discard`, {}, "Investigation dismissed."); if (result && $("draft-review-dialog").open) $("draft-review-dialog").close(); }, busy.has(`discard-${report.id}`))); actionsHost.append(actions); }
   node.append(el("p", "quiet-note", "Matched quotations and capability checks do not establish that every claim is correct or that gameplay works. Review the plan before drafting; the resulting definition needs its own approval."));
@@ -2558,7 +2682,7 @@ function investigationCard(project) {
   limit.addEventListener("change", () => investigationLimits.set(id, Number(limit.value)));
   field(node, "Investigation limit", limit);
   node.append(el("p", "field-help", "Each evidence follow-up uses one request from this limit. A later draft and optional review have separate limits and consume additional model usage."));
-  if (job && jobActive(job)) node.append(el("p", "field-help", "Investigating… " + (job.logs || []).slice(-1)[0]));
+  if (job && jobActive(job)) node.append(el("p", "field-help", "Investigating… " + localizeTimestamps((job.logs || []).slice(-1)[0])));
   if (settings.configured) node.append(button(report ? "Investigate again" : `Investigate with ${settings.drafting_model}`, "button primary small", () => investigateProject(id), !project.capture_id || Boolean(projectActiveJob(project)) || busy.has(`investigate-${id}`)));
   else node.append(el("p", "field-help", "Connect a local model, API or subscription agent in Settings to investigate. Manual prompts and JSON editing remain available below."));
   if (job?.draft_record_available) node.append(draftingRecordLink(job.id));
@@ -2569,7 +2693,7 @@ function investigateProject(id) {
   return runAction(`investigate-${id}`, `/api/projects/${encodeURIComponent(id)}/investigate`, {instruction:(assistantPromptDrafts.get(id) || "").trim(), max_calls:investigationLimits.get(id) ?? projectJobs(id).find(job => job.kind === "investigation")?.investigation_max_calls ?? 3, prepare_game_files:prepareDraftGameFiles(id)}, "Investigation started. Review the plan before drafting.");
 }
 function queueDraftFromPlan(id, report) {
-  return runAction(`draft-${id}`, `/api/projects/${encodeURIComponent(id)}/draft`, {instruction:(assistantPromptDrafts.get(id) || "").trim(), investigation_id:report.id, prepare_game_files:prepareDraftGameFiles(id), review_model:draftModelReviews.get(id) ?? false, max_calls:draftCorrectionLimits.get(id) ?? 1, test_inputs:investigationInputs.get(id) ?? false}, "Drafting from the reviewed plan. Review the checked definition before approval.");
+  return runAction(`draft-${id}`, `/api/projects/${encodeURIComponent(id)}/draft`, {instruction:(assistantPromptDrafts.get(id) || "").trim(), investigation_id:report.id, prepare_game_files:prepareDraftGameFiles(id), review_model:draftModelReviews.get(id) ?? false, max_calls:draftCorrectionLimits.get(id) ?? 1, test_inputs:investigationInputs.get(id) ?? false}, "Drafting from the reviewed plan. Review the checked definition before approval.", { label: "Investigate again", run: () => { if ($("draft-review-dialog").open) $("draft-review-dialog").close(); investigateProject(id); } });
 }
 function retryDraftWithCorrections(id, report) {
   const body = {instruction:(assistantPromptDrafts.get(id) || "").trim(), prepare_game_files:prepareDraftGameFiles(id), review_model:draftModelReviews.get(id) ?? false, max_calls:3};

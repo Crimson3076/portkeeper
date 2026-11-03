@@ -1,3 +1,4 @@
+process.env.TZ = 'America/New_York';
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
@@ -35,6 +36,7 @@ async function create(saved, storageBlocked=false, source=fixture) {
         payload={matched:2,matching:source.romm.matching};
       }
     }
+    else if(endpoint==='/api/version'){payload=source.version_info||{version:'0.3.0',commit:null};}
     else if(endpoint==='/api/assistant/models'){const body=JSON.parse(options.body);requests.push({endpoint,body});payload={models:source.agent_model_choices?.[body.provider] || ['provider-model-a','provider-model-b']};}
     else if(endpoint==='/api/assistant/provider'){
       const body=JSON.parse(options.body);requests.push({endpoint,body});source.assistant||={};source.assistant.provider=body.provider;
@@ -58,7 +60,7 @@ async function create(saved, storageBlocked=false, source=fixture) {
       const body=JSON.parse(options.body);requests.push({endpoint,body});source.assistant.agents[body.provider].authenticated=false;delete source.agent_logins?.[body.provider];if(source.assistant.provider===body.provider)source.assistant.configured=false;payload={provider:body.provider,status:'not_started'};
     }
     else if(endpoint.endsWith('/playtest')){const body=JSON.parse(options.body);const game=source.projects.find(p=>endpoint.includes(p.id));payload={id:'test-record',kind:'test',project_id:game.id,project_name:game.name,target:'linux',package:{kind:'romm',romm_rom_id:body.romm_rom_id,signature:body.signature},result:body.result,device:body.device,notes:body.notes,created_at:'2026-10-11T15:00:00Z'};source.playtests=[payload];source.activity=[payload];}
-    else if(endpoint.match(/^\/api\/projects\/[^/]+\/imports$/)){const game=source.projects.find(p=>endpoint.includes(p.id));payload={items:imports(game.metadata.filename_prefix)};}
+    else if(endpoint.match(/^\/api\/projects\/[^/]+\/imports$/)){const game=source.projects.find(p=>endpoint.includes(p.id));payload={items:source.no_imports?[]:imports(game.metadata.filename_prefix)};}
     else if(endpoint.startsWith('/api/romm/search?')){const prefix=new URL(endpoint,w.location.href).searchParams.get('q');payload={items:imports(prefix)};}
     else if(endpoint.startsWith('/preservation',0)||endpoint.includes('/preservation'))payload={};
     else if(endpoint==='/api/profiles')payload={profiles:[]};
@@ -82,6 +84,7 @@ async function create(saved, storageBlocked=false, source=fixture) {
     else if(endpoint.endsWith('/automate')||endpoint.endsWith('/script-recipe')||endpoint.endsWith('/reply-automation')||endpoint==='/api/automation/config'){
       const body=JSON.parse(options.body);requests.push({endpoint,body});payload={job:{id:id(501)}};
     }
+    else if(endpoint.endsWith('/draft') && options.method==='POST' && source.draft_error){return {ok:false,status:400,json:async()=>({error:source.draft_error})};}
     else if(endpoint.endsWith('/draft') && options.method==='POST'){requests.push({endpoint,body:JSON.parse(options.body)});payload={job:{}};}
     else if(endpoint.endsWith('/investigate') && options.method==='POST'){requests.push({endpoint,body:JSON.parse(options.body)});payload={job:{}};}
     else if(options.method==='PATCH'){const body=JSON.parse(options.body);requests.push({endpoint,body});const game=source.projects.find(p=>endpoint.includes(p.id));Object.assign(game,body);payload=game;}
@@ -361,7 +364,7 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   const activityNodes=()=>[...d.querySelectorAll('#activity-content .activity-event')];
   const logCounts={jobs:8,builds:1,checks:2,drafts:1,uploads:2,tests:1,imports:1,artifacts:4,notifications:1};
   for(const [view,count] of Object.entries(logCounts))assert.equal(d.getElementById(view+'-count').textContent,String(count),'Accurate activity count: '+view);
-  assert.equal(d.querySelectorAll('[data-activity-view]').length,9);assert.equal(activityNodes().length,8);
+  assert.equal(d.querySelectorAll('[data-activity-view]').length,10);assert.equal(activityNodes().length,8);
   assert(!d.getElementById('activity-cleanup').hidden);assert.equal(d.getElementById('activity-cleanup').textContent,'Clear all completed activity & logs');
   assert(!activityNodes().some(event=>event.textContent.includes('cleared-upload.zip')),'Indexing later does not resurrect a cleared upload');
   for(const [view,title,count] of [['builds','Build',1],['checks','Update check',2],['drafts','Model draft',1],['uploads','Upload to RomM',2],['tests','Manual test result',1],['imports','Found in RomM',1]]){
@@ -663,6 +666,35 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
     else{dialog.querySelector('[data-close]').click();assert(!dialog.open,'Closing returns to the game');}
     dom.window.close();
   }
+  // Silent-draft case: a failed "Draft packaging steps from this plan" shows a persistent inline message with a fix.
+  planned.draft_error='Release, selected platforms or build instructions changed; investigate again before drafting';
+  dom=await create(null,false,planned);w=dom.window;d=w.document;
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();
+  [...d.querySelector('.next-step-card').querySelectorAll('button')].find(n=>n.textContent==='Review investigation').click();await tick();
+  const reviewDialog=d.getElementById('draft-review-dialog');
+  assert.equal(reviewDialog.getAttribute('role'),'dialog');assert(reviewDialog.getAttribute('aria-labelledby'));
+  assert.equal(reviewDialog.getAttribute('aria-modal'),'true');
+  [...d.getElementById('draft-review-actions').querySelectorAll('button')].find(n=>n.textContent==='Draft packaging steps from this plan').click();await tick();await tick();
+  assert(reviewDialog.open,'A failed draft keeps the review open');
+  const inlineError=reviewDialog.querySelector('[role="alert"].action-error');
+  assert(inlineError && inlineError.textContent.includes('investigate again before drafting'),'The error is shown inline');
+  assert([...inlineError.querySelectorAll('button')].some(n=>n.textContent==='Investigate again'),'The inline error offers the fix');
+  await new Promise(resolve=>setTimeout(resolve,100));
+  assert(reviewDialog.querySelector('.action-error'),'The inline error persists');
+  [...inlineError.querySelectorAll('button')].find(n=>n.textContent==='Dismiss').click();await tick();
+  assert(!reviewDialog.querySelector('.action-error'),'Dismissing removes the error');
+  assert.equal(w.portkeeperFormat.localizeDates('Drafted by Local on 2026-11-03T01:30:00+00:00 for release x; Applied on 2026-11-03.'),'Drafted by Local on Nov 2, 2026, 8:30 PM for release x; Applied on Nov 3, 2026.');
+  dom.window.close();
+  const css=fs.readFileSync(path.join(base,'static/styles.css'),'utf8');
+  assert(!/\.draft-review-dialog\{[^}]*display:flex/.test(css),'A closed review dialog is not rendered in the page flow');
+  assert(/dialog\[open\]\{[^}]*position:fixed/.test(css),'Open dialogs are fixed to the viewport');
+  for(const [commit,expected] of [[null,'v0.3.0 (dev)'],['abc1234def5678','v0.3.0 (abc1234)']]){
+    const versioned=JSON.parse(JSON.stringify(fixture));versioned.version_info={version:'0.3.0',commit};
+    dom=await create(null,false,versioned);w=dom.window;d=w.document;await tick();
+    assert.equal(d.getElementById('app-version').textContent,expected,'Footer build label');
+    assert.equal(d.getElementById('about-version').textContent,expected,'Settings build label');
+    dom.window.close();
+  }
   const building=JSON.parse(JSON.stringify(fixture));
   building.jobs=[{id:id(40),project_id:id(2),status:'packaging_linux',stage:'packaging_linux',target:'linux',kind:'build',created_at:'2026-10-11T12:00:00Z',logs:['Packaging the Linux build']}];
   dom=await create(null,false,building);w=dom.window;d=w.document;
@@ -677,6 +709,79 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   d.getElementById('custom-method-handoff').click();d.getElementById('custom-method-handoff').dispatchEvent(new w.Event('change',{bubbles:true}));await tick();
   d.getElementById('custom-add-submit').click();await tick();await tick();await tick();
   assert(w.location.hash.endsWith('/overview'),'After adding a custom game the app lands on Play, not Advanced');
+  dom.window.close();
+  dom=await create();w=dom.window;
+  const raw='Investigating. 2026-11-03T03:03:21.822778+00:00 Reading the release; 2026-11-03T03:04:15Z done';
+  assert.strictEqual(w.portkeeperFormat.localTime('2026-11-03T03:03:21.822778+00:00').replace(/\s/g,' '),'10:03 PM','UTC is shown in the browser local time');
+  const localized=w.portkeeperFormat.localizeTimestamps(raw);
+  assert(!/\d{4}-\d{2}-\d{2}T/.test(localized),'No raw ISO timestamp remains: '+localized);
+  assert(/Investigating\. 10:03.PM Reading the release; 10:04.PM done/.test(localized),localized);
+  assert.strictEqual(w.portkeeperFormat.localizeTimestamps('no time here'),'no time here');
+  dom.window.close();
+  // First-run empty states: each says what to do next and links to the Settings section that fixes it.
+  const blank=(extra={})=>({...JSON.parse(JSON.stringify(fixture)),projects:[],artifacts:[],romm:{},assistant:{},automation:{},summary:{projects:0,artifacts:0},...extra});
+  const bare=blank();
+  dom=await create(null,false,bare);w=dom.window;d=w.document;
+  let empty=d.getElementById('library-empty');
+  assert(empty,'A fresh install shows a first-run panel');
+  assert(empty.textContent.includes('Connect RomM first'),'One sentence says what to do first');
+  const primary=empty.querySelector('.button.primary');assert.equal(primary.textContent,'Connect RomM');
+  assert(d.getElementById('library-summary-counts').hidden,'No bare "0 games, 0 platform downloads, 0 need attention"');
+  assert(!d.getElementById('summary-empty').hidden&&d.getElementById('summary-empty').textContent.includes('Connect RomM'));
+  assert(empty.textContent.includes('drafting assistant')&&empty.textContent.includes('worker broker'),'Optional pieces are explained as optional');
+  primary.click();await new Promise(r=>setTimeout(r,120));
+  assert.equal(w.location.hash,'#settings');assert(!d.getElementById('settings-romm').hidden,'Connect RomM lands on the RomM section');
+  assert.equal(d.activeElement.id,'romm-url','and focuses the server URL field');
+  dom.window.close();
+  const rommOnly=blank({romm:{url:'https://romm.example',has_token:true,configured:true,connected:true}});
+  dom=await create(null,false,rommOnly);w=dom.window;d=w.document;
+  empty=d.getElementById('library-empty');
+  assert(empty.querySelector('h3').textContent==='Add your first game');
+  assert.equal(empty.querySelector('.button.primary').textContent,'Add your first game');
+  assert(d.getElementById('library-summary-counts').hidden);assert(d.getElementById('summary-empty').textContent.includes('Add your first game'));
+  empty.querySelector('.button.primary').click();await tick();await tick();assert(d.getElementById('add-game-dialog').open,'The primary action opens Add a game');
+  dom.window.close();
+  const noAssistant=blank({romm:{url:'https://romm.example',has_token:true,configured:true,connected:true},no_imports:true,
+    projects:[{id:id(9),name:'Perfect Dark',repo:'example/pd',targets:['linux'],profile:null,recipe:{mode:'capture'},status:'archived',metadata:{},poll_minutes:360}],
+    assistant:{provider:'codex',provider_label:'Codex',configured:false,drafting_model:'Codex default',agents:{codex:{installed:true,authenticated:false}}}});
+  dom=await create(null,false,noAssistant);w=dom.window;d=w.document;await tick();await tick();
+  const banner=d.getElementById('library-next-step');
+  assert(!banner.hidden&&banner.textContent.includes('drafting assistant'),'Games without an assistant get a one-sentence next step');
+  assert(!d.getElementById('library-summary-counts').hidden,'Counters return once there are games');
+  banner.querySelector('button').click();await tick();await tick();
+  assert(!d.getElementById('settings-assistant').hidden,'The banner lands on Drafting assistant settings');
+  w.location.hash='';await tick();d.getElementById('add-project').click();await tick();await tick();d.querySelector('.game-pick.custom').click();await tick();[...d.querySelectorAll('#add-game-actions button')].find(n=>n.textContent.includes('Continue')).click();await tick();
+  const landRepo2=d.getElementById('custom-repo');landRepo2.value='example/game';landRepo2.dispatchEvent(new w.Event('input'));landRepo2.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));await tick();await tick();
+  const unavailable=d.querySelector('#add-game-content .choice-card.disabled');
+  assert(unavailable&&unavailable.textContent.includes('Draft with Codex default')&&unavailable.textContent.includes('isn’t signed in'),'The unavailable default choice explains what is needed before it fails');
+  assert(!d.getElementById('custom-method-assistant'),'It cannot be chosen');
+  dom.window.close();
+  // Not connected but games exist: banner offers Connect RomM.
+  const noRomm=blank({projects:[noAssistant.projects[0]],no_imports:true});
+  dom=await create(null,false,noRomm);w=dom.window;d=w.document;
+  assert(d.getElementById('library-next-step').textContent.includes('Connect RomM'));
+  dom.window.close();
+  // Covers: user-chosen art wins, otherwise the RomM match is requested; no cover shows initials.
+  const covers=blank({romm:{url:'https://romm.example',has_token:true,configured:true,connected:true},no_imports:true,assistant:{configured:true},projects:[
+    {id:id(21),name:'Perfect Dark',repo:'e/a',targets:['linux'],recipe:{mode:'capture'},status:'archived',metadata:{}},
+    {id:id(22),name:'Super Metroid',repo:'e/b',targets:['linux'],recipe:{mode:'capture'},status:'archived',metadata:{cover_policy:'custom',url_cover:'https://cdn.example/mine.png',romm_rom_id:5}},
+    {id:id(23),name:'Donkey Kong 64',repo:'e/c',targets:['linux'],recipe:{mode:'capture'},status:'archived',metadata:{}}]});
+  dom=await create(null,false,covers);w=dom.window;d=w.document;
+  const thumbs=[...d.querySelectorAll('.workspace-game-button')];
+  const art=name=>thumbs.find(n=>n.textContent.includes(name)).querySelector('.workspace-game-cover');
+  assert(art('Perfect Dark').src.includes('rom=match'),'No link: ask the server for the RomM match');
+  assert(art('Super Metroid').src.includes('art='),'A user-chosen cover is requested as the user\'s own, not the RomM one');
+  art('Donkey Kong 64').dispatchEvent(new w.Event('error'));
+  const tile=thumbs.find(n=>n.textContent.includes('Donkey Kong 64')).querySelector('.cover-placeholder');
+  assert(tile&&tile.textContent==='DK','A game with no cover gets a placeholder with its initials');
+  thumbs.find(n=>n.textContent.includes('Perfect Dark')).click();await tick();
+  const sourceNote=d.getElementById('cover-source-note');assert(sourceNote.hidden,'No "from RomM" claim before the cover has loaded');
+  d.querySelector('.project-hero-cover').dispatchEvent(new w.Event('load'));
+  assert(!sourceNote.hidden&&sourceNote.textContent.includes('from RomM'),'A RomM cover is labelled');
+  assert([...d.querySelectorAll('button')].some(n=>n.textContent==='Change cover art'),'with a one-click way to replace it');
+  thumbs.find(n=>n.textContent.includes('Super Metroid')).click();await tick();
+  d.querySelector('.project-hero-cover').dispatchEvent(new w.Event('load'));
+  assert(d.getElementById('cover-source-note').hidden,'A user-chosen cover is never labelled as RomM');
   dom.window.close();
   console.log('UI layouts passed: add a game, next step, drafting settings, default workspace, saved preferences, collection/list switching, grouped platforms, RomM imports, correct counts, game selection, deep links, filters, empty state and blocked storage.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

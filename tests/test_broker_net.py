@@ -78,6 +78,19 @@ class LinkTests(unittest.TestCase):
         self.assertTrue(health['version'])
         self.assertEqual(client.link['fingerprint'], self.server.fingerprint)
 
+    def test_network_listener_rejects_rootful_test_mode_before_initializing_worker(self):
+        from portkeeper import worker_broker
+        args = ['broker', '--root', str(self.root / 'worker'),
+                '--input-root', str(self.root / 'inputs'), '--image', 'sha256:' + 'a' * 64,
+                '--listen', '127.0.0.1:0', '--allow-rootful-test']
+        with patch('sys.argv', args), patch.object(worker_broker, 'WorkerBroker') as worker:
+            with patch('sys.stderr', new_callable=io.StringIO) as stderr:
+                with self.assertRaises(SystemExit) as error:
+                    worker_broker.main()
+            self.assertEqual(error.exception.code, 2)
+            self.assertIn('rootful test broker cannot be exposed', stderr.getvalue())
+            worker.assert_not_called()
+
     def test_wrong_code_is_rejected_and_code_is_single_use(self):
         with self.assertRaisesRegex(Invalid, 'did not match'):
             pair(self.url, '0000-0000-0000', self.server.fingerprint)

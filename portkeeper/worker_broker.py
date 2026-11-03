@@ -26,12 +26,14 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
+from . import __version__
 from .safety import Invalid, checksum, confined, relative
 from .storage import Store, now
 
 MAX_BYTES = 2 * 1024**3
 MAX_FILES = 30000
 MAX_LOG = 1024**2
+PROTOCOL = 1
 ID = re.compile(r'[a-f0-9]{32}')
 IMAGE = re.compile(r'(?:[a-zA-Z0-9./:_-]+@)?sha256:[a-f0-9]{64}')
 
@@ -253,7 +255,7 @@ python3 -I -c "import json,platform,shutil; print(json.dumps({'architecture':pla
 
     def health(self):
         return {'ready': self.ready, 'error': self.error, 'backend': self.backend,
-                'image': getattr(self, 'image_id', self.image), 'protocol': 1,
+                'image': getattr(self, 'image_id', self.image), 'protocol': PROTOCOL, 'version': __version__,
                 'toolchain': getattr(self, 'toolchain', {}),
                 'limits': {'workspace_bytes': MAX_BYTES, 'files': MAX_FILES, 'log_bytes': MAX_LOG,
                            'cpus': 4, 'memory_bytes': 8 * 1024**3, 'pids': 256}, 'test_only': self.test_mode}
@@ -272,8 +274,22 @@ python3 -I -c "import json,platform,shutil; print(json.dumps({'architecture':pla
             self.docker('rm', '-f', name)
         return {'cancelled': True}
 
+    def release(self, job):
+        """Delete a finished job's files, e.g. after a remote app has copied its results."""
+        with self.guard:
+            if job in self.active_names:
+                raise Invalid('Worker job is still running')
+        if self.lock.acquire(blocking=False):
+            try:
+                path = self.root / 'jobs' / job
+                if not path.is_symlink():
+                    shutil.rmtree(path, ignore_errors=True)
+            finally:
+                self.lock.release()
+        return {'released': True}
+
     def handle(self, payload):
-        if not isinstance(payload, dict) or payload.get('op') not in ('health', 'run', 'fetch', 'status', 'cancel'):
+        if not isinstance(payload, dict) or payload.get('op') not in ('health', 'run', 'fetch', 'status', 'cancel', 'release'):
             raise Invalid('Unknown broker operation')
         if payload['op'] == 'health':
             return self.health()
@@ -282,6 +298,8 @@ python3 -I -c "import json,platform,shutil; print(json.dumps({'architecture':pla
             raise Invalid('Invalid worker job')
         if payload['op'] == 'cancel':
             return self.cancel(job)
+        if payload['op'] == 'release':
+            return self.release(job)
         operation = payload.get('operation_id', '')
         if not isinstance(operation, str) or not ID.fullmatch(operation):
             raise Invalid('Invalid worker operation')
@@ -620,9 +638,11 @@ def main():
     parser.add_argument('--protected-root', type=Path, action='append', default=[], help='Never expose this controller/credential directory through selected input mounts (repeatable)')
     parser.add_argument('--allow-rootful-test', action='store_true', help='TESTS ONLY: refuse use by the application')
     args = parser.parse_args()
-    broker = WorkerBroker(args.root, args.input_root, args.image, allow_rootful_test=args.allow_rootful_test, protected_roots=args.protected_root)
     if not args.socket and not args.listen:
-        parser.error('Provide --socket, --listen or both')
+        parser.error('Choose --socket, --listen or both')
+    if args.listen and args.allow_rootful_test:
+        parser.error('A rootful test broker cannot be exposed over the network')
+    broker = WorkerBroker(args.root, args.input_root, args.image, allow_rootful_test=args.allow_rootful_test, protected_roots=args.protected_root)
     servers = []
     if args.socket:
         servers.append(make_server(broker, args.socket))

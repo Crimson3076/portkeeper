@@ -7,6 +7,7 @@ import shutil
 import tarfile
 import tempfile
 import threading
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -396,6 +397,51 @@ class AutonomousTests(unittest.TestCase):
         self.assertEqual([i['name'] for i in choices['items']], ['private.bin'])
         with self.assertRaises(Invalid): self.engine.automation.input_choices('../data')
         with self.assertRaises(Invalid): self.engine.automation.input_choices('escape')
+
+    def test_jobs_queue_while_the_remote_broker_is_offline_and_start_when_it_returns(self):
+        from portkeeper.broker_net import BrokerOffline
+        broker, request = self.broker, self.broker.request
+        broker.online = False
+        def flaky(op, **payload):
+            if op == 'health' and not broker.online:
+                raise BrokerOffline('The build broker could not be reached')
+            return request(op, **payload)
+        broker.request = flaky
+        self.engine.automation.offline_poll, self.engine.automation.health_cache = .02, None
+        self.assertTrue(self.engine.automation.status()['worker']['offline'])
+        inputs = [{'role': 'base_game', 'kind': 'file', 'path': 'private.bin'}]
+        with patch.object(self.engine.assistant, 'chat', side_effect=self.strict_responses()):
+            result = self.engine.automation.queue(self.project['id'], {'inputs': inputs})
+            threading.Event().wait(.3)
+            self.assertEqual(self.engine.store.get('jobs', result['job']['id'])['status'], 'queued')
+            self.assertFalse([c for c in broker.calls if c[0] == 'run'])
+            broker.online = True
+            job = self.wait_status(result['job']['id'], 'ready')
+        self.assertEqual(job['status'], 'ready')
+
+    def test_waiting_for_an_offline_broker_stops_on_cancel_and_ignores_the_queue_deadline(self):
+        from portkeeper.broker_net import BrokerOffline
+        automation, request = self.engine.automation, self.broker.request
+        calls = []
+        def offline(op, **payload):
+            calls.append(op)
+            if len(calls) < 3:
+                raise BrokerOffline('The build broker could not be reached')
+            return request(op, **payload)
+        self.broker.request = offline
+        automation.offline_poll = .02
+        job = identifier()
+        self.engine.store.put('automation', {'id': job, 'status': 'queued', 'cancel_requested': True, 'deadline': time.time() + 600})
+        with patch.object(self.engine, 'stage'), self.assertRaises(Invalid):
+            automation.wait_for_broker(job)
+        # Time spent waiting for the broker does not use up the elapsed-time budget.
+        job = identifier()
+        policy = automation.policy()
+        self.engine.store.put('automation', {'id': job, 'status': 'queued', 'deadline': time.time() - 1, 'policy': policy})
+        calls.clear()
+        with patch.object(self.engine, 'stage'):
+            automation.wait_for_broker(job)
+        self.assertGreater(self.engine.store.get('automation', job)['deadline'], time.time())
 
     def test_controller_cancellation_persists_before_broker_dispatch(self):
         job = identifier()

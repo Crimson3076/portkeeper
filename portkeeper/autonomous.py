@@ -1166,6 +1166,9 @@ class Automation:
             for path in root.iterdir():
                 if path.is_dir() and not path.is_symlink():
                     shutil.rmtree(path)
+        release = getattr(self.broker, 'release', None)
+        if release:
+            release(job)
 
     def export_recipe(self, project_id):
         recipe = self.store.get('projects', project_id).get('autonomous_recipe')

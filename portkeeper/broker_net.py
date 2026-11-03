@@ -41,6 +41,10 @@ PAIR_LIFETIME = 900
 JOB_RETENTION = 7 * 86400
 
 
+class BrokerOffline(Invalid):
+    """The broker is temporarily unreachable."""
+
+
 def mismatch_message(remote):
     return (f'Incompatible Portkeeper protocol: this side speaks {PROTOCOL}, the other speaks {remote}. '
             'Update the older side (the broker updates itself from GitHub releases; the app updates from the Docker tab) and try again')

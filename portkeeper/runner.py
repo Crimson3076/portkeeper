@@ -16,6 +16,7 @@ import tarfile
 import threading
 import time
 import zipfile
+import zlib
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -63,6 +64,46 @@ def normalize_n64(data):
         swapped[0::2], swapped[1::2] = data[1::2], data[0::2]
         return bytes(swapped)
     raise Invalid("The file is not an N64 ROM in .z64, .n64 or .v64 byte order")
+
+
+def digest_bytes(data, normalize=None):
+    """SHA-1 and SHA-256 of in-memory data, matching digests() for the same bytes."""
+    if normalize == "n64_big_endian":
+        data = normalize_n64(data)
+    return {"sha1": hashlib.sha1(data, usedforsecurity=False).hexdigest(), "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+
+
+def zip_members(path, limit):
+    """Regular, unencrypted files inside a ZIP that are small enough to be a game file."""
+    with zipfile.ZipFile(path) as archive:
+        infos = archive.infolist()
+        if len(infos) > MAX_MEMBERS:
+            return []
+        return [i.filename for i in infos if not i.is_dir() and not i.flag_bits & 0x1 and 0 < i.file_size <= limit]
+
+
+def read_open_zip_member(archive, member, limit):
+    """Read one member of an already open archive, checking its declared size and that exactly that many bytes come out."""
+    info = archive.getinfo(member)
+    if info.is_dir() or info.flag_bits & 0x1 or info.file_size > limit:
+        raise Invalid("That archive member cannot be used as a game file")
+    with archive.open(info) as stream:
+        data = stream.read(limit + 1)
+    if len(data) != info.file_size:
+        raise Invalid("The archive member does not match its declared size")
+    return data
+
+
+def read_zip_member(path, member, limit):
+    with zipfile.ZipFile(path) as archive:
+        return read_open_zip_member(archive, member, limit)
+
+
+def accepted_label(item, path, member):
+    """Label of the accepted revision a ZIP member matches."""
+    limit = item.get("max_bytes", packaging.GIB)
+    match = accepted(item, digest_bytes(read_zip_member(path, member, limit), item.get("normalize")))
+    return match["label"] if match else None
 
 
 def accepted(item, digest):
@@ -175,7 +216,8 @@ class OperationRunner:
                 names = dirs if item["kind"] == "directory" else files
                 for name in names:
                     path = Path(directory) / name
-                    if path.is_symlink() or (not expected and pattern and not pattern.search(name)):
+                    zipped_rom = item["kind"] == "file" and item.get("normalize") and name.lower().endswith(".zip")
+                    if path.is_symlink() or (not expected and pattern and not zipped_rom and not pattern.search(name)):
                         continue
                     if item['kind'] == 'directory':
                         preparation = next((op for op in definition['operations'] if op.get('tool') == 'ps4_pkg_extract' and op.get('prepared_input') == input_id), None)
@@ -202,11 +244,37 @@ class OperationRunner:
                             try:
                                 digest = digests(path, item.get("normalize"))
                             except (Invalid, OSError):
-                                continue
-                            if not accepted(item, digest):
+                                digest = None
+                            if digest is None or not accepted(item, digest):
+                                # A ROM may be zipped; look inside for a member whose hash is accepted.
+                                member = self.zip_match(path, item)
+                                if member:
+                                    found.append({"source": source, "path": path.relative_to(root_for).as_posix(), "member": member})
                                 continue
                     found.append({"source": source, "path": path.relative_to(root_for).as_posix()})
         return found
+
+    def zip_match(self, path, item):
+        """Name of the first member of a ZIP whose (normalized) hash is accepted for this input, if any."""
+        if path.suffix.lower() != ".zip" or not item.get("normalize"):
+            return None
+        limit = item.get("max_bytes", packaging.GIB)
+        try:
+            with zipfile.ZipFile(path) as archive:
+                infos = archive.infolist()
+                if len(infos) > MAX_MEMBERS:
+                    return None
+                for info in infos:
+                    if info.is_dir() or info.flag_bits & 0x1 or not 0 < info.file_size <= limit:
+                        continue
+                    try:
+                        if accepted(item, digest_bytes(read_open_zip_member(archive, info.filename, limit), item.get("normalize"))):
+                            return info.filename
+                    except (Invalid, OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError, zlib.error, EOFError, ValueError):
+                        continue  # Not a ROM, damaged, or unreadable: try the next member.
+        except (OSError, zipfile.BadZipFile):
+            return None
+        return None
 
     def find_files(self, definition):
         """For each declared input: accepted files found, and near misses with the reason they were not used."""
@@ -234,7 +302,8 @@ class OperationRunner:
                     dirs[:] = sorted(d for d in dirs if not (Path(directory) / d).is_symlink())
                     for name in sorted(files):
                         path = Path(directory) / name
-                        if path.is_symlink() or (expected and path.suffix.lower() != '.pkg') or (not expected and pattern and not pattern.search(name)):
+                        zipped_rom = item.get("normalize") and name.lower().endswith(".zip")
+                        if path.is_symlink() or (expected and path.suffix.lower() != '.pkg') or (not expected and pattern and not zipped_rom and not pattern.search(name)):
                             continue
                         record = {"source": "inputs", "path": path.relative_to(self.engine.input_root).as_posix(), "name": name}
                         try:
@@ -257,10 +326,16 @@ class OperationRunner:
                         if item.get("verify", "hash") != "hash":
                             entry["found"].append({**record, "accepted": "checked during the build", "size": size})
                             continue
+                        if zipped_rom:
+                            member = self.zip_match(path, item)
+                            if member:
+                                entry["found"].append({**record, "member": member, "accepted": accepted_label(item, path, member), "size": size})
+                                continue
                         try:
                             digest = digests(path, item.get("normalize"))
                         except (Invalid, OSError):
-                            entry["rejected"].append({**record, "reason": "not a readable game file"})
+                            if not zipped_rom:
+                                entry["rejected"].append({**record, "reason": "not a readable game file"})
                             continue
                         match = accepted(item, digest)
                         if match:
@@ -333,7 +408,16 @@ class OperationRunner:
                 raise Invalid(f"{item['label']} is larger than its declared limit")
             record = {"path": path, "kind": "file", "size": size}
             state = path.stat()
+            member = binding.get("member")
             record['fingerprint'] = {'path': binding['path'], 'size': state.st_size, 'mtime_ns': state.st_mtime_ns}
+            if member:
+                limit = item.get("max_bytes", packaging.GIB)
+                data = read_zip_member(path, member, limit)
+                private = ctx.workspace / "selected-inputs" / input_id
+                private.mkdir(parents=True, exist_ok=True)
+                path = private / slug(Path(member).name or "game")
+                path.write_bytes(data)
+                record.update(path=path, size=len(data))
             if item.get("verify", "hash") == "hash":
                 ctx.stage("verifying_inputs", "Checking " + item["label"])
                 digest = digests(path, item.get("normalize"))
@@ -368,6 +452,8 @@ class OperationRunner:
             try:
                 stat_result = confined(root, binding["path"]).stat()
                 inputs[item["id"]] = [binding["path"], stat_result.st_size, stat_result.st_mtime_ns]
+                if binding.get("member"):
+                    inputs[item["id"]].append(binding["member"])
                 if ps4.input_expectation(definition, item['id']):
                     inputs[item['id']].append(stat_result.st_ctime_ns)
             except (Invalid, OSError):
