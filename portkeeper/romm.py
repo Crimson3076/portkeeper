@@ -190,6 +190,26 @@ def _fetch_image(url, limit=10 * 1024 * 1024):
     return content_type, body
 
 
+def _title_key(value):
+    """Case, punctuation and platform-suffix insensitive title for matching games to RomM entries."""
+    words = re.findall(r'[a-z0-9]+', str(value).casefold())
+    while len(words) > 1 and words[-1] in ('windows', 'linux', 'win'):
+        words.pop()
+    return ' '.join(words)
+
+
+def _atomic_bytes(path, data):
+    handle, name = tempfile.mkstemp(dir=path.parent, prefix='.cover-')
+    try:
+        with os.fdopen(handle, 'wb') as stream:
+            stream.write(data)
+        os.replace(name, path)
+    except BaseException:
+        try: os.unlink(name)
+        except OSError: pass
+        raise
+
+
 def _cover_url(server_url, path):
     url = urllib.parse.urljoin(server_url, path)
     if _origin(url) != _origin(server_url):
@@ -334,6 +354,61 @@ class RomM:
                 self.cover_cache.clear()
             self.cover_cache[key] = (time.monotonic(), content_type, body)
         return content_type, body
+
+    def matched_cover(self, key, title, platform_slugs):
+        """Cover of the RomM entry that has this game's title, cached on disk.
+
+        Prefers an entry on one of the game's platforms. A found cover is kept for a
+        week and a confirmed miss for an hour, so listing games does not query RomM
+        every time. A RomM that cannot be reached is never cached as a miss."""
+        if not isinstance(key, str) or not re.fullmatch(r'[a-f0-9]{32}', key):
+            raise Invalid('Invalid game id')
+        wanted = _title_key(title)
+        if not wanted:
+            raise Invalid('This game has no title to match')
+        server = self._config().get('url', '')
+        folder = self.cache / 'covers'
+        meta_path, image_path = folder / (key + '.json'), folder / (key + '.img')
+        cached = None
+        try:
+            meta = json.loads(meta_path.read_text(encoding='utf-8'))
+            age = time.time() - float(meta['at'])
+            if meta['server'] == server and meta['title'] == wanted and 0 <= age < (3600 if meta['rom_id'] is None else 7 * 86400):
+                if meta['rom_id'] is None:
+                    cached = ()
+                elif not image_path.is_symlink():
+                    cached = (meta['content_type'], image_path.read_bytes(), meta['rom_id'])
+        except (OSError, ValueError, KeyError, TypeError):
+            cached = None
+        if cached == ():
+            raise Invalid('RomM has no cover for this title')
+        if cached:
+            return cached
+
+        def remember(rom_id, content_type=None, body=None):
+            folder.mkdir(parents=True, exist_ok=True)
+            if body is not None:
+                _atomic_bytes(image_path, body)
+            _atomic_json(meta_path, {'server': server, 'title': wanted, 'rom_id': rom_id, 'content_type': content_type, 'at': time.time()})
+
+        params = urllib.parse.urlencode({'search_term': str(title).strip()[:200], 'offset': 0, 'limit': 50, 'with_files': 'false',
+                                         'with_char_index': 'false', 'with_filter_values': 'false', 'with_rom_id_index': 'false'})
+        result = self._json('roms?' + params)
+        items = result.get('items', []) if isinstance(result, dict) else result
+        if not isinstance(items, list):
+            raise Invalid('RomM returned an invalid ROM list')
+        candidates = [item for item in items if isinstance(item, dict) and type(item.get('id')) is int and item['id'] > 0
+                      and _title_key(item.get('name') or '') == wanted and (item.get('path_cover_large') or item.get('path_cover_small'))]
+        candidates.sort(key=lambda item: item.get('platform_slug') not in (platform_slugs or ()))
+        for item in candidates:
+            try:
+                content_type, body = self.cover(item['id'])
+            except Invalid:
+                continue
+            remember(item['id'], content_type, body)
+            return content_type, body, item['id']
+        remember(None)
+        raise Invalid('RomM has no cover for this title')
 
     def search_covers(self, query):
         """Search RomM's cover providers (SteamGridDB, Steam), the same picker RomM itself uses."""
