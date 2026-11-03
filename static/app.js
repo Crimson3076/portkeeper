@@ -230,14 +230,15 @@ function coverPlaceholder(project, className) {
 }
 // A user-chosen cover wins; otherwise the server uses the linked or title-matched RomM entry and caches it.
 // With placeholder set, a game without a cover gets a neutral tile with its initials instead of nothing.
+function displayName(project) { return project.recomp_catalog?.display_name || project.name; }
 function projectCover(project, className, placeholder = false, onLoad = null) {
   const metadata = project.metadata || {};
   const custom = metadata.cover_policy === "custom" && metadata.url_cover;
-  if (!custom && !metadata.romm_rom_id && (project.demo || !rommReady())) return placeholder ? coverPlaceholder(project, className) : null;
+  if (!custom && !metadata.romm_rom_id && !project.recomp_catalog?.images?.cover && (project.demo || !rommReady())) return placeholder ? coverPlaceholder(project, className) : null;
   const image = el("img", className);
   const version = custom ? `art=${encodeURIComponent(metadata.url_cover.slice(-80))}` : `rom=${encodeURIComponent(metadata.romm_rom_id || "match")}`;
   image.src = `/api/projects/${encodeURIComponent(project.id)}/cover?${version}`;
-  image.alt = `${project.name} cover art`;
+  image.alt = `${displayName(project)} cover art`;
   image.loading = "lazy"; image.decoding = "async";
   if (onLoad) image.addEventListener("load", () => onLoad(custom ? "user" : "romm"), {once: true});
   image.addEventListener("error", () => { if (placeholder) image.replaceWith(coverPlaceholder(project, className)); else image.remove(); }, {once: true});
@@ -496,7 +497,7 @@ function renderLibrary() {
       const choose = button("", "workspace-game-button", () => { workspaceProjectId = project.id; savePreference("portkeeper.selected-game", project.id); navigateProject(project.id); });
       choose.setAttribute("aria-pressed", String(project.id === selected.id));
       choose.append(projectCover(project, "workspace-game-cover", true));
-      choose.append(el("span", "", [el("strong", "", project.name), el("small", "", gameAvailability(project))]));
+      choose.append(el("span", "", [el("strong", "", displayName(project)), el("small", "", gameAvailability(project))]));
       sidebar.append(choose);
     });
     if (retainedMain) grid.querySelector(".workspace-game-list").replaceWith(sidebar);
@@ -508,7 +509,7 @@ function renderLibrary() {
     const artifacts = projectArtifacts(project.id);
     const newest = artifacts[0];
     const good = artifacts.find((artifact) => knownGood(artifact, project));
-    const title = button(project.name, "project-name", () => navigateProject(project.id));
+    const title = button(displayName(project), "project-name", () => navigateProject(project.id));
     const avatar = el("div", "project-avatar", gameInitials(project));
     const cover = projectCover(project, "project-cover-thumb");
     if (cover) {
@@ -776,7 +777,7 @@ function renderProject() {
   document.querySelectorAll("[data-project-tab]").forEach((node) => { const selected = node.dataset.projectTab === route.tab; node.classList.toggle("selected", selected); node.setAttribute("aria-selected", String(selected)); node.tabIndex = selected ? 0 : -1; });
   content.setAttribute("aria-labelledby", `project-${route.tab}-tab`);
   if (!project) { heading.append(el("div", "", [el("h1", "", "Game unavailable"), el("p", "", "Return to the library to choose a game.")])); return; }
-  const title = el("div", "project-title-detail", [el("h1", "", project.name), projectSource(project), el("div", "project-targets", gameTargets(project).map(targetPill))]);
+  const title = el("div", "project-title-detail", [el("h1", "", displayName(project)), projectSource(project), el("div", "project-targets", gameTargets(project).map(targetPill))]);
   const cover = projectCover(project, "project-hero-cover", true, (source) => {
     if (source !== "romm" || !project.id) return;
     const note = document.getElementById("cover-source-note");
@@ -807,6 +808,23 @@ function renderProject() {
   });
   if (focused && $(focused.id)) { $(focused.id).focus({ preventScroll: true }); if (focused.start !== null && focused.start !== undefined && typeof $(focused.id).setSelectionRange === "function") $(focused.id).setSelectionRange(focused.start, focused.end); }
   restoreJsonReading(content, reading);
+}
+function recompMetadataCard(project) {
+  const info = project.recomp_catalog; if (!info) return null;
+  const card = el("section", "detail-card recomp-card", [el("h2", "", "About this game")]);
+  if (info.images?.hero) { const hero = el("img", "recomp-hero"); hero.src = info.images.hero; hero.alt = ""; hero.loading = "lazy"; hero.addEventListener("error", () => hero.remove(), {once: true}); card.append(hero); }
+  if (info.images?.logo) { const logo = el("img", "recomp-logo"); logo.src = info.images.logo; logo.alt = `${info.name} logo`; logo.loading = "lazy"; logo.addEventListener("error", () => logo.remove(), {once: true}); card.append(logo); }
+  card.append(el("h3", "", info.name));
+  if (info.blurb) card.append(el("p", "", info.blurb));
+  if (info.needs) card.append(el("p", "detail-note", `You need: ${info.needs.replace(/^Your own copy of\s+/i, "")}`));
+  const chips = [...(info.features || []), ...(info.tags || [])];
+  if (chips.length) card.append(el("div", "game-pick-tags", chips.map(text => el("span", "status-badge", text))));
+  const about = info.about;
+  if (about?.summary) card.append(el("p", "field-help", about.summary));
+  const facts = [["Original game", info.game], ["Genres", (about?.genres?.length ? about.genres : info.genre || []).join(", ")], ["IGDB rating", about?.rating ? `${about.rating} / 100` : ""], ["Developer", about?.developer], ["License", info.license], ["Latest release", info.version]].filter(([, value]) => value);
+  if (facts.length) card.append(el("div", "detail-facts", facts.map(([label, value]) => meta(label, value))));
+  card.append(el("p", "compact-note", ["Reference data and artwork: ", externalLink("Recomp Launcher ↗", info.url), ". Portkeeper checks platforms and verification itself."]));
+  return card;
 }
 function renderOverview(project, content) {
   const grid = el("div", "detail-grid"), left = el("div"), right = el("div");
@@ -845,6 +863,7 @@ function renderOverview(project, content) {
   packageCard.append(el("p", "compact-note", "Download availability does not confirm gameplay. A launch check confirms startup only."));
   if (projectActiveJob(project)?.status !== "waiting_user") left.append(nextStepCard(project));
   left.append(packageCard);
+  const catalogCard = recompMetadataCard(project); if (catalogCard) left.append(catalogCard);
   const fromRomm = el("p", "compact-note", "Cover from RomM. Choose your own to replace it; your choice is never overwritten."); fromRomm.id = "cover-source-note"; fromRomm.hidden = true;
   right.append(fromRomm, button("Change cover art", "button secondary", () => openCoverSearch(project.id)));
   grid.append(left, right); content.append(grid);
@@ -1793,6 +1812,23 @@ async function submitRomM(event) {
   catch (error) { $("romm-form-result").classList.add("error"); $("romm-form-result").textContent = error.message; }
   finally { $("romm-token").value = ""; busy.delete("romm-settings"); $("romm-save").disabled = false; $("romm-save").textContent = "Save & test connection"; await refresh(); }
 }
+let recompStatus = null, recompLoading = false;
+async function loadRecompStatus(refresh = false) {
+  if (recompLoading) return; recompLoading = true; renderRecompSettings();
+  try { recompStatus = await api(refresh ? "/api/discovery/refresh" : "/api/discovery", refresh ? {method: "POST", body: {force: true}} : {}); }
+  catch (error) { recompStatus = {...(recompStatus || {}), error: error.message}; }
+  finally { recompLoading = false; renderRecompSettings(); }
+  if (recompStatus?.refreshing) setTimeout(() => void loadRecompStatus(), 3000);
+}
+function renderRecompSettings() {
+  const target = $("recomp-catalog-status"); if (!target) return;
+  const s = recompStatus;
+  target.replaceChildren(el("p", "", s?.count ? `Recomp catalog: ${s.count} games, updated ${s.updated || (s.fetched_at ? new Date(s.fetched_at).toLocaleDateString() : "unknown")}` : "Recomp catalog: not saved yet"),
+    ...(s?.skipped ? [el("p", "field-help", `${s.skipped} malformed entries were ignored.`)] : []),
+    ...(s?.checked_at ? [el("p", "field-help", `Last checked ${new Date(s.checked_at).toLocaleString()}`)] : []),
+    ...(s?.error ? [el("p", "form-result error", s.error)] : []));
+  $("recomp-catalog-refresh").disabled = recompLoading || Boolean(s?.refreshing);
+}
 function renderRomMMatching() {
   const matching = rommConfig().matching || {}, select = $("romm-match-mode");
   if (select.options.length !== Object.keys(matching.modes || {}).length) select.replaceChildren(...Object.entries(matching.modes || {}).map(([value, label]) => Object.assign(document.createElement("option"), { value, textContent: label })));
@@ -1903,7 +1939,7 @@ function assistantSettings() { return state.assistant || {}; }
 function pendingProposal(project) { return (state.proposals || []).find((proposal) => proposal.kind === "definition" && String(proposal.project_id) === String(project.id)); }
 async function openAddGame() {
   addGame = { step: "pick", games: [], loading: true, pick: null, files: null, choices: {}, targets: [], keep: false, publish: false, autoPublish: false, busy: false, rommConnected: rommReady(),
-    discoveryOpen: false, discovery: null, discoveryLoading: false, discoveryQuery: "", discoveryError: "",
+    discoveryOpen: false, discovery: null, discoveryList: null, discoveryFilters: {origin: "", system: "", genre: "", sort: "popular"}, discoveryLoading: false, discoveryQuery: "", discoveryError: "",
     custom: { repo: "", lookup: null, name: "", targets: [], method: automaticAvailable() ? "automatic" : assistantSettings().configured ? "assistant" : "handoff" } };
   $("add-game-error").textContent = ""; renderAddGame(); $("add-game-dialog").showModal();
   try { const result = await api("/api/catalog/games"); const groups = new Map();
@@ -1943,66 +1979,96 @@ function renderGamePicker(content, actions) {
   custom.addEventListener("click", () => { addGame.pick = { id: "custom", name: "a custom game" }; renderAddGame(); });
   grid.append(custom);
   content.append(grid);
-  const discover = button("Discover more ports", "button secondary", () => {
+  const discover = button("Browse all Recomp games", "button secondary", () => {
     addGame.discoveryOpen = !addGame.discoveryOpen; renderAddGame();
     if (addGame.discoveryOpen && !addGame.discovery) void loadDiscovery();
   });
   discover.setAttribute("aria-expanded", String(addGame.discoveryOpen));
-  content.append(el("div", "discovery-heading", [discover, externalLink("Browse Recomp Launcher ↗", "https://recomplauncher.com/top")]));
-  if (addGame.discoveryOpen) { const panel = el("section", "discovery-panel"); panel.id = "game-discovery"; panel.setAttribute("aria-label", "Discover ports on Recomp Launcher"); content.append(panel); renderDiscovery(); }
+  content.append(el("div", "discovery-heading", [discover, externalLink("Recomp Launcher ↗", "https://recomplauncher.com")]));
+  if (addGame.discoveryOpen) { const panel = el("section", "discovery-panel"); panel.id = "game-discovery"; panel.setAttribute("aria-label", "Browse the Recomp catalog"); content.append(panel); renderDiscovery(); }
   actions.append(button(addGame.pick ? `Continue with ${addGame.pick.name}` : "Choose a game", "button primary", continueAddGame, !addGame.pick));
+}
+function discoveryQueryString(session) {
+  const f = session.discoveryFilters, params = new URLSearchParams({sort: f.sort, limit: "60"});
+  [["q", session.discoveryQuery.trim()], ["origin", f.origin], ["system", f.system], ["genre", f.genre]].forEach(([key, value]) => { if (value) params.set(key, value); });
+  return params.toString();
 }
 async function loadDiscovery(refresh = false, poll = false) {
   const session = addGame;
   if (!session || session.discoveryLoading) return;
   session.discoveryLoading = true; session.discoveryError = ""; renderDiscovery();
   try {
-    let result = await api(refresh ? "/api/discovery/refresh" : "/api/discovery", refresh ? {method: "POST", body: {force: true}} : {});
-    if (addGame !== session) return;
-    if (!refresh && !poll && result.stale && !result.refreshing) result = await api("/api/discovery/refresh", {method: "POST", body: {force: false}});
-    if (addGame !== session) return;
-    session.discovery = result;
-    if (result.refreshing) setTimeout(() => {
+    let status = await api(refresh ? "/api/discovery/refresh" : "/api/discovery", refresh ? {method: "POST", body: {force: true}} : {});
+    if (!refresh && !poll && status.stale && !status.refreshing) status = await api("/api/discovery/refresh", {method: "POST", body: {force: false}});
+    session.discovery = status;
+    session.discoveryList = await api(`/api/discovery/games?${discoveryQueryString(session)}`);
+    if (status.refreshing) setTimeout(() => {
       if (addGame === session && session.discoveryOpen && session.step === "pick" && $("add-game-dialog").open) void loadDiscovery(false, true);
-    }, 1200);
+    }, 3000);
   } catch (error) { if (addGame === session) session.discoveryError = error.message; }
   finally { session.discoveryLoading = false; if (addGame === session) renderDiscovery(); }
+}
+async function reloadDiscoveryList() {
+  const session = addGame; if (!session) return;
+  try { const list = await api(`/api/discovery/games?${discoveryQueryString(session)}`); if (addGame === session) { session.discoveryList = list; renderDiscoveryResults(); } }
+  catch (error) { if (addGame === session) { session.discoveryError = error.message; renderDiscovery(); } }
 }
 function renderDiscovery() {
   const panel = $("game-discovery"), session = addGame;
   if (!panel || !session) return;
   const focused = document.activeElement?.id === "discovery-search", selection = focused ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : [0, 0], scroll = $("discovery-results")?.scrollTop || 0;
-  panel.replaceChildren(el("h3", "", "Discover ports on Recomp Launcher"), el("p", "field-help", "These are project references. Portkeeper checks the upstream repository before suggesting platforms or packaging steps."));
-  const search = input("discovery-search", "search", session.discoveryQuery); search.placeholder = "Search games or repositories"; search.setAttribute("aria-label", "Search discovered ports");
-  search.addEventListener("input", () => { session.discoveryQuery = search.value; renderDiscoveryResults(); });
+  panel.replaceChildren(el("h3", "", "Browse the Recomp catalog"), el("p", "field-help", "Reference data from Recomp Launcher. Portkeeper checks the upstream repository before suggesting platforms or packaging steps."));
+  const search = input("discovery-search", "search", session.discoveryQuery); search.placeholder = "Search games, consoles or repositories"; search.setAttribute("aria-label", "Search the Recomp catalog");
+  let timer = null;
+  search.addEventListener("input", () => { session.discoveryQuery = search.value; clearTimeout(timer); timer = setTimeout(() => void reloadDiscoveryList(), 200); });
   panel.append(search);
+  const list = session.discoveryList, filters = session.discoveryFilters;
+  const choose = (key, label, values, format = value => value) => {
+    const node = el("select"); node.id = `discovery-${key}`; node.setAttribute("aria-label", label);
+    node.append(...[["", label], ...values.map(value => [value, format(value)])].map(([value, text]) => { const option = el("option", "", text); option.value = value; return option; }));
+    node.value = filters[key]; node.addEventListener("change", () => { filters[key] = node.value; void reloadDiscoveryList(); }); return node;
+  };
+  panel.append(el("div", "discovery-filters", [choose("origin", "Any console", list?.origins || [], value => value.toUpperCase()), choose("system", "Any system", list?.systems || [], value => targetLabels[value] || value), choose("genre", "Any genre", list?.genres || []),
+    (() => { const node = choose("sort", "Sort", ["popular", "newest", "name"], value => ({popular: "Most popular", newest: "Newest", name: "Name"})[value]); node.firstChild.remove(); node.value = filters.sort; return node; })()]));
   const record = session.discovery;
-  const status = el("p", "field-help", session.discoveryError || record?.error || (session.discoveryLoading || record?.refreshing ? "Refreshing the project list…" : record?.fetched_at ? `List saved ${new Date(record.fetched_at).toLocaleString()}${record.stale ? " · may be out of date" : ""}` : "Load the project list, or browse the website and paste a game page under Custom game."));
+  const status = el("p", "field-help", session.discoveryError || record?.error || (session.discoveryLoading || record?.refreshing ? "Refreshing the catalog…" : record?.count ? `Recomp catalog: ${record.count} games, updated ${record.updated || new Date(record.fetched_at).toLocaleDateString()}${record.stale ? " · may be out of date" : ""}` : "The catalog has not been saved yet. Refresh, or add any repository with Custom game."));
   status.setAttribute("role", "status");
-  panel.append(el("div", "discovery-heading", [button("Refresh list", "button secondary small", () => void loadDiscovery(true), session.discoveryLoading || record?.refreshing), externalLink("View source list ↗", "https://recomplauncher.com/top")]), status);
+  panel.append(el("div", "discovery-heading", [button("Refresh catalog", "button secondary small", () => void loadDiscovery(true), session.discoveryLoading || record?.refreshing), el("span", "field-help", "Artwork and data: Recomp Launcher, IGDB and project authors")]), status);
   const results = el("div", "discovery-results"); results.id = "discovery-results"; panel.append(results); renderDiscoveryResults();
   results.scrollTop = scroll;
   if (focused) { search.focus(); search.setSelectionRange(...selection); }
 }
 function renderDiscoveryResults() {
   const results = $("discovery-results"); if (!results || !addGame) return;
-  const query = addGame.discoveryQuery.trim().toLocaleLowerCase();
-  const entries = (addGame.discovery?.entries || []).filter(item => `${item.name} ${item.repository || ""}`.toLocaleLowerCase().includes(query));
+  const entries = addGame.discoveryList?.items || [];
   results.replaceChildren();
   entries.forEach(item => {
-    const known = addGame.games.flatMap(game => game.variants || [game]).find(game => item.repository && game.repository?.toLowerCase() === item.repository.toLowerCase());
-    const existing = (state.projects || []).find(project => item.repository && project.repo?.toLowerCase() === item.repository.toLowerCase());
-    const row = el("div", "discovery-result", [el("div", "", [el("strong", "", item.name), el("p", "field-help", item.repository || "Choose to find its upstream repository"), el("span", "field-help", existing ? "Already in your library" : known ? "Packaging steps available" : "Packaging setup needed")]), el("div", "inline-actions", [externalLink("Reference ↗", item.url), button(existing ? "Open game" : known ? "Choose game" : "Investigate setup", "button secondary small", () => void chooseDiscovery(item), addGame.busy)])]);
+    const existing = item.in_library || (state.projects || []).find(project => item.repository && project.repo?.toLowerCase() === item.repository.toLowerCase())?.id;
+    const known = item.known || addGame.games.flatMap(game => game.variants || [game]).some(game => item.repository && game.repository?.toLowerCase() === item.repository.toLowerCase());
+    const art = el("img", "discovery-cover"); art.alt = ""; art.loading = "lazy"; art.decoding = "async";
+    if (item.has_cover) { art.src = `/api/discovery/image/${encodeURIComponent(item.id)}/cover`; art.addEventListener("error", () => art.remove(), {once: true}); }
+    const romm = el("span", "field-help"); romm.id = `discovery-romm-${item.id}`;
+    const badges = [item.origin && el("span", "status-badge", item.origin.toUpperCase()), ...(item.systems || []).map(system => el("span", "status-badge", targetLabels[system] || system))].filter(Boolean);
+    const row = el("div", "discovery-result", [item.has_cover ? art : el("span"), el("div", "", [el("strong", "", item.name), item.game && item.game !== item.name ? el("p", "field-help", `Original game: ${item.game}`) : el("p", "field-help", item.repository || "No GitHub repository listed"), el("div", "game-pick-tags", badges), el("span", "field-help", existing ? "Already in your library" : known ? "Packaging steps available" : "Packaging setup needed"), romm]), el("div", "inline-actions", [button(existing ? "Open game" : known ? "Choose game" : "Investigate setup", "button secondary small", () => void chooseDiscovery(item), addGame.busy), button("RomM?", "text-button", () => void checkDiscoveryRomm(item, romm))])]);
     results.append(row);
   });
-  if (!entries.length && !addGame.discoveryLoading && !addGame.discovery?.refreshing) results.append(el("p", "detail-empty", query ? "No matching projects. You can still add any upstream repository with Custom game." : "No saved projects yet. Browse Recomp Launcher or paste a game page under Custom game."));
+  const total = addGame.discoveryList?.total ?? 0;
+  if (!entries.length && !addGame.discoveryLoading && !addGame.discovery?.refreshing) results.append(el("p", "detail-empty", addGame.discovery?.count ? "No matching games. You can still add any upstream repository with Custom game." : "No saved catalog yet. Refresh the catalog, or add a repository with Custom game."));
+  else if (total > entries.length) results.append(el("p", "field-help", `Showing ${entries.length} of ${total}. Narrow the search to see more.`));
+}
+async function checkDiscoveryRomm(item, target) {
+  target.textContent = "Checking RomM…";
+  try {
+    const result = await api(`/api/discovery/games/${encodeURIComponent(item.id)}/romm`);
+    target.textContent = !result.checked ? "RomM could not be checked for this game." : result.owned ? `You have this game in RomM (${result.matches.map(match => match.platform).join(", ")}). Choose the file during setup.` : `Not found in RomM: ${result.title}`;
+  } catch (error) { target.textContent = error.message; }
 }
 async function chooseDiscovery(item) {
   if (addGame.busy) return;
   addGame.custom.name = item.name;
-  addGame.custom.reference = item.url.startsWith("https://github.com/") ? "https://recomplauncher.com/top" : item.url;
+  addGame.custom.reference = `https://recomplauncher.com/game/${encodeURIComponent(item.id)}`;
   if (item.repository) { await useDiscoveryRepository(item.repository); return; }
-  addGame.step = "custom"; addGame.custom.repo = item.url; renderAddGame(); await lookupCustomGame();
+  addGame.step = "custom"; addGame.custom.repo = addGame.custom.reference; renderAddGame(); await lookupCustomGame();
 }
 async function useDiscoveryRepository(repository) {
   const known = addGame.games.flatMap(game => game.variants || [game]).find(game => game.repository?.toLowerCase() === repository.toLowerCase());
@@ -2126,6 +2192,9 @@ function renderCustomGame(content, actions) {
   const found = custom.lookup;
   if (found) {
     where.append(el("div", "setup-file", [el("span", "mark ok", "✓"), el("div", "", [el("strong", "", found.repository), el("p", "", `Latest release ${found.version} · ${found.assets.length} release file${found.assets.length === 1 ? "" : "s"}`)])]));
+    if (found.recomp_hints?.files?.length) where.append(el("p", "field-help", "Recomp catalog suggests: " + found.recomp_hints.files.map(hint => `${targetLabels[hint.system] || hint.system} → ${hint.asset}${hint.sha256 ? " (checksum listed)" : ""}`).join("; ") + ". Suggestions only; Portkeeper checks the files itself."));
+    const manifest = found.recomp_manifest;
+    if (manifest) where.append(el("p", "field-help", "The repository ships a recomplauncher.json (untrusted hints): " + [manifest.start && `start ${manifest.start}`, manifest.prepare?.length && `${manifest.prepare.length} prepare step(s)`, manifest.folders?.length && `folders ${manifest.folders.join(", ")}`, manifest.saves?.length && `saves ${manifest.saves.join(", ")}`].filter(Boolean).join(" · ")));
     if (found.catalog_id) {
       const game = addGame.games.find((item) => item.id === found.catalog_id);
       if (game) where.append(el("p", "field-help", `Portkeeper already supports this game.`), button(`Set up ${game.name} instead`, "button secondary small", () => { addGame.pick = game; continueAddGame(); }));
@@ -2954,6 +3023,7 @@ document.querySelectorAll('[name="library-layout"]').forEach((node) => node.addE
   lastRender = null; renderRoute(); render();
 }));
 $("project-form").addEventListener("submit", submitProject);
+$("recomp-catalog-refresh").addEventListener("click", () => void loadRecompStatus(true));
 $("settings-advanced-tab").addEventListener("click", () => { settingsView = "storage"; renderSettingsTabs(); });
 $("recipe-form").addEventListener("submit", submitRecipe);
 ["settings", "json", "changes"].forEach(view => $(`editor-${view}-tab`).addEventListener("click", () => switchEditor(view)));
@@ -3000,7 +3070,7 @@ $("assistant-agent-model").addEventListener("change", () => agentModelDrafts.set
 $("assistant-agent-code-copy").addEventListener("click", () => copyJson($("assistant-agent-login-code").textContent, $("assistant-agent-code-copy")));
 $("assistant-agent-terminal-copy").addEventListener("click", () => copyJson($("assistant-agent-terminal-command").textContent, $("assistant-agent-terminal-copy")));
 document.querySelectorAll("[data-activity-view]").forEach(node => node.addEventListener("click", () => { activityView = node.dataset.activityView; renderActivity(); }));
-document.querySelectorAll("[data-settings-tab]").forEach((node) => node.addEventListener("click", () => { settingsView = node.dataset.settingsTab; renderSettingsTabs(); if (settingsView === "assistant") recoverAgentLogin(); }));
+document.querySelectorAll("[data-settings-tab]").forEach((node) => node.addEventListener("click", () => { settingsView = node.dataset.settingsTab; renderSettingsTabs(); if (settingsView === "catalog" && !recompStatus) void loadRecompStatus(); if (settingsView === "assistant") recoverAgentLogin(); }));
 document.querySelectorAll("[data-project-tab]").forEach((node) => node.addEventListener("click", () => navigateProject(route.projectId, node.dataset.projectTab)));
 $("apply-template").addEventListener("click", () => {
   const template = recipes.find((item) => item.id === $("recipe-template").value);

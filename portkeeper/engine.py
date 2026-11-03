@@ -272,6 +272,9 @@ class Engine:
                     project["packaging_view"]["first_run"] = packaging.view(known)["first_run"]
                 project["releases"] = self.releases(project, captures, all_artifacts)
                 project["catalog_update"] = self.catalog.update_for(project)
+            recomp = self.discovery.for_project(project)
+            if recomp:
+                project["recomp_catalog"] = recomp
             if project.get('autonomous_recipe'):
                 manifest = project['autonomous_recipe']['manifest']
                 project['packaging_view'] = {**project.get('packaging_view', {}),
@@ -1538,6 +1541,7 @@ class Engine:
         if not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo.strip()):
             raise Invalid("Use owner/repository, for example Zelda64Recomp/Zelda64Recomp")
         repo = repo.strip()
+        from .discovery import read_manifest
         release = self.github.release(repo)
         names = [a.get("name") for a in release.get("assets", []) if isinstance(a.get("name"), str)][:60]
         from . import platforms
@@ -1548,7 +1552,11 @@ class Engine:
             detection["documentation_error"] = read_error
         return {"repository": repo, "version": release["version"], "assets": names,
                 "platforms": detection["suggested_targets"], "platform_detection": detection,
-                "release_url": release["url"], "catalog_id": known["id"] if known else None}
+                "release_url": release["url"], "catalog_id": known["id"] if known else None,
+                # Hints only: preselect a file and offer an extra checksum comparison.
+                "recomp_hints": self.discovery.hints(repo, names),
+                # Untrusted setup/saves hints from the repository's own recomplauncher.json, if it ships one.
+                "recomp_manifest": read_manifest(self.github, repo, release.get("commit"))}
 
     # Drafting packaging with a model -------------------------------------------
     def _draft_material(self, project, budget, preserve_evidence=False):

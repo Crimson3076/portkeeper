@@ -68,6 +68,8 @@ async function create(saved, storageBlocked=false, source=fixture) {
     else if(endpoint.startsWith('/api/github/lookup?'))payload=source.platform_lookup || {repository:'example/game',version:'v1',assets:['game-linux.zip','game-windows.zip'],platforms:['linux','windows'],platform_detection:{suggested_targets:['linux','windows'],platforms:[{id:'linux',label:'Linux',packaging_supported:true,evidence:[{kind:'release',detail:'game-linux.zip',source:'Release files'}]},{id:'windows',label:'Windows',packaging_supported:true,evidence:[{kind:'documentation',detail:'Windows build instructions',source:'README.md'}]},{id:'android',label:'Android',packaging_supported:false,evidence:[{kind:'documentation',detail:'Android build instructions',source:'README.md'}]}]}};
     else if(endpoint==='/api/catalog/games')payload={games:source.catalog_games || [{id:'banjo-recompiled',name:'Banjo Recompiled',targets:['linux','windows'],runner:'operations',needs:[{label:'Banjo-Kazooie (USA) 1.0 N64 ROM'}],first_run:{mode:'preloaded',text:'Your ROM is placed where Banjo looks for it.'},in_library:null}],romm_connected:true};
     else if(endpoint==='/api/discovery'||endpoint==='/api/discovery/refresh'){requests.push({endpoint,body:options.body?JSON.parse(options.body):null});payload=source.discovery || {entries:[],stale:false,refreshing:false};}
+    else if(endpoint.startsWith('/api/discovery/games?')){requests.push({endpoint});const q=new URL(endpoint,w.location.href).searchParams;const all=source.discovery_games||[];const text=(q.get('q')||'').toLowerCase();const items=all.filter(i=>(!text||i.name.toLowerCase().includes(text))&&(!q.get('origin')||i.origin===q.get('origin')));payload={items,total:items.length,origins:[...new Set(all.map(i=>i.origin))],systems:['windows','linux','macos'],genres:['Adventure'],count:all.length};}
+    else if(endpoint.match(/^\/api\/discovery\/games\/[^/]+\/romm$/)){requests.push({endpoint});payload={checked:true,owned:true,title:'Banjo-Kazooie',matches:[{id:3,name:'Banjo-Kazooie',platform:'N64'}]};}
     else if(endpoint==='/api/discovery/resolve'){requests.push({endpoint,body:JSON.parse(options.body)});payload=source.discovery_resolution || {url:'https://recomplauncher.com/games/new-port',repositories:[{repository:'example/new-port',url:'https://github.com/example/new-port'}]};}
     else if(endpoint==='/api/catalog/games/banjo-recompiled/files')payload={inputs:[{id:'rom',label:'Banjo-Kazooie (USA) 1.0 N64 ROM',kind:'file',required:true,accepted:['USA 1.0'],found:[{path:'n64/roms/Banjo-Kazooie (USA).z64',name:'Banjo-Kazooie (USA).z64',accepted:'USA 1.0'}],rejected:[]}]};
     else if(endpoint.endsWith('/configuration/validate')){requests.push({endpoint,body:JSON.parse(options.body)});payload={valid:true};}
@@ -568,24 +570,33 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   dom.window.close();
   const discoveryFixture=JSON.parse(JSON.stringify(fixture));
   discoveryFixture.catalog_games=[{id:'banjo-recompiled',name:'Banjo Recompiled',repository:'BanjoRecomp/BanjoRecomp',targets:['linux','windows'],runner:'operations',needs:[{label:'Banjo-Kazooie (USA) 1.0 N64 ROM'}],first_run:{mode:'preloaded'},in_library:null}];
-  discoveryFixture.discovery={source:'Recomp Launcher',fetched_at:'2026-10-27T00:00:00Z',stale:false,refreshing:false,entries:[
-    {id:'reference-1',name:'Banjo Recompiled',url:'https://recomplauncher.com/games/banjo',repository:'BanjoRecomp/BanjoRecomp'},
-    {id:'reference-2',name:'New port <img src=x onerror=alert(1)>',url:'https://recomplauncher.com/games/new-port',repository:null}
-  ]};
+  discoveryFixture.discovery={source:'Recomp Launcher',count:2,updated:'2026-11-03',fetched_at:'2026-11-03T00:00:00Z',stale:false,refreshing:false};
+  discoveryFixture.discovery_games=[
+    {id:'banjo',name:'Banjo Recompiled',game:'Banjo-Kazooie',origin:'n64',repository:'BanjoRecomp/BanjoRecomp',systems:['windows','linux'],has_cover:true,in_library:null,known:true},
+    {id:'new-port',name:'New port <img src=x onerror=alert(1)>',game:'New game',origin:'ps2',repository:null,systems:['windows'],has_cover:false,in_library:null,known:false}
+  ];
   discoveryFixture.platform_lookup={repository:'example/new-port',version:'v1',assets:['port-windows.zip'],platforms:['windows'],platform_detection:{suggested_targets:['windows'],platforms:[]}};
   dom=await create(null,false,discoveryFixture);w=dom.window;d=w.document;
   const discoveryRequestCount=requests.filter(r=>r.endpoint.startsWith('/api/discovery')).length;
   d.getElementById('add-project').click();await tick();await tick();
   assert.equal(requests.filter(r=>r.endpoint.startsWith('/api/discovery')).length,discoveryRequestCount,'Opening the normal game picker does not contact the reference site');
-  [...d.querySelectorAll('#add-game-content button')].find(n=>n.textContent==='Discover more ports').click();await tick();await tick();
+  [...d.querySelectorAll('#add-game-content button')].find(n=>n.textContent==='Browse all Recomp games').click();await tick();await tick();
   assert.equal(d.querySelectorAll('.discovery-result').length,2);
-  assert(!d.querySelector('.discovery-result img'),'Reference names render as plain text');
+  assert(!d.querySelector('.discovery-result img[src*="onerror"]')&&!d.querySelector('.discovery-result strong img'),'Reference names render as plain text');
+  assert(d.querySelector('.discovery-cover').getAttribute('src')==='/api/discovery/image/banjo/cover','Artwork is requested through Portkeeper, never hotlinked');
+  assert(d.getElementById('game-discovery').textContent.includes('Recomp catalog: 2 games, updated 2026-11-03'));
+  d.getElementById('discovery-origin').value='ps2';d.getElementById('discovery-origin').dispatchEvent(new w.Event('change'));await tick();await tick();
+  assert.equal(d.querySelectorAll('.discovery-result').length,1,'Console filter narrows the list');
+  d.getElementById('discovery-origin').value='';d.getElementById('discovery-origin').dispatchEvent(new w.Event('change'));await tick();await tick();
+  [...d.querySelectorAll('.discovery-result')][0].querySelector('.text-button').click();await tick();await tick();
+  assert(d.getElementById('discovery-romm-banjo').textContent.includes('You have this game in RomM'));
   assert(d.querySelector('.discovery-result').textContent.includes('Packaging steps available'));
   const discoverySearch=d.getElementById('discovery-search');discoverySearch.focus();discoverySearch.value='new';discoverySearch.dispatchEvent(new w.Event('input'));discoverySearch.setSelectionRange(1,3);
+  await new Promise(r=>setTimeout(r,350));await tick();
   assert.equal(d.querySelectorAll('.discovery-result').length,1);
-  [...d.querySelectorAll('#game-discovery button')].find(n=>n.textContent==='Refresh list').click();await tick();await tick();
+  [...d.querySelectorAll('#game-discovery button')].find(n=>n.textContent==='Refresh catalog').click();await tick();await tick();
   assert.equal(d.activeElement.id,'discovery-search');assert.equal(d.activeElement.value,'new');assert.equal(d.activeElement.selectionStart,1);assert.equal(d.activeElement.selectionEnd,3,'Refreshing retains the search selection');
-  d.querySelector('.discovery-result button').click();await tick();await tick();
+  d.querySelector('.discovery-result .button').click();await tick();await tick();
   assert(requests.at(-1).endpoint==='/api/discovery/resolve');
   assert.equal(d.getElementById('custom-repo').value,'example/new-port');
   assert(d.getElementById('custom-target-windows').checked);assert(!d.getElementById('custom-target-linux').checked,'Platforms come from upstream lookup, not reference text');
@@ -596,24 +607,24 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   discoveryFixture.discovery_resolution={url:'https://recomplauncher.com/games/new-port',repositories:[{repository:'example/new-port'},{repository:'example/extraction-tool'}]};
   dom=await create(null,false,discoveryFixture);w=dom.window;d=w.document;
   d.getElementById('add-project').click();await tick();await tick();
-  [...d.querySelectorAll('#add-game-content button')].find(n=>n.textContent==='Discover more ports').click();await tick();await tick();
-  [...d.querySelectorAll('.discovery-result')].find(n=>n.textContent.includes('New port')).querySelector('button').click();await tick();await tick();
+  [...d.querySelectorAll('#add-game-content button')].find(n=>n.textContent==='Browse all Recomp games').click();await tick();await tick();
+  [...d.querySelectorAll('.discovery-result')].find(n=>n.textContent.includes('New port')).querySelector('.button').click();await tick();await tick();
   assert(d.getElementById('add-game-content').textContent.includes('several repositories'));
   assert(!d.getElementById('custom-add-submit'),'An ambiguous page cannot create a game until a repository is chosen');
   [...d.querySelectorAll('#add-game-content button')].find(n=>n.textContent==='example/new-port').click();await tick();await tick();
   assert.equal(d.getElementById('custom-repo').value,'example/new-port');assert(d.getElementById('custom-add-submit'));
   dom.window.close();
   dom=await create(null,false,discoveryFixture);w=dom.window;d=w.document;
-  d.getElementById('add-project').click();await tick();await tick();[...d.querySelectorAll('#add-game-content button')].find(n=>n.textContent==='Discover more ports').click();await tick();await tick();
-  [...d.querySelectorAll('.discovery-result')].find(n=>n.textContent.includes('Banjo Recompiled')).querySelector('button').click();await tick();await tick();
+  d.getElementById('add-project').click();await tick();await tick();[...d.querySelectorAll('#add-game-content button')].find(n=>n.textContent==='Browse all Recomp games').click();await tick();await tick();
+  [...d.querySelectorAll('.discovery-result')].find(n=>n.textContent.includes('Banjo Recompiled')).querySelector('.button').click();await tick();await tick();
   assert(d.getElementById('add-game-content').textContent.includes('verified as USA 1.0'),'A known discovery repository uses its existing catalog file-selection flow');
   assert(d.getElementById('add-game-submit'),'Known projects do not need a model just to select game files');
   dom.window.close();
-  discoveryFixture.discovery={entries:[],stale:true,refreshing:false,error:'Could not refresh Recomp Launcher. The last saved list is still available.'};
+  discoveryFixture.discovery={count:0,stale:true,refreshing:false,error:'Could not refresh the Recomp catalog. The last saved copy is still available.'};discoveryFixture.discovery_games=[];
   dom=await create(null,false,discoveryFixture);w=dom.window;d=w.document;
-  d.getElementById('add-project').click();await tick();await tick();[...d.querySelectorAll('#add-game-content button')].find(n=>n.textContent==='Discover more ports').click();await tick();await tick();
+  d.getElementById('add-project').click();await tick();await tick();[...d.querySelectorAll('#add-game-content button')].find(n=>n.textContent==='Browse all Recomp games').click();await tick();await tick();
   assert(d.getElementById('game-discovery').textContent.includes('Could not refresh'));
-  assert(d.querySelector('a[href="https://recomplauncher.com/top"]'),'The reference website stays accessible when import is unavailable');
+  assert(d.querySelector('a[href="https://recomplauncher.com"]'),'The reference website stays accessible when the catalog is unavailable');
   assert(d.querySelector('.game-pick.custom'),'Manual addition stays available');dom.window.close();
   dom=await create(null,false,{...fixture,projects:[],artifacts:[]});assert(dom.window.document.getElementById('project-grid').textContent.includes('first game'));dom.window.close();
   // First-run guidance: broker explanation, checklist, review panel, inline progress.
