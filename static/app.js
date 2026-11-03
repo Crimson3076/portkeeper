@@ -1085,7 +1085,7 @@ function inputsSection(project) {
     if (choices) {
       const select = el("select"); select.id = `input-choice-${project.id}-${item.id}`; select.setAttribute("aria-label", `${item.label} found files`);
       select.append(el("option", "", "Choose a matching file…")); select.firstChild.value = "";
-      (choices.found || []).forEach(found => { const option = el("option", "", `${found.path}${found.ps4 ? ` · ${found.ps4.title_id} · ${found.ps4.app_version || "version checked after extraction"} · ${found.ps4.role}` : ""}`); option.value = JSON.stringify({path:found.path, source:found.source || (item.kind === "directory" ? "prepared" : "inputs")}); select.append(option); });
+      (choices.found || []).forEach(found => { const option = el("option", "", `${found.path}${found.ps4 ? ` · ${found.ps4.title_id} · ${found.ps4.app_version || "version checked after extraction"} · ${found.ps4.role}` : ""}${found.member ? ` · ${found.member}` : ""}`); option.value = JSON.stringify({path:found.path, ...(found.member ? {member:found.member} : {}), source:found.source || (item.kind === "directory" ? "prepared" : "inputs")}); select.append(option); });
       select.value = inputChoiceDrafts.get(`${project.id}-${item.id}`) || "";
       const use = button("Use this file", "button secondary small", () => bindInput(project.id, item.id, JSON.parse(select.value)), !select.value);
       select.addEventListener("change", () => { inputChoiceDrafts.set(`${project.id}-${item.id}`, select.value); use.disabled = !select.value; });

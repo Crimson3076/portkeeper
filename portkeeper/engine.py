@@ -497,7 +497,9 @@ class Engine:
             raise Invalid("Game file selections must be an object")
         declared = {item["id"] for item in (definition or {}).get("inputs", [])}
         for key, value in bindings.items():
-            if key not in declared or not isinstance(value, dict) or value.get("source") not in ("inputs", "prepared") or set(value) - {"source", "path", "sha1", "sha256", "accepted", "verified_at", "ps4"}:
+            if key not in declared or not isinstance(value, dict) or value.get("source") not in ("inputs", "prepared") or set(value) - {"source", "path", "sha1", "sha256", "accepted", "verified_at", "ps4", "member"}:
+                raise Invalid("Game file selections must name a declared input, its source and a relative path")
+            if "member" in value and (not isinstance(value["member"], str) or not 0 < len(value["member"]) <= 500):
                 raise Invalid("Game file selections must name a declared input, its source and a relative path")
             relative(value.get("path"))
             if 'ps4' in value:
@@ -638,6 +640,11 @@ class Engine:
             if (item["kind"] == "file" and not path.is_file()) or (item["kind"] == "directory" and not path.is_dir()):
                 raise Invalid("That file or folder does not exist below the configured input root")
             binding = {"source": source, "path": str(relative(payload["path"]))}
+            member = payload.get("member")
+            if member is not None:
+                if not isinstance(member, str) or item["kind"] != "file" or not item.get("normalize") or path.suffix.lower() != ".zip":
+                    raise Invalid("Only a ZIP archive holding a ROM can have a member chosen")
+                binding["member"] = member
             if expectation:
                 identified = self.packager.pkg_metadata(path)
                 problem = ps4.mismatch(identified, expectation)
@@ -659,7 +666,15 @@ class Engine:
                     binding.update(accepted=verified['title_id'] + ' ' + verified['app_version'], verified_at=now())
             if item["kind"] == "file" and item.get("verify", "hash") == "hash":
                 from .runner import accepted, digests
-                digest = digests(path, item.get("normalize"))
+                if member:
+                    from . import packaging
+                    from .runner import digest_bytes, read_zip_member
+                    try:
+                        digest = digest_bytes(read_zip_member(path, member, item.get("max_bytes", packaging.GIB)), item.get("normalize"))
+                    except (KeyError, OSError, zipfile.BadZipFile):
+                        raise Invalid("That archive member could not be read")
+                else:
+                    digest = digests(path, item.get("normalize"))
                 match = accepted(item, digest)
                 if not match:
                     raise Invalid(f"This file is not an accepted revision (SHA-1 {digest['sha1']})")
@@ -668,7 +683,12 @@ class Engine:
             return self.update_project(project_id, {"input_bindings": bindings})
         found = self.packager.locate(project, definition, input_id)
         if len(found) != 1:
-            return {"project": project, "found": found, "message": "No accepted file was found" if not found else "Several files match; choose one"}
+            labels = ", ".join(a["label"] for a in item.get("accepted", [])[:4])
+            if not found:
+                message = f"No file matches any accepted {item['label']} hash" + (f" ({labels})" if labels else "") + ". Add the file to the game files folder, or choose one manually."
+            else:
+                message = f"{len(found)} files match {item['label']} by hash; choose one."
+            return {"project": project, "found": found, "message": message}
         return {"project": self.bind_input(project_id, {'input': input_id, **found[0]}), "found": found}
 
     def project_game_files(self, project_id):
