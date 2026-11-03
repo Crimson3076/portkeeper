@@ -496,6 +496,21 @@ class PackagingEngineTests(unittest.TestCase):
             self.assertEqual(bundle.read("game.z64"), ROM)
         self.assertEqual(self.engine.store.get("projects", project["id"])["input_bindings"]["rom"]["member"], "Game.v64")
 
+    def test_malformed_zip_members_do_not_abort_discovery(self):
+        for path in (self.root / "inputs/n64/roms").iterdir():
+            path.unlink()
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as bundle:
+            bundle.writestr("a_odd.v64", b"\x37\x80\x40\x12\x00")
+            bundle.writestr("b_bad.bin", bytes(range(256)) * 20)
+            bundle.writestr("c_good.v64", byteswapped(ROM))
+        raw = bytearray(buffer.getvalue())
+        start = raw.index(b"b_bad.bin") + len(b"b_bad.bin")
+        raw[start + 2:start + 12] = b"\xff" * 10  # corrupt the deflate stream
+        (self.root / "inputs/n64/roms/Damaged.zip").write_bytes(bytes(raw))
+        found = self.engine.packager.find_files(definition())[0]["found"]
+        self.assertEqual([(f["path"], f["member"]) for f in found], [("n64/roms/Damaged.zip", "c_good.v64")])
+
     def test_find_files_lists_a_zipped_rom_with_its_member(self):
         for path in (self.root / "inputs/n64/roms").iterdir():
             path.unlink()

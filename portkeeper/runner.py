@@ -16,6 +16,7 @@ import tarfile
 import threading
 import time
 import zipfile
+import zlib
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -81,17 +82,21 @@ def zip_members(path, limit):
         return [i.filename for i in infos if not i.is_dir() and not i.flag_bits & 0x1 and 0 < i.file_size <= limit]
 
 
-def read_zip_member(path, member, limit):
-    """Read one member after checking its declared size and that exactly that many bytes come out."""
-    with zipfile.ZipFile(path) as archive:
-        info = archive.getinfo(member)
-        if info.is_dir() or info.flag_bits & 0x1 or info.file_size > limit:
-            raise Invalid("That archive member cannot be used as a game file")
-        with archive.open(info) as stream:
-            data = stream.read(limit + 1)
+def read_open_zip_member(archive, member, limit):
+    """Read one member of an already open archive, checking its declared size and that exactly that many bytes come out."""
+    info = archive.getinfo(member)
+    if info.is_dir() or info.flag_bits & 0x1 or info.file_size > limit:
+        raise Invalid("That archive member cannot be used as a game file")
+    with archive.open(info) as stream:
+        data = stream.read(limit + 1)
     if len(data) != info.file_size:
         raise Invalid("The archive member does not match its declared size")
     return data
+
+
+def read_zip_member(path, member, limit):
+    with zipfile.ZipFile(path) as archive:
+        return read_open_zip_member(archive, member, limit)
 
 
 def accepted_label(item, path, member):
@@ -255,15 +260,20 @@ class OperationRunner:
             return None
         limit = item.get("max_bytes", packaging.GIB)
         try:
-            members = zip_members(path, limit)
+            with zipfile.ZipFile(path) as archive:
+                infos = archive.infolist()
+                if len(infos) > MAX_MEMBERS:
+                    return None
+                for info in infos:
+                    if info.is_dir() or info.flag_bits & 0x1 or not 0 < info.file_size <= limit:
+                        continue
+                    try:
+                        if accepted(item, digest_bytes(read_open_zip_member(archive, info.filename, limit), item.get("normalize"))):
+                            return info.filename
+                    except (Invalid, OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError, zlib.error, EOFError, ValueError):
+                        continue  # Not a ROM, damaged, or unreadable: try the next member.
         except (OSError, zipfile.BadZipFile):
             return None
-        for member in members:
-            try:
-                if accepted(item, digest_bytes(read_zip_member(path, member, limit), item.get("normalize"))):
-                    return member
-            except (Invalid, OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError):
-                continue  # Not a ROM, or unreadable: try the next member.
         return None
 
     def find_files(self, definition):
