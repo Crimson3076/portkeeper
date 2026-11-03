@@ -70,6 +70,16 @@ class TemplateFitTests(unittest.TestCase):
         self.assertTrue(templates._mentions([{'label': 'Older Port ROM'}], {'Older Port'}))
         self.assertFalse(templates._mentions([{'label': 'A ROM'}], {'Older Port'}))
 
+    def test_unpacking_below_the_package_root_is_not_a_fit(self):
+        nested = reference()
+        nested['operations'][0]['to'] = '$package/bin'
+        self.assertIsNone(templates.fit(context(linux=['bin/newgame.AppImage']), refs(nested)))
+        self.assertIsNone(templates.fit(context(), refs(nested)))
+
+    def test_candidate_must_pass_the_archive_evidence_check(self):
+        with patch.object(drafting, 'check_archive_evidence', side_effect=Invalid('layout')):
+            self.assertIsNone(templates.fit(context(), refs(reference())))
+
     def test_archive_with_a_different_layout_is_not_a_fit(self):
         wrapped = context(windows=['Newgame.exe'])
         wrapped['release']['archive_layouts'][WINDOWS]['enclosing_folder'] = 'Newgame'
@@ -158,6 +168,18 @@ class EngineTemplateTests(unittest.TestCase):
         self.assertIn('From template', proposal['explanation'])
         self.assertEqual(self.engine.draft_record(job['id'])['examples_used'][0]['id'], 'older-port')
         self.assertEqual(self.engine.store.get('projects', self.project['id'])['packaging']['runner'], 'capture')  # approval is unchanged
+
+    def test_extra_instructions_skip_the_template_and_reach_the_model(self):
+        job_row = self.engine.job(self.project, 'capture', 'v2.0')
+        self.engine.store.update('jobs', job_row['id'], kind='draft')
+        agent = self.engine.assistant.agents
+        good = json.dumps({'explanation': 'x', 'definition': templates.fit(context(), refs(reference()))['definition']})
+        with patch.object(self.engine, '_draft_material', side_effect=lambda project, budget: ({'id': 'c' * 32, 'version': 'v2.0'}, self._with_examples(project, context()))), \
+             patch.object(agent, 'status', return_value={'installed': True, 'authenticated': True, 'billing': 'subscription'}), \
+             patch.object(agent, 'chat', return_value=good) as chat:
+            self.engine._draft(self.project['id'], job_row['id'], 'Add the --windowed launch argument')
+        chat.assert_called()
+        self.assertIn('--windowed', self.engine.draft_record(job_row['id'])['draft_prompt']['user'])
 
     def test_cloud_models_never_receive_the_persons_other_saved_definitions(self):
         job, chat = self.run_draft(context(), skip_template=True)

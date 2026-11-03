@@ -1761,7 +1761,8 @@ class Engine:
                 capture, context = self._draft_material(project, budget)
             context.setdefault('game_file_preparation', {})['enabled'] = self.store.get('jobs', job_id).get('prepare_game_files', True)
             from . import templates
-            if not investigated and not self.store.get('jobs', job_id).get('skip_template'):
+            # Extra instructions need a model: a template cannot apply them.
+            if not investigated and not instruction.strip() and not self.store.get('jobs', job_id).get('skip_template'):
                 matched = templates.fit(context, templates.select(context, self._template_references(project), limit=5))
                 if matched:
                     self.stage(job_id, 'drafting', 'Building a draft from a matching template (no model request)')

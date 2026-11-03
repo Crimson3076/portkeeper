@@ -178,16 +178,28 @@ def fit(context, references):
                 or definition.get('source_checks') or any(op['op'] not in TEMPLATE_OPS for op in definition['operations'])
                 or any(item.get('accepted') or item.get('verify') != 'downstream' or item['kind'] != 'file' for item in definition.get('inputs', []))
                 or any(op.get('prepare_once') or op.get('run_python') for op in definition['operations'] if op['op'] == 'launcher')
-                or any(not op.get('targets') for op in definition['operations'] if op['op'] in ('launcher', 'unpack_download'))):
+                or any(not op.get('targets') for op in definition['operations'] if op['op'] in ('launcher', 'unpack_download'))
+                # Launch files are matched against archive members, so they must land at the package root.
+                or any(op.get('to') != '$package' for op in definition['operations'] if op['op'] == 'unpack_download')):
             continue
         facts = {target: _target_fit(context, definition, target) for target in project['targets']}
         if not all(facts.values()):
             continue
         built = _build(context, definition, facts)
-        if built:
+        if built and _consistent(built, context):
             return {'definition': built, 'template': {**summarize([{**reference, 'score': score(context, reference)}])[0]},
                     'unresolved': ['Built from a template, not from this project\'s own evidence. Check the launch files, first-launch text and any staged file names against this project before approving.']}
     return None
+
+
+def _consistent(built, context):
+    """The same archive-layout check a model draft must pass."""
+    from . import drafting
+    try:
+        drafting.check_archive_evidence(built, context)
+    except Invalid:
+        return False
+    return True
 
 
 def _mentions(value, names):
