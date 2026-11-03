@@ -36,6 +36,7 @@ async function create(saved, storageBlocked=false, source=fixture) {
         payload={matched:2,matching:source.romm.matching};
       }
     }
+    else if(endpoint==='/api/version'){payload=source.version_info||{version:'0.3.0',commit:null};}
     else if(endpoint==='/api/assistant/models'){const body=JSON.parse(options.body);requests.push({endpoint,body});payload={models:source.agent_model_choices?.[body.provider] || ['provider-model-a','provider-model-b']};}
     else if(endpoint==='/api/assistant/provider'){
       const body=JSON.parse(options.body);requests.push({endpoint,body});source.assistant||={};source.assistant.provider=body.provider;
@@ -82,6 +83,7 @@ async function create(saved, storageBlocked=false, source=fixture) {
     else if(endpoint.endsWith('/automate')||endpoint.endsWith('/script-recipe')||endpoint.endsWith('/reply-automation')||endpoint==='/api/automation/config'){
       const body=JSON.parse(options.body);requests.push({endpoint,body});payload={job:{id:id(501)}};
     }
+    else if(endpoint.endsWith('/draft') && options.method==='POST' && source.draft_error){return {ok:false,status:400,json:async()=>({error:source.draft_error})};}
     else if(endpoint.endsWith('/draft') && options.method==='POST'){requests.push({endpoint,body:JSON.parse(options.body)});payload={job:{}};}
     else if(endpoint.endsWith('/investigate') && options.method==='POST'){requests.push({endpoint,body:JSON.parse(options.body)});payload={job:{}};}
     else if(options.method==='PATCH'){const body=JSON.parse(options.body);requests.push({endpoint,body});const game=source.projects.find(p=>endpoint.includes(p.id));Object.assign(game,body);payload=game;}
@@ -644,6 +646,35 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
     assert([...body.querySelectorAll('details')].every(n=>!n.open),'Evidence and JSON stay collapsed');
     if(entry==='card'){[...pinned.querySelectorAll('button')].find(n=>n.textContent==='Dismiss').click();await tick();await tick();assert(!dialog.open,'Dismissing closes the dialog');}
     else{dialog.querySelector('[data-close]').click();assert(!dialog.open,'Closing returns to the game');}
+    dom.window.close();
+  }
+  // Silent-draft case: a failed "Draft packaging steps from this plan" shows a persistent inline message with a fix.
+  planned.draft_error='Release, selected platforms or build instructions changed; investigate again before drafting';
+  dom=await create(null,false,planned);w=dom.window;d=w.document;
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();
+  [...d.querySelector('.next-step-card').querySelectorAll('button')].find(n=>n.textContent==='Review investigation').click();await tick();
+  const reviewDialog=d.getElementById('draft-review-dialog');
+  assert.equal(reviewDialog.getAttribute('role'),'dialog');assert(reviewDialog.getAttribute('aria-labelledby'));
+  assert.equal(reviewDialog.getAttribute('aria-modal'),'true');
+  [...d.getElementById('draft-review-actions').querySelectorAll('button')].find(n=>n.textContent==='Draft packaging steps from this plan').click();await tick();await tick();
+  assert(reviewDialog.open,'A failed draft keeps the review open');
+  const inlineError=reviewDialog.querySelector('[role="alert"].action-error');
+  assert(inlineError && inlineError.textContent.includes('investigate again before drafting'),'The error is shown inline');
+  assert([...inlineError.querySelectorAll('button')].some(n=>n.textContent==='Investigate again'),'The inline error offers the fix');
+  await new Promise(resolve=>setTimeout(resolve,100));
+  assert(reviewDialog.querySelector('.action-error'),'The inline error persists');
+  [...inlineError.querySelectorAll('button')].find(n=>n.textContent==='Dismiss').click();await tick();
+  assert(!reviewDialog.querySelector('.action-error'),'Dismissing removes the error');
+  assert.equal(w.portkeeperFormat.localizeDates('Drafted by Local on 2026-11-03T01:30:00+00:00 for release x; Applied on 2026-11-03.'),'Drafted by Local on Nov 2, 2026, 8:30 PM for release x; Applied on Nov 3, 2026.');
+  dom.window.close();
+  const css=fs.readFileSync(path.join(base,'static/styles.css'),'utf8');
+  assert(!/\.draft-review-dialog\{[^}]*display:flex/.test(css),'A closed review dialog is not rendered in the page flow');
+  assert(/dialog\[open\]\{[^}]*position:fixed/.test(css),'Open dialogs are fixed to the viewport');
+  for(const [commit,expected] of [[null,'v0.3.0 (dev)'],['abc1234def5678','v0.3.0 (abc1234)']]){
+    const versioned=JSON.parse(JSON.stringify(fixture));versioned.version_info={version:'0.3.0',commit};
+    dom=await create(null,false,versioned);w=dom.window;d=w.document;await tick();
+    assert.equal(d.getElementById('app-version').textContent,expected,'Footer build label');
+    assert.equal(d.getElementById('about-version').textContent,expected,'Settings build label');
     dom.window.close();
   }
   const building=JSON.parse(JSON.stringify(fixture));

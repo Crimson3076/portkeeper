@@ -181,7 +181,15 @@ function localTime(value) {
 function localizeTimestamps(text) {
   return String(text ?? "").replace(isoTimestamp, localTime);
 }
-window.portkeeperFormat = { localTime, localizeTimestamps };
+const bareDate = /\b(\d{4})-(\d{2})-(\d{2})\b(?!T)/g;
+function localizeDates(text) {
+  return String(text ?? "").replace(isoTimestamp, (value) => dateLabelFull(value)).replace(bareDate, (_, year, month, day) => new Date(Number(year), Number(month) - 1, Number(day)).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" }));
+}
+function dateLabelFull(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString([], { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+}
+window.portkeeperFormat = { localTime, localizeTimestamps, localizeDates };
 function bytes(value) {
   if (!Number.isFinite(Number(value))) return "—";
   let size = Number(value), index = 0;
@@ -672,7 +680,7 @@ async function loadVersion() {
     const info = await api("/api/version");
     if (!info?.version) return;
     appVersion = info;
-    const label = `v${info.version}${info.commit ? ` (${info.commit.slice(0, 7)})` : ""}`;
+    const label = `v${info.version} (${info.commit ? info.commit.slice(0, 7) : "dev"})`;
     $("app-version").textContent = label;
     $("about-version")?.replaceChildren(document.createTextNode(label));
   } catch (error) { /* the version is informational only */ }
@@ -702,11 +710,24 @@ async function refresh(manual = false) {
     $("load-error").textContent = `Could not refresh: ${error.message}. Retrying automatically.`; $("load-error").hidden = false;
   } finally { refreshing = false; }
 }
-async function runAction(key, path, body, message) {
+// Errors that stay next to the control that caused them until dismissed or superseded; toasts are for confirmations.
+const actionErrors = new Map();
+function actionErrorNode(key) {
+  const entry = actionErrors.get(key);
+  if (!entry) return null;
+  const dismiss = () => { actionErrors.delete(key); lastRender = null; lastProjectRender = null; render(); };
+  const actions = [];
+  if (entry.fix) actions.push(button(entry.fix.label, "button primary small", () => { actionErrors.delete(key); entry.fix.run(); }));
+  actions.push(button("Dismiss", "button secondary small", dismiss));
+  const node = el("div", "action-error", [el("p", "project-error", entry.message), el("div", "inline-actions", actions)]);
+  node.setAttribute("role", "alert");
+  return node;
+}
+async function runAction(key, path, body, message, inlineFix = null) {
   if (busy.has(key)) return null;
   busy.add(key); render();
-  try { const result = await api(path, { method: "POST", body }); if (message) toast(message); await refresh(); return result; }
-  catch (error) { toast(error.message, true); return null; }
+  try { const result = await api(path, { method: "POST", body }); actionErrors.delete(key); if (message) toast(message); await refresh(); return result; }
+  catch (error) { if (inlineFix) actionErrors.set(key, { message: error.message, fix: inlineFix }); else toast(error.message, true); return null; }
   finally { busy.delete(key); render(); }
 }
 function checkProject(id) { return runAction(`check-${id}`, `/api/projects/${encodeURIComponent(id)}/check`, {}, "Update check queued."); }
@@ -1036,7 +1057,7 @@ function definitionInstructions(project) {
     return el("div", "instruction-platform", [el("h4", "", targetLabels[target] || target), el("p", "field-help", `Launch: ${launch.command || "not recorded"}${launch.instructions ? " — " + launch.instructions : ""}`), el("p", "field-help", `Expected files: ${(output.expected_files || []).join(", ") || "not recorded"}`), el("p", "field-help", `Requirements: ${dependencies.join("; ") || "not recorded"}`)]);
   })]);
   group("6. Saves, new-release checks & known limitations", [el("p", "field-help", `Saves & settings: ${definition.saves || "Not recorded."}`), ...(definition.source_checks || []).map((check) => el("p", "field-help", `New-release check: ${check.description} (${check.path})`)), ...(definition.limitations || []).map((item) => el("p", "review-notes", item))]);
-  if ((definition.history || []).length) group("History", definition.history.map((item) => el("p", "field-help", item)));
+  if ((definition.history || []).length) group("History", definition.history.map((item) => el("p", "field-help", localizeDates(item))));
   section.append(list);
   return section;
 }
@@ -2536,7 +2557,7 @@ function draftCard(project) {
 }
 function renderProposalReview(card, project, proposal, actionsHost = null) {
   const definition = proposal.definition, view = proposal.view || {};
-  card.append(el("p", "detail-note", `Drafted by ${proposal.source} · ${dateLabel(proposal.created_at)}. Nothing has run. Review it before approving.`));
+  card.append(el("p", "detail-note", `Drafted by ${localizeDates(proposal.source)} · ${dateLabel(proposal.created_at)}. Nothing has run. Review it before approving.`));
   if (proposal.explanation) card.append(el("p", "review-notes", proposal.explanation));
   if (proposal.investigation_plan) card.append(disclosure(`investigation-plan:${proposal.id}`, "diagnostics-list", [el("summary", "table-action", "Reviewed investigation plan"), jsonViewer(`investigation:${proposal.id}`, proposal.investigation_plan)]));
   card.append(el("div", "detail-facts", [meta("Platforms", definition.targets.map((target) => targetLabels[target] || target).join(", ")), meta("Files for packaging", definition.inputs.filter((item) => item.required !== false).map((item) => item.label).join("; ") || "None"), meta("First launch", view.first_run?.text || definition.first_run?.summary || "Not stated", true)]));
@@ -2600,8 +2621,9 @@ function renderInvestigationResult(node, project, report, actionsHost = null) {
     const consent = input(`investigation-inputs-${id}`, "checkbox");consent.checked = investigationInputs.get(id) ?? false;
     consent.addEventListener("change", () => investigationInputs.set(id, consent.checked));
     node.append(el("label", "check-label", [consent, "Use my selected game files in disposable draft tests"]), el("p", "field-help", "Off: test public runtime files and mark game-data steps unverified. On: the runner may use your selected inputs. Nothing is published by a test."));
-    const draft = button("Draft packaging steps from this plan", "button primary small", () => { if (actionsHost && $("draft-review-dialog").open) $("draft-review-dialog").close(); return queueDraftFromPlan(id, report); }, Boolean(projectActiveJob(project)) || busy.has(`draft-${id}`));
-    if (actionsHost) actions.append(draft); else node.append(draft);
+    const draft = button("Draft packaging steps from this plan", "button primary small", async () => { const result = await queueDraftFromPlan(id, report); if (result && actionsHost && $("draft-review-dialog").open) $("draft-review-dialog").close(); }, Boolean(projectActiveJob(project)) || busy.has(`draft-${id}`));
+    const failure = actionErrorNode(`draft-${id}`);
+    if (actionsHost) actions.append(...(failure ? [failure] : []), draft); else node.append(...(failure ? [failure] : []), draft);
   }
   if (actionsHost) { actions.append(button("Dismiss", "button secondary small", async () => { const result = await runAction(`discard-${report.id}`, `/api/proposals/${encodeURIComponent(report.id)}/discard`, {}, "Investigation dismissed."); if (result && $("draft-review-dialog").open) $("draft-review-dialog").close(); }, busy.has(`discard-${report.id}`))); actionsHost.append(actions); }
   node.append(el("p", "quiet-note", "Matched quotations and capability checks do not establish that every claim is correct or that gameplay works. Review the plan before drafting; the resulting definition needs its own approval."));
@@ -2628,7 +2650,7 @@ function investigateProject(id) {
   return runAction(`investigate-${id}`, `/api/projects/${encodeURIComponent(id)}/investigate`, {instruction:(assistantPromptDrafts.get(id) || "").trim(), max_calls:investigationLimits.get(id) ?? projectJobs(id).find(job => job.kind === "investigation")?.investigation_max_calls ?? 3, prepare_game_files:prepareDraftGameFiles(id)}, "Investigation started. Review the plan before drafting.");
 }
 function queueDraftFromPlan(id, report) {
-  return runAction(`draft-${id}`, `/api/projects/${encodeURIComponent(id)}/draft`, {instruction:(assistantPromptDrafts.get(id) || "").trim(), investigation_id:report.id, prepare_game_files:prepareDraftGameFiles(id), review_model:draftModelReviews.get(id) ?? false, max_calls:draftCorrectionLimits.get(id) ?? 1, test_inputs:investigationInputs.get(id) ?? false}, "Drafting from the reviewed plan. Review the checked definition before approval.");
+  return runAction(`draft-${id}`, `/api/projects/${encodeURIComponent(id)}/draft`, {instruction:(assistantPromptDrafts.get(id) || "").trim(), investigation_id:report.id, prepare_game_files:prepareDraftGameFiles(id), review_model:draftModelReviews.get(id) ?? false, max_calls:draftCorrectionLimits.get(id) ?? 1, test_inputs:investigationInputs.get(id) ?? false}, "Drafting from the reviewed plan. Review the checked definition before approval.", { label: "Investigate again", run: () => { if ($("draft-review-dialog").open) $("draft-review-dialog").close(); investigateProject(id); } });
 }
 function retryDraftWithCorrections(id, report) {
   const body = {instruction:(assistantPromptDrafts.get(id) || "").trim(), prepare_game_files:prepareDraftGameFiles(id), review_model:draftModelReviews.get(id) ?? false, max_calls:3};

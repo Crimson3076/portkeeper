@@ -1847,7 +1847,7 @@ class Engine:
 
     def save_definition_proposal(self, project, definition, explanation, source, capture=None, draft_details=None):
         from . import drafting, packaging
-        definition["history"] = list(definition.get("history", [])) + [f"Drafted by {source} on {now()[:10]} for release {capture['version'] if capture else 'unknown'}; requires human review before use."]
+        definition["history"] = list(definition.get("history", [])) + [f"Drafted by {source} on {now()} for release {capture['version'] if capture else 'unknown'}; requires human review before use."]
         definition = packaging.validate_definition(definition)
         for older in self.store.all("proposals"):
             if older.get("project_id") == project["id"] and older.get("kind") == "definition" and older.get("status") == "pending_review":
