@@ -551,26 +551,40 @@ function renderActivity() {
   Object.entries(tabs).forEach(([key, node]) => {
     const selected = activityView === key;
     node.classList.toggle("selected", selected); node.setAttribute("aria-selected", String(selected)); node.tabIndex = selected ? 0 : -1;
-    node.querySelector("span").textContent = key === "jobs" ? familyEvents.length : key === "packages" ? artifacts.length : key === "notifications" ? state.notifications.filter(notificationUnread).length : familyEvents.filter(event => event.activity_type === key).length;
+    node.querySelector("span").textContent = key === "jobs" ? familyEvents.length : key === "packages" ? artifacts.length : key === "notifications" ? state.notifications.filter(notificationUnread).length : key === "reviews" ? (state.review_queue || []).length : familyEvents.filter(event => event.activity_type === key).length;
   });
   const content = $("activity-content"); content.setAttribute("aria-labelledby", tabs[activityView].id);
-  $("activity-filters").hidden = activityView === "notifications";
+  $("activity-filters").hidden = ["notifications", "reviews"].includes(activityView);
   $("activity-type-field").hidden = activityView !== "jobs";
   $("activity-type-filter").value = activityTypeFilter;
   const notes = { jobs: "Update checks, builds and uploads are recorded separately.", builds: "A completed build creates a downloadable package. Uploads to RomM have their own view.", checks: "Checks look for upstream release changes. A successful check does not mean a new package was built or uploaded.", drafts: "Model drafts propose build instructions. Saving, building and testing a draft are separate steps.", uploads: "Package uploads are recorded here. RomM may still be indexing an uploaded file.", tests: "Recorded startup and gameplay results apply to the package and device that were tested.", imports: "Packages found in RomM appear here.", packages: "Download previously completed packages and inspect their validation level." };
+  notes.reviews = "New releases that were preserved but not packaged. Approve a proposed patch, open the full review, or dismiss it.";
   $("activity-view-note").hidden = activityView === "notifications"; $("activity-view-note").textContent = notes[activityView] || "";
   let cleanup = $("activity-cleanup");
   if (!cleanup) { cleanup = button("Clear all completed activity & logs", "button secondary small", () => maintenance("clear_activity")); cleanup.id = "activity-cleanup"; $("activity-content").before(cleanup); }
   cleanup.hidden = activityView !== "jobs" || Boolean(activityGameFilter);
   const filter = $("activity-game-filter"); filter.replaceChildren(el("option", "", "All games")); filter.firstChild.value = "";
   libraryGames().forEach((game) => { const option = el("option", "", game.name); option.value = game.id; filter.append(option); }); filter.value = activityGameFilter;
-  if (!["packages", "notifications"].includes(activityView)) {
+  if (!["packages", "notifications", "reviews"].includes(activityView)) {
     const category = activityView === "jobs" ? activityTypeFilter : activityView;
     const events = familyEvents.filter(event => !category || event.activity_type === category);
     content.replaceChildren(events.length ? el("div", "activity-timeline", events.map(activityEvent)) : emptyState("◷", "No activity matches", "Events of this type will appear here. Try All games or All activity to see other events."));
   }
   if (activityView === "packages") content.replaceChildren(artifacts.length ? table(["Game / package", "Validation", "Size", ""], artifacts.map(packageRow)) : emptyState("▱", "No build archives", "Completed packages for the selected game will appear here with their validation level."));
   if (activityView === "notifications") renderNotifications(content);
+  if (activityView === "reviews") renderReviewQueue(content);
+}
+function renderReviewQueue(parent) {
+  const items = state.review_queue || [];
+  if (!items.length) { parent.replaceChildren(emptyState("✓", "Nothing needs review", "When a new release no longer fits a game’s approved instructions, it is listed here with what changed.")); return; }
+  const kinds = { patch: "Proposed patch · version strings only", investigate: "Layout or files changed", review: "Needs review" };
+  parent.replaceChildren(...items.map((item) => {
+    const actions = el("div", "notification-actions");
+    if (item.proposal_id) actions.append(button("Approve patch", "button primary small", () => { if (confirm(`Approve the proposed patch for ${item.project_name}? Nothing is built until you check or build again.`)) runAction("approve-" + item.proposal_id, `/api/proposals/${item.proposal_id}/apply`, {}, "Patch approved. Check for updates to continue."); }, busy.has("approve-" + item.proposal_id)));
+    actions.append(button("Open", "button secondary small", () => { navigateProject(item.project_id); if (!openPendingReview(item.project_id)) toast("Open the game and use Review investigation or investigate again."); }));
+    actions.append(button("Dismiss", "text-button", () => runAction("dismiss-" + item.capture_id, `/api/projects/${item.project_id}/release-reviews/${item.capture_id}/dismiss`, {}, "Dismissed."), busy.has("dismiss-" + item.capture_id)));
+    return el("article", "notification", [el("div", "notification-body", [el("h3", "", `${item.project_name} · ${item.version}`), el("p", "field-help", kinds[item.kind] || kinds.review), el("p", "", item.summary)]), actions]);
+  }));
 }
 function renderNotifications(parent) {
   parent.replaceChildren();

@@ -188,6 +188,16 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200, body.decode())
         self.assertEqual(json.loads(body)['input_bindings']['game_pkg']['ps4']['app_version'], '01.00')
 
+    def test_release_review_dismiss_route_checks_project_and_capture(self):
+        project = self.engine.create_project({'name': 'Fixture', 'repo': 'example/game', 'targets': ['windows']})
+        capture = '1' * 32
+        route = f'/api/projects/{project["id"]}/release-reviews/{capture}/dismiss'
+        with patch.object(self.engine, 'dismiss_review', return_value={'id': capture}) as dismiss:
+            self.assertEqual(self.request('POST', route, {})[0], 200)
+            dismiss.assert_called_once_with(project['id'], capture)
+        # Unknown capture: the engine rejects it and the route answers 400.
+        self.assertEqual(self.request('POST', route, {})[0], 400)
+
     def test_draft_prompt_passes_game_file_preference_and_rejects_non_boolean(self):
         project = self.engine.create_project({'name': 'Fixture', 'repo': 'example/game', 'targets': ['windows']})
         route = f'/api/projects/{project["id"]}/draft-prompt'

@@ -165,7 +165,9 @@ class Engine:
         self.shipwright = ShipwrightRunner(self)
         self.assistant = RecipeAssistant(self.data, work_root=self.storage / 'agent-workspaces', cache_root=self.cache_root / 'agents')
         from .reviews import Reviews
+        from .release_updates import ReleaseUpdates
         self.reviews = Reviews(self)
+        self.release_updates = ReleaseUpdates(self)
         from .runner import OperationRunner
         from .publishing import Publisher
         from .catalog import Catalog
@@ -300,7 +302,7 @@ class Engine:
         public_romm["connected"] = bool(public_romm.get("last_test", {}).get("connected")) if public_romm["last_test"] else False
         assistant = self.assistant.public_config()
         proposals = [p for p in self.store.all("proposals") if p.get("kind") in ('definition', 'investigation') and p.get("status") == "pending_review"]
-        return {"projects": projects, "jobs": jobs, "artifacts": artifacts, "proposals": proposals, "activity": self.reviews.activity(), "activity_cutoffs": self.get_setting("activity_cutoffs", {"projects": {}}), "playtests": self.store.all("playtests")[:1000],
+        return {"projects": projects, "jobs": jobs, "artifacts": artifacts, "proposals": proposals, "review_queue": self.review_queue(), "activity": self.reviews.activity(), "activity_cutoffs": self.get_setting("activity_cutoffs", {"projects": {}}), "playtests": self.store.all("playtests")[:1000],
                 "settings": {"input_root": str(self.input_root), "library_root": str(self.library_root),
                              "storage_root": str(self.storage), "data_root": str(self.data),
                              "toolchain_root": str(self.toolchain_root),
@@ -887,6 +889,7 @@ class Engine:
                 capture = {"id": cid, "project_id": project["id"], "repo": project["repo"], "capture_key": key,
                            "version": release["version"], "commit": release["commit"], "release_url": release["url"],
                            "upstream_kind": release.get('kind', 'release'),
+                           "release_assets": [{"name": a.get("name"), "size": a.get("size")} for a in release["assets"] if a.get("name")][:200],
                            "created_at": now(), "root": str(root), "source": source, "assets": assets, "complete": False}
                 # Preserve a usable source record even if a later release asset fails.
                 self.checkpoint_capture(capture)
@@ -1008,7 +1011,8 @@ class Engine:
         if log:
             self.packager.capture_dependencies(definition, log)
         review = packaging.evaluate_release(definition, capture, self.input_hashes(project), targets=project["targets"])
-        self.store.update("captures", capture["id"], review={**review, "checked_at": now()})
+        review = {**review, "checked_at": now()}
+        self.store.update("captures", capture["id"], review=review)
         if log:
             if review["status"] == "needs_review":
                 log("Release preserved, but packaging needs review: " + "; ".join(review["problems"]))
@@ -1018,7 +1022,25 @@ class Engine:
             self.notify(project["id"], "needs_review",
                         f"{project['name']} {capture['version']} was preserved but not packaged. Review: " + "; ".join(review["problems"]),
                         event_key=f"review:{project['id']}:{capture['id']}:{definition['revision']}")
+            review = self.release_updates.handle(project, definition, capture, review, log)
         return review
+
+    def review_queue(self):
+        return self.release_updates.queue()
+
+    def dismiss_review(self, project_id, capture_id):
+        """Hide a pending release review from the queue and discard any patch offered for it."""
+        with self.lock:
+            try:
+                capture = self.store.get("captures", capture_id)
+            except KeyError:
+                capture = None
+            if not capture or capture["project_id"] != project_id or (capture.get("review") or {}).get("status") != "needs_review":
+                raise Invalid("There is no pending review for that release")
+            for proposal in self.store.all("proposals"):
+                if proposal.get("capture_id") == capture_id and proposal.get("update_kind") == "patch" and proposal["status"] == "pending_review":
+                    self.store.update("proposals", proposal["id"], status="discarded", reviewed_at=now())
+            return self.store.update("captures", capture_id, review={**capture["review"], "dismissed_at": now()})
 
     def checkpoint_capture(self, capture):
         root = Path(capture["root"])
