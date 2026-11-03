@@ -6,6 +6,8 @@ file names is offered as a patch for human review; anything else starts an inves
 seeded with the diff. Nothing here calls a model, executes upstream code or approves anything.
 """
 import copy
+import hashlib
+import json
 import itertools
 import re
 import tarfile
@@ -16,7 +18,7 @@ from . import packaging
 from .storage import now
 
 # A version-looking token: not glued to letters/digits, e.g. v2, 3.0.0, v1.2.3. "Win64" and "gow3" are left alone.
-TOKEN = re.compile(r"(?<![A-Za-z0-9])v?\d+(?:\.\d+)*(?![A-Za-z])")
+TOKEN = re.compile(r"(?<![A-Za-z0-9])(?<!x86_)(?<!x86-)(?<!amd_)(?<!amd-)v?\d+(?:\.\d+)*(?![A-Za-z])")
 PATTERN_TOKEN = r"v?[0-9]+(?:\.[0-9]+)*"
 EXECUTABLES = (".exe", ".sh", ".cmd", ".bat", ".appimage", ".x86_64")
 LIBRARIES = (".dll", ".so", ".dylib")
@@ -250,11 +252,13 @@ class ReleaseUpdates:
         engine = self.engine
         if any(p.get("project_id") == project["id"] and p.get("status") == "pending_review" and p.get("kind") == "definition" and p.get("capture_id") != capture["id"] for p in self.store.all("proposals")):
             return
-        if any(p.get("capture_id") == capture["id"] and p.get("update_kind") == "patch" and p["status"] == "pending_review" for p in self.store.all("proposals")):
+        current = self.store.get("projects", project["id"])
+        base = hashlib.sha256(json.dumps(current.get("packaging"), sort_keys=True).encode()).hexdigest()
+        # A pending patch built on an older definition is unusable; it is superseded by the fresh one below.
+        if any(p.get("capture_id") == capture["id"] and p.get("update_kind") == "patch" and p["status"] == "pending_review" and p.get("base_definition_sha256") == base for p in self.store.all("proposals")):
             return
         definition, changes = patch
         explanation = f"{capture['version']} only changed version strings in file names, so the existing instructions were kept and these patterns were updated: " + "; ".join(changes) + ". No model was used. " + "What changed: " + summary(diff) + " Review the changes before approving; nothing is built until you do."
-        current = self.store.get("projects", project["id"])
         engine.save_definition_proposal(current, definition, explanation, "Release update patch (no model call)", capture,
                                         {"update_kind": "patch", "capture_id": capture["id"], "update_diff": diff, "update_changes": changes})
         if log:

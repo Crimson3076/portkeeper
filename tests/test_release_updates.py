@@ -123,6 +123,23 @@ class ReleaseUpdateTests(unittest.TestCase):
             self.engine.dismiss_review(project["id"], "0" * 32)
 
 
+    def test_stale_patch_is_replaced_after_the_definition_changes(self):
+        project = self.first_release()
+        self.github.publish(2)
+        self.rename_assets({"Port-v2-Linux.zip": "Port-v2.0-Linux.zip", "Port-v2-Win64.zip": "Port-v2.0-Win64.zip"})
+        project = self.check(project)
+        old = self.pending(project)[0]
+        edited = copy.deepcopy(project["packaging"])
+        edited["notes"] = "edited"
+        self.engine.store.update("projects", project["id"], packaging=edited)
+        project = self.check(self.engine.store.get("projects", project["id"]))
+        pending = self.pending(project)
+        self.assertEqual(len(pending), 1)
+        self.assertNotEqual(pending[0]["id"], old["id"])
+        self.assertEqual(self.engine.store.get("proposals", old["id"])["status"], "superseded")
+        self.engine.apply_proposal(pending[0]["id"])
+
+
 class PatchRefusalTests(unittest.TestCase):
     DEFINITION = {"revision": 1, "downloads": {"linux": {"asset_pattern": "^Port-v1-Linux\\.zip$", "platform": "linux"}}}
 
@@ -141,6 +158,11 @@ class PatchRefusalTests(unittest.TestCase):
 
 
 class DiffHelperTests(unittest.TestCase):
+    def test_architecture_numbers_are_not_version_tokens(self):
+        self.assertEqual(release_updates.normalize("Port-v1-linux-x86_64.zip"), "Port-{v}-linux-x86_64.zip")
+        self.assertNotEqual(release_updates.normalize("Port-v1-linux-x86_64.zip"), release_updates.normalize("Port-v2-linux-x86_32.zip"))
+        self.assertNotIn("x86_[0-9]", release_updates.pattern_from_name("Port-v1-linux-x86_64.zip"))
+
     def test_normalize_replaces_version_strings(self):
         self.assertEqual(release_updates.normalize("gow3-windows-v3.0.0.zip", ["windows-v3.0.0"]), release_updates.normalize("gow3-windows-v2.1.4.zip", ["windows-v2.1.4"]))
         self.assertNotEqual(release_updates.normalize("a-v1.zip", []), release_updates.normalize("b-v1.zip", []))
