@@ -505,12 +505,14 @@ class RecipeAssistant:
         while True:
             calls += 1
             log(f'Asking {self.public_config(config)["drafting_model"]} for a draft (attempt {calls} of {attempts})')
+            started = time.monotonic()
             text = self.chat(system, messages, config)
+            seconds = round(time.monotonic() - started, 1)
             try:
                 result = read(text)
             except Invalid as error:
                 if record:
-                    record({'kind': 'draft', 'attempt': calls, 'messages': copy.deepcopy(messages), 'response': text, 'result': 'rejected', 'error': str(error)})
+                    record({'kind': 'draft', 'attempt': calls, 'messages': copy.deepcopy(messages), 'response': text, 'result': 'rejected', 'error': str(error), 'seconds': seconds})
                 log(f'Portkeeper rejected the draft: {error}')
                 if calls >= attempts:
                     if last is not None:
@@ -522,7 +524,7 @@ class RecipeAssistant:
                              {'role': 'user', 'content': f'Portkeeper rejected that definition: {error}\nCorrect the named field while keeping valid parts of the definition. Use forward-slash relative paths; omit optional empty path fields. expected_files and required_members are literal paths, never wildcards. required_members must be a JSON array of at most 50 items; choose 2-10 essential files instead of copying the archive listing. All files are unpacked regardless. expected_files has at most 100 items. strip_prefix removes the ZIP folder; required_members must not repeat it. Match the launcher executable to its final unpacked path. stage_input accepts declared file inputs only, never directories. If the player chooses a game folder on their PC, remove that input, use first_run.mode asks_user and explain how to select it. Do not invent hashes, release assets, tools or operations. Return the corrected JSON object only.'}]
                 continue
             if record:
-                    record({'kind': 'draft', 'attempt': calls, 'messages': copy.deepcopy(messages), 'response': text, 'result': 'accepted'})
+                    record({'kind': 'draft', 'attempt': calls, 'messages': copy.deepcopy(messages), 'response': text, 'result': 'accepted', 'seconds': seconds})
             if test is None or tested >= test_rounds:
                 return result
             last = result
@@ -542,16 +544,18 @@ class RecipeAssistant:
     def review_definition(self, definition, context, record=None, config=None):
         from . import drafting
         system, user = drafting.review_prompt(definition, context)
+        started = time.monotonic()
         text = self.chat(system, [{'role': 'user', 'content': user}], config=config,
                          response_schema=drafting.REVIEW_SCHEMA)
+        seconds = round(time.monotonic() - started, 1)
         try:
             review = drafting.read_review(text, context, definition)
         except Invalid as error:
             if record:
-                record({'kind': 'review', 'response': text, 'result': 'unavailable', 'error': str(error)})
+                record({'kind': 'review', 'response': text, 'result': 'unavailable', 'error': str(error), 'seconds': seconds})
             raise
         if record:
-            record({'kind': 'review', 'response': text, 'result': 'complete'})
+            record({'kind': 'review', 'response': text, 'result': 'complete', 'seconds': seconds})
         return review
 
 

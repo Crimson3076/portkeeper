@@ -1633,6 +1633,7 @@ class Engine:
             context['game_file_preparation']['enabled'] = job['prepare_game_files']
             config = self.assistant._config()
             public = self.assistant.public_config(config)
+            self.store.update('jobs', job_id, run_model=public['drafting_model'])
             record = {'schema': 1, 'job_id': job_id, 'project_id': project['id'], 'kind': 'investigation', 'created_at': now(),
                       'capture_id': capture['id'], 'source_sha256': capture['source']['sha256'], 'attempts': [], 'status': 'investigating',
                       'research_capture': capture,
@@ -1719,6 +1720,7 @@ class Engine:
                 project = {**project, "targets": requested_targets}
             model_config = self.assistant._config()
             config = self.assistant.public_config(model_config)
+            self.store.update('jobs', job_id, run_model=config['drafting_model'])
             # JSON paths and source snippets tokenize more densely than prose.
             # Keep room for both reasoning and the final definition/corrections.
             budget = max(8000, (config["context_tokens"] - 8000) * 2) if config["provider"] == "ollama" else 20_000
@@ -1752,6 +1754,7 @@ class Engine:
             def remember(event):
                 record['attempts'].append({**event, 'at': now()})
                 self.save_draft_record(job_id, record)
+                self.store.update('jobs', job_id, attempts_used=sum(1 for item in record['attempts'] if item.get('kind') == 'draft'))
             log(f"Prepared {len(user) // 1000} KB of project material for {config['drafting_model']}")
             self.stage(job_id, "drafting", "Waiting for the model's draft")
             def read(text):
@@ -1837,6 +1840,19 @@ class Engine:
         if job.get('kind') not in ('draft', 'investigation') or not job.get('draft_record_available'):
             raise Invalid('This job has no saved drafting record')
         return json.loads(confined(self.data / 'drafts', job_id + '.json', must_exist=True).read_text())
+
+    def research_trail(self, job_id):
+        """Readable steps and tagged claims for one saved run; the raw record stays downloadable."""
+        from . import trail
+        record = self.draft_record(job_id)
+        plan = None
+        if record.get('kind') != 'investigation':
+            investigation_id = self.store.get('jobs', job_id).get('investigation_id')
+            try:
+                plan = self.store.get('proposals', investigation_id)['plan'] if investigation_id else None
+            except KeyError:
+                plan = None
+        return trail.build(record, plan)
 
     def import_draft(self, project_id, text):
         from . import drafting

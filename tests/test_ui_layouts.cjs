@@ -62,6 +62,7 @@ async function create(saved, storageBlocked=false, source=fixture) {
     else if(endpoint.match(/^\/api\/projects\/[^/]+\/imports$/)){const game=source.projects.find(p=>endpoint.includes(p.id));payload={items:imports(game.metadata.filename_prefix)};}
     else if(endpoint.startsWith('/api/romm/search?')){const prefix=new URL(endpoint,w.location.href).searchParams.get('q');payload={items:imports(prefix)};}
     else if(endpoint.startsWith('/preservation',0)||endpoint.includes('/preservation'))payload={};
+    else if(endpoint.endsWith('/research-trail')){requests.push({endpoint});payload=source.trails?.[endpoint.split('/')[3]] || {steps:[],claims:[]};}
     else if(endpoint==='/api/profiles')payload={profiles:[]};
     else if(endpoint==='/api/recipes')payload={recipes:[]};
     else if(endpoint.startsWith('/api/github/lookup?'))payload=source.platform_lookup || {repository:'example/game',version:'v1',assets:['game-linux.zip','game-windows.zip'],platforms:['linux','windows'],platform_detection:{suggested_targets:['linux','windows'],platforms:[{id:'linux',label:'Linux',packaging_supported:true,evidence:[{kind:'release',detail:'game-linux.zip',source:'Release files'}]},{id:'windows',label:'Windows',packaging_supported:true,evidence:[{kind:'documentation',detail:'Windows build instructions',source:'README.md'}]},{id:'android',label:'Android',packaging_supported:false,evidence:[{kind:'documentation',detail:'Android build instructions',source:'README.md'}]}]}};
@@ -646,6 +647,38 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
     else{dialog.querySelector('[data-close]').click();assert(!dialog.open,'Closing returns to the game');}
     dom.window.close();
   }
+  // Research trail: successful, corrected and failed runs.
+  const trailPlan=JSON.parse(JSON.stringify(planned));trailPlan.proposals[0].job_id=id(95);
+  const readStep={type:'read',label:'Read README.md',source:'README.md'};
+  const request=(attempt,result,seconds)=>({type:'model_request',label:'Investigation request',provider:'ollama',model:'qwen3.8:27b',attempt,seconds,result});
+  trailPlan.trails={[id(95)]:{kind:'investigation',status:'ready',provider:'ollama',model:'qwen3.8:27b',corrections:0,steps:[readStep,request(1,'ready',12.5)],claims:[
+    {claim:'Windows launch path',value:'Game.exe',tag:'verified',source:'Archive listing of game-windows.zip',detail:''},
+    {claim:'Windows platform support',value:'game-windows.zip',tag:'inferred',source:'Model reasoning',detail:''},
+    {claim:'Required game data',value:'Your owned game data',tag:'unverified',source:'Flagged by the model',detail:''}]}};
+  dom=await create(null,false,trailPlan);w=dom.window;d=w.document;
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();
+  [...d.querySelector('.next-step-card').querySelectorAll('button')].find(n=>n.textContent==='Review investigation').click();await tick();await tick();
+  let trailSection=[...d.getElementById('draft-review-body').querySelectorAll('details')].find(n=>n.textContent.includes('How this was researched'));
+  assert(trailSection&&!trailSection.open,'The trail is collapsed by default');
+  for(const text of ['Read README.md','ollama · qwen3.8:27b · attempt 1 · 12.5s','Verified','Inferred','Unverified','Game.exe','Archive listing of game-windows.zip'])assert(trailSection.textContent.includes(text),'Successful trail shows '+text);
+  assert([...d.getElementById('draft-review-body').querySelectorAll('summary')].some(n=>n.textContent==='View investigation JSON'),'Raw JSON stays available');
+  dom.window.close();
+  const runs=JSON.parse(JSON.stringify(planned));runs.proposals=[];runs.assistant={provider:'ollama',configured:true,drafting_model:'qwen3.8:27b'};
+  runs.jobs=[{id:id(96),project_id:id(2),kind:'draft',status:'failed',stage:'failed',target:'capture',created_at:'2026-11-03T04:09:00Z',run_model:'qwen3.8:27b',attempts_used:2,draft_max_calls:3,error:'The model could not produce a valid definition: launch path changed. The 3-call drafting limit was reached.',draft_record_available:true,logs:[]},
+    {id:id(97),project_id:id(2),kind:'investigation',status:'ready',stage:'complete',target:'capture',created_at:'2026-11-03T04:09:00Z',run_model:'qwen3.8:27b',outcome:'ready',draft_record_available:true,logs:[]}];
+  runs.trails={[id(96)]:{kind:'draft',status:'failed',provider:'ollama',model:'qwen3.8:27b',corrections:1,failure:'The model could not produce a valid definition',steps:[request(1,'rejected',4.2),{type:'correction',label:'Correction needed',detail:'launch path changed'},request(2,'rejected',3)],claims:[]}};
+  dom=await create(null,false,runs);w=dom.window;d=w.document;
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Bloodborne')).click();await tick();
+  [...d.querySelector('.next-step-card').querySelectorAll('button')].find(n=>n.textContent==='View research trail').click();await tick();await tick();
+  const trailDialog=d.getElementById('research-trail-dialog');assert(trailDialog.open,'A failure card links to that run');
+  for(const text of ['Draft attempt 2 of 3, qwen3.8:27b, 11:09 PM, failed: launch path changed','Correction needed','launch path changed','The model could not produce a valid definition','1 correction'])assert(trailDialog.textContent.includes(text),'Failed trail shows '+text+': '+trailDialog.textContent);
+  assert(trailDialog.textContent.includes('Download drafting record (JSON)'),'The raw record stays downloadable');
+  trailDialog.querySelector('[data-close]').click();
+  d.getElementById('activity-tab')?.click?.();w.location.hash='#/projects/'+id(2)+'/activity';await tick();await tick();
+  const history=d.body.textContent;
+  assert(history.includes('Investigation, qwen3.8:27b, 11:09 PM, plan ready'),'History rows show type, model, time and outcome');
+  assert(history.includes('Draft attempt 2 of 3, qwen3.8:27b, 11:09 PM, failed: launch path changed'));assert(![...d.querySelectorAll('#activity-content .activity-event h3')].some(n=>n.textContent==='Model draft'),'No row is just "Model draft"');
+  dom.window.close();
   const building=JSON.parse(JSON.stringify(fixture));
   building.jobs=[{id:id(40),project_id:id(2),status:'packaging_linux',stage:'packaging_linux',target:'linux',kind:'build',created_at:'2026-10-11T12:00:00Z',logs:['Packaging the Linux build']}];
   dom=await create(null,false,building);w=dom.window;d=w.document;

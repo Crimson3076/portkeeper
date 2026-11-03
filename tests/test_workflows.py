@@ -510,6 +510,21 @@ class WorkflowHttpTests(WorkflowFixture, unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(self.engine.store.all('artifacts'), [])
 
+    def test_research_trail_route_is_read_only_and_scoped_to_saved_records(self):
+        project = self.engine.create_project({'name': 'Fixture', 'repo': 'example/game', 'targets': ['windows']})
+        job = self.engine.job(project, 'capture', 'v1')
+        self.engine.store.update('jobs', job['id'], kind='draft', draft_record_available=True)
+        self.engine.save_draft_record(job['id'], {'kind': 'draft', 'status': 'failed', 'error': 'boom', 'model': {'provider': 'ollama', 'drafting_model': 'qwen'},
+                                                  'attempts': [{'kind': 'draft', 'attempt': 1, 'result': 'rejected', 'error': 'bad path', 'seconds': 1.5}]})
+        status, trail = self.request('GET', f"/api/jobs/{job['id']}/research-trail")
+        self.assertEqual(status, 200)
+        self.assertEqual([step['type'] for step in trail['steps']], ['model_request', 'correction'])
+        self.assertEqual(trail['failure'], 'boom')
+        other = self.engine.job(project, 'capture', 'v1')
+        status, _ = self.request('GET', f"/api/jobs/{other['id']}/research-trail")
+        self.assertEqual(status, 400)
+        self.assertEqual(self.engine.store.all('artifacts'), [])
+
     def test_profile_and_secret_configuration_routes_never_return_tokens(self):
         token = "rmm_workflowprivatetoken"
         status, result = self.request("POST", "/api/romm/config", {"url": "https://romm.example.invalid", "token": token})
