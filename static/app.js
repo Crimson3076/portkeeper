@@ -2471,6 +2471,12 @@ function draftCard(project) {
   paste.addEventListener("input", () => draftImports.set(id, paste.value));
   field(card, "Paste the answer from your chat or agent", paste);
   card.append(el("div", "inline-actions", button(busy.has(`import-${id}`) ? "Checking…" : "Check and review", "button secondary small", () => importDraft(id), busy.has(`import-${id}`))));
+  const share = el("div", "inline-actions");
+  if (project.packaging?.runner === "operations") { const exported = el("a", "button secondary small", "Export definition (JSON)"); exported.href = `/api/projects/${encodeURIComponent(id)}/definition-export`; exported.setAttribute("download", ""); share.append(exported); }
+  const picker = el("input"); picker.type = "file"; picker.accept = "application/json,.json"; picker.hidden = true;
+  picker.addEventListener("change", async () => { const file = picker.files[0]; if (!file) return; const result = await runAction(`share-${id}`, `/api/projects/${encodeURIComponent(id)}/definition-import`, { text: await file.text() }, "Definition checked. Review it below."); if (result) render(); });
+  share.append(picker, button("Import definition (JSON)", "button secondary small", () => picker.click(), busy.has(`share-${id}`)));
+  card.append(share, el("p", "field-help", "A shared definition is checked and shown for review like any draft; nothing runs until you approve it."));
   const where = settings.provider === "ollama" ? " Drafts run on your local model." : ["anthropic", "openai"].includes(settings.provider) ? ` Drafts are sent to ${settings.provider_label}.` : "";
   card.append(el("p", "quiet-note", "Models receive public project evidence and limited selected-input metadata: formats, sizes and recognized identities. Game contents, locations and credentials stay on the server." + where));
   if (!settings.configured) card.append(button("Connect a local or cloud model →", "text-button", () => navigateSettings("assistant")));
@@ -2480,6 +2486,8 @@ function renderProposalReview(card, project, proposal, actionsHost = null) {
   const definition = proposal.definition, view = proposal.view || {};
   card.append(el("p", "detail-note", `Drafted by ${proposal.source} · ${dateLabel(proposal.created_at)}. Nothing has run. Review it before approving.`));
   if (proposal.explanation) card.append(el("p", "review-notes", proposal.explanation));
+  if (proposal.from_template) card.append(el("p", "info-note", `From template: ${proposal.from_template.name} (${proposal.from_template.origin}). No model was asked.`), button("Ask the model to refine", "button secondary small", () => runAction(`draft-${project.id}`, `/api/projects/${encodeURIComponent(project.id)}/draft`, { skip_template: true, prepare_game_files: prepareDraftGameFiles(project.id) }, "Drafting started. The model's draft appears here when it's ready."), busy.has(`draft-${project.id}`) || Boolean(projectActiveJob(project))));
+  if (proposal.examples_used?.length && !proposal.from_template) card.append(el("p", "field-help", `Examples shown to the model: ${proposal.examples_used.map(item => item.name).join(", ")}.`));
   if (proposal.investigation_plan) card.append(disclosure(`investigation-plan:${proposal.id}`, "diagnostics-list", [el("summary", "table-action", "Reviewed investigation plan"), jsonViewer(`investigation:${proposal.id}`, proposal.investigation_plan)]));
   card.append(el("div", "detail-facts", [meta("Platforms", definition.targets.map((target) => targetLabels[target] || target).join(", ")), meta("Files for packaging", definition.inputs.filter((item) => item.required !== false).map((item) => item.label).join("; ") || "None"), meta("First launch", view.first_run?.text || definition.first_run?.summary || "Not stated", true)]));
   const asks = definition.inputs.filter((item) => item.required !== false).map((item) => item.label);

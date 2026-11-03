@@ -1559,7 +1559,20 @@ class Engine:
         context['material']['runtime_documentation'] = runtime_documents
         context['release']['archive_sha256'] = archive_checksums
         context['release']['source_sha256'] = capture['source']['sha256']
+        self._attach_examples(project, context)
         return capture, context
+
+    def _template_references(self, project):
+        from . import templates
+        user = [(item['id'], item.get('packaging')) for item in self.store.all('projects') if item.get('packaging')]
+        return templates.candidates(self.catalog.definitions(), user, exclude_project=project.get('id'))
+
+    def _attach_examples(self, project, context):
+        """Pick the closest approved definitions as bounded prompt examples; keep only a summary in the record."""
+        from . import templates
+        selected = templates.select(context, self._template_references(project))
+        context['examples'] = templates.example_material(selected)
+        context['examples_used'] = templates.summarize(selected)
 
     def draft_prompt(self, project_id, instruction="", prepare_game_files=True):
         """The prompt for the person's own chat, and a workspace folder for their own agent."""
@@ -1677,9 +1690,11 @@ class Engine:
             raise Invalid('Release, selected platforms or build instructions changed; investigate again before drafting')
         return report
 
-    def queue_draft(self, project_id, instruction="", targets=None, prepare_game_files=True, review_model=False, max_calls=None, investigation_id=None, test_inputs=False):
+    def queue_draft(self, project_id, instruction="", targets=None, prepare_game_files=True, review_model=False, max_calls=None, investigation_id=None, test_inputs=False, skip_template=False):
         with self.lock:
             project = self.store.get("projects", project_id)
+            if not isinstance(skip_template, bool):
+                raise Invalid('Choose whether the model should skip template matching')
             if not self.assistant.connected():
                 raise Invalid("No model is connected. Use the prepared prompt with your own chat, or connect a model in Settings.")
             if not isinstance(review_model, bool):
@@ -1699,7 +1714,7 @@ class Engine:
             if targets is not None and (not isinstance(targets, list) or not targets or any(t not in TARGETS for t in targets) or len(set(targets)) != len(targets) or not set(project["targets"]).issubset(targets)):
                 raise Invalid("Draft platforms must include current platforms and supported target IDs")
             job = self.job(project, "capture", project.get("latest_version"))
-            job = self.store.update("jobs", job["id"], kind="draft", stage="drafting", status="running", requested_targets=targets, instruction=instruction, prepare_game_files=prepare_game_files, review_model=review_model)
+            job = self.store.update("jobs", job["id"], kind="draft", stage="drafting", status="running", requested_targets=targets, instruction=instruction, prepare_game_files=prepare_game_files, review_model=review_model, skip_template=skip_template)
             if max_calls is not None:
                 job = self.store.update('jobs', job['id'], draft_max_calls=max_calls)
             if investigation_id is not None:
@@ -1737,14 +1752,39 @@ class Engine:
                 for asset, members in report.get('archive_evidence', {}).items():
                     context.setdefault('archive_evidence', {})[asset] = members
                 context['release'].setdefault('archive_layouts', {}).update(report.get('archive_layouts', {}))
+                self._attach_examples(project, context)
             else:
                 capture, context = self._draft_material(project, budget)
             context.setdefault('game_file_preparation', {})['enabled'] = self.store.get('jobs', job_id).get('prepare_game_files', True)
+            from . import templates
+            if not investigated and not self.store.get('jobs', job_id).get('skip_template'):
+                matched = templates.fit(context, templates.select(context, self._template_references(project), limit=5))
+                if matched:
+                    self.stage(job_id, 'drafting', 'Building a draft from a matching template (no model request)')
+                    log(f"A close template was found: {matched['template']['name']} ({matched['template']['origin']}). No model request was made.")
+                    record = {'schema': 1, 'job_id': job_id, 'project_id': project_id, 'created_at': now(), 'model': None,
+                              'template': matched['template'], 'examples_used': [matched['template']], 'context': context,
+                              'attempts': [], 'status': 'ready', 'finished_at': now(), 'accepted_definition': matched['definition'],
+                              'build_test': 'not_run', 'gameplay_test': 'not_run'}
+                    self.save_draft_record(job_id, record)
+                    self.store.update('jobs', job_id, draft_record_available=True)
+                    explanation = (f"From template: built from {matched['template']['name']} ({matched['template']['origin']}) with this release's file names. "
+                                   + ' '.join(matched['unresolved']) + ' No model was asked; use "Ask the model to refine" for a model-written draft.')
+                    details = {'from_template': matched['template'], 'examples_used': [matched['template']], 'draft_job_id': job_id,
+                               'automatic_checks': {'schema': 'passed', 'release_assets': 'checked', 'archive_inspections': context['release'].get('archive_layouts', {})}}
+                    if requested_targets:
+                        details.update(requested_targets=requested_targets, base_targets=original_targets)
+                    proposal = self.save_definition_proposal(project, matched['definition'], explanation, f"template {matched['template']['name']}", capture, draft_details=details)
+                    self.store.update('jobs', job_id, status='ready', finished_at=now(), proposal_id=proposal['id'])
+                    self.stage(job_id, 'complete', 'Template draft ready for your review')
+                    self.notify(project_id, 'ready', f"A packaging draft for {project['name']} is ready for your review", event_key='draft:' + proposal['id'])
+                    return
             system, user = drafting.prompt_parts(context, self.catalog.definitions(), instruction)
             starter = drafting.starter_definition(context)
             record = {'schema': 1, 'job_id': job_id, 'project_id': project_id, 'created_at': now(),
                       'model': {key: config.get(key) for key in ('provider', 'drafting_model', 'context_tokens', 'billing')},
                       'temperature': 0.1 if config['provider'] == 'ollama' else None,
+                      'examples_used': context.get('examples_used', []),
                       'starter': starter, 'context': context, 'draft_prompt': {'system': system, 'user': user},
                       'attempts': [], 'status': 'drafting', 'build_test': 'not_run', 'gameplay_test': 'not_run'}
             self.save_draft_record(job_id, record)
@@ -1803,7 +1843,8 @@ class Engine:
             record.update(status='ready', finished_at=now(), model_review=review, accepted_definition=definition,
                           build_test=trials[-1]['status'] if trials else 'not_run')
             self.save_draft_record(job_id, record)
-            details = {'model_review': review, 'starter': starter, 'automatic_checks': record['automatic_checks'], 'draft_job_id': job_id}
+            details = {'model_review': review, 'starter': starter, 'automatic_checks': record['automatic_checks'], 'draft_job_id': job_id,
+                       'examples_used': context.get('examples_used', [])}
             if investigated:
                 details.update(investigation_id=investigated['id'], investigation_plan=investigated['plan'])
             if trials:
@@ -1844,6 +1885,22 @@ class Engine:
         definition, explanation = drafting.read_reply(text, project)
         capture = self.store.get("captures", project["capture_id"]) if project.get("capture_id") else None
         return self.save_definition_proposal(project, definition, explanation, "Your own chat or agent", capture)
+
+    def export_definition(self, project_id):
+        from . import templates
+        project = self.store.get('projects', project_id)
+        if (project.get('packaging') or {}).get('runner') != 'operations':
+            raise Invalid('This project has no approved packaging steps to export yet')
+        return templates.export_definition(project['packaging'])
+
+    def import_definition(self, project_id, text):
+        """A shared definition becomes a draft for review; approval gates are unchanged."""
+        from . import templates
+        project = self.store.get('projects', project_id)
+        definition = templates.read_import(text, project['repo'])
+        capture = self.store.get('captures', project['capture_id']) if project.get('capture_id') else None
+        return self.save_definition_proposal(project, definition, 'Imported from a shared definition file. Nothing has run; check its file names and hashes against this release.',
+                                             'an imported definition file', capture)
 
     def save_definition_proposal(self, project, definition, explanation, source, capture=None, draft_details=None):
         from . import drafting, packaging
