@@ -507,7 +507,12 @@ def prompt_parts(context, definitions, instruction=""):
             'note': 'Narrative is abridged for context size; the full plan is retained and enforced by the host.'}
         material['retrieved_evidence'] = [{**node, 'text': node['text'][:1500]} for node in context.get('investigation_evidence', [])[-6:]]
         material['selected_input_metadata'] = context.get('input_inventory', {})
-        material['fact_sheet'] = [{key: fact[key] for key in ('id', 'kind', 'text')} for fact in plan.get('fact_sheet', [])[:60]]
+        cited = {fid for ref in plan['evidence'] for fid in ref.get('facts', [])}
+        sheet = plan.get('fact_sheet', [])
+        # Cited facts come first (in sheet order) so they are never cut by the cap or the budget loop below.
+        ordered = [f for f in sheet if f['id'] in cited] + [f for f in sheet if f['id'] not in cited]
+        material['fact_sheet'] = [{key: fact[key] for key in ('id', 'kind', 'text')} for fact in ordered[:max(60, len(cited))]]
+        material['fact_sheet_cited'] = len(cited & {f['id'] for f in sheet})
     parts = [FORMAT, SIMPLE_EXAMPLE, '# Task',
              f"Investigate {project['repository']} release {release['version']} for {', '.join(project['targets'])}. Infer the packaging workflow from this project's evidence, not another game's recipe.",
              'Explain separately whether game data is needed to play, whether it is needed on the server, and whether the available fixed tools can prepare it. Empty inputs means no server inputs; it never proves no game data is required. If preparation is unsupported or evidence is insufficient, say so explicitly. Do not invent tools or facts.',
@@ -518,7 +523,7 @@ def prompt_parts(context, definitions, instruction=""):
         parts.append('Turn the reviewed plan into packaging JSON. Use its actual runtime assets and capabilities. Retrieved evidence and a fact_sheet are supplied below; cite fact IDs (for example f3) in the explanation for each claim about files, launch paths or data. Never substitute a build helper for the game, add arbitrary compilation, or silently change the preparation workflow.')
     # Bound the entire request, including instructions/schema, not only source material.
     while len(SYSTEM) + len('\n'.join(parts)) + len(json.dumps(material)) > 24000:
-        if len(material.get('fact_sheet', [])) > 15:
+        if len(material.get('fact_sheet', [])) > max(15, material.get('fact_sheet_cited', 0)):
             material['fact_sheet'].pop()
         elif material['source_excerpts']:
             material['source_excerpts'].pop()

@@ -396,12 +396,16 @@ def run(engine, project, capture, context, config, max_calls, log, remember, ins
                    'capabilities': capabilities(engine), 'inputs': input_inventory(engine, project),
                    'fact_sheet': factsheet.compact(reader.sheet), 'evidence': visible, 'instruction': instruction[:2000], 'feedback': feedback,
                    'calls_remaining_after_this': max_calls - index - 1}
+        # Trim the (regenerable) fact sheet first, dropping non-documentation facts before documentation facts,
+        # so requested evidence and archive samples survive for the quote fallback.
+        docs = {fact['id'] for fact in reader.sheet['facts'] if fact['doc']}
+        while len(SYSTEM) + len(json.dumps(payload)) > 24000 and len(payload['fact_sheet']) > 10:
+            drop = next((i for i in range(len(payload['fact_sheet']) - 1, -1, -1) if payload['fact_sheet'][i]['id'] not in docs), len(payload['fact_sheet']) - 1)
+            payload['fact_sheet'].pop(drop)
         while len(SYSTEM) + len(json.dumps(payload)) > 24000 and payload['evidence']:
             payload['evidence'].pop(0)
         while len(SYSTEM) + len(json.dumps(payload)) > 24000 and payload['archive_samples']:
             payload['archive_samples'].pop(next(reversed(payload['archive_samples'])))
-        while len(SYSTEM) + len(json.dumps(payload)) > 24000 and len(payload['fact_sheet']) > 10:
-            payload['fact_sheet'].pop()
         if len(SYSTEM) + len(json.dumps(payload)) > 24000:
             raise Invalid('Investigation metadata exceeds the bounded prompt limit')
         log(f'Investigating with {config["drafting_model"]} (request {index + 1} of {max_calls})')

@@ -1,5 +1,7 @@
 import copy
+import json
 import unittest
+from unittest.mock import patch
 
 from portkeeper import factsheet, investigation
 from test_investigation import InvestigationTests as Base
@@ -72,6 +74,28 @@ class FactCitationTests(Base):
         self.assertEqual(result['evidence'][0]['facts'], ids[:2])
         self.assertEqual(result['evidence'][0]['path'] is not None, True)
 
+    def test_fact_sheet_reaches_the_outgoing_request(self):
+        reader = self.reader()
+        with patch.object(self.engine.assistant, 'chat', return_value=json.dumps({'action': 'plan', 'plan': self.plan})) as chat:
+            investigation.run(self.engine, self.project, self.capture, copy.deepcopy(self.context), {'drafting_model': 'fixture'}, 1, lambda _: None, lambda _: None)
+        request = json.loads(chat.call_args.args[1][0]['content'])
+        self.assertTrue(request['fact_sheet'])
+        self.assertEqual([f['id'] for f in request['fact_sheet']], [f['id'] for f in reader.sheet['facts']][:len(request['fact_sheet'])])
+        self.assertEqual(request['fact_sheet'][0]['text'], reader.sheet['facts'][0]['text'])
+
+    def test_oversized_fact_sheet_is_trimmed_before_evidence_and_samples(self):
+        context = copy.deepcopy(self.context)
+        context['archive_evidence'] = {f'a{i}.zip': [f'dir/tool{j}.exe' for j in range(200)] for i in range(4)}
+        with patch.object(self.engine.assistant, 'chat', return_value=json.dumps({'action': 'plan', 'plan': self.plan})) as chat:
+            try:
+                investigation.run(self.engine, self.project, self.capture, context, {'drafting_model': 'fixture'}, 1, lambda _: None, lambda _: None)
+            except investigation.Invalid:
+                pass
+        request = json.loads(chat.call_args.args[1][0]['content'])
+        self.assertTrue(request['evidence'])
+        self.assertEqual(len(request['archive_samples']), 4)
+
+
     def test_unknown_fact_ids_are_rejected_listing_each_invalid_id(self):
         with self.assertRaisesRegex(investigation.Invalid, r'Unknown fact IDs: f998, f999'):
             investigation.check_plan(self.cited_plan(['f1', 'f998', 'f999']), self.project, self.capture, self.reader())
@@ -81,6 +105,18 @@ class FactCitationTests(Base):
         plan['evidence'].append(self.plan['evidence'][0])
         result = investigation.check_plan(plan, self.project, self.capture, self.reader())
         self.assertTrue(result['can_draft'])
+
+
+class DraftingFactTests(unittest.TestCase):
+    def test_cited_facts_survive_the_prompt_cap(self):
+        from portkeeper import drafting
+        sheet = [{'id': f'f{i}', 'kind': 'data_file', 'text': f'fact {i}', 'source': {'file': 'README.md'}, 'doc': True} for i in range(1, 121)]
+        plan = {'outcome': 'ready', 'summary': 's', 'targets': [], 'game_files': {'requirements': ''}, 'steps': [],
+                'evidence': [{'source': 'f106', 'quote': 'fact 106', 'supports': 'x', 'facts': ['f106']}], 'fact_sheet': sheet}
+        context = {'project': {'repository': 'o/r', 'targets': ['linux']}, 'release': {'version': '1', 'archive_contents': {}}, 'source': {},
+                   'investigation_plan': plan}
+        _, prompt = drafting.prompt_parts(context, {})
+        self.assertIn('"id":"f106"', prompt)
 
 
 if __name__ == '__main__':
