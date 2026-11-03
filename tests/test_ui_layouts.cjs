@@ -88,7 +88,7 @@ async function create(saved, storageBlocked=false, source=fixture) {
     else if(endpoint==='/api/setup'){requests.push({endpoint,body:JSON.parse(options.body)});payload={project:source.projects[1],job:{}};}
     return {ok:true,status:200,json:async()=>JSON.parse(JSON.stringify(payload))};
   };
-  w.eval(fs.readFileSync(path.join(base,'static/app.js'),'utf8'));
+  w.eval(fs.readFileSync(path.join(base,'static/app.js'),'utf8')+'\n;window.__gameChecklist=gameChecklist;');
   await new Promise(resolve=>setTimeout(resolve,30));
   assert.equal(errors.length,0,errors.map(e=>e.stack).join('\n'));
   return dom;
@@ -584,6 +584,17 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   assert.deepEqual(checklist.map(n=>n.dataset.step),['saved','drafted','approved','built','tested','in_romm']);
   assert.equal(stepCard.querySelectorAll('.game-checklist li[data-state="current"]').length,1,'Exactly one step is current');
   assert.equal(stepCard.querySelector('.game-checklist li[data-state="current"]').dataset.step,'saved','The fixture game has no saved release yet');
+  {
+    // Checklist states: preserve-only, pending draft, approved, built, built and tested.
+    const states=(project,proposal,packages,inRomm,untested)=>Object.fromEntries([...w.__gameChecklist(project,proposal,packages,inRomm,untested).querySelectorAll('li')].map(n=>[n.dataset.step,n.dataset.state]));
+    const saved={latest_version:'v1',capture_id:'c1'}, preserveOnly={...saved,packaging:{runner:'capture',revision:1}}, approvedDef={...saved,packaging:{runner:'operations',revision:2}};
+    const pkg={id:'a1',target:'linux'};
+    assert.deepEqual(states(preserveOnly,null,[],[],[]),{saved:'done',drafted:'current',approved:'todo',built:'todo',tested:'todo',in_romm:'todo'},'Preserve-only is not drafted or approved');
+    assert.deepEqual(states(preserveOnly,{id:'p1'},[],[],[]),{saved:'done',drafted:'done',approved:'current',built:'todo',tested:'todo',in_romm:'todo'},'A pending draft is drafted but not approved');
+    assert.deepEqual(states(approvedDef,null,[],[],[]),{saved:'done',drafted:'done',approved:'done',built:'current',tested:'todo',in_romm:'todo'},'Approved definition not yet built');
+    assert.deepEqual(states(approvedDef,null,[pkg],[],[pkg]),{saved:'done',drafted:'done',approved:'done',built:'done',tested:'current',in_romm:'todo'},'Built but untested');
+    assert.deepEqual(states(approvedDef,null,[pkg],[],[]),{saved:'done',drafted:'done',approved:'done',built:'done',tested:'done',in_romm:'current'},'Built and tested');
+  }
   d.getElementById('project-advanced-tab').click();await tick();
   const autoCard=d.querySelector('.automatic-setup');
   assert(autoCard.textContent.includes('worker broker') && autoCard.textContent.includes('Draft packaging steps'));

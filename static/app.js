@@ -2102,7 +2102,7 @@ function openWorkerSettings() { navigateSettings("storage"); scrollToSection("#a
 function goToDraftSteps(id) { navigateProject(id, "advanced"); scrollToSection(".draft-card"); }
 const BROKER_EXPLANATION = "A worker broker is a separate, isolated service that runs build scripts offline so Portkeeper can set up a port without a model touching your files. It unlocks \u201cSet up automatically\u201d. You don\u2019t need one: drafting packaging steps with a model or your own chat works without it.";
 function gameChecklist(project, proposal, packages, inRomm, untested) {
-  const approved = Boolean(project.packaging || project.profile || project.autonomous_recipe || project.demo);
+  const approved = Boolean((project.packaging && project.packaging.runner !== "capture") || project.profile || project.autonomous_recipe || project.demo);
   const steps = [
     ["saved", "Saved", Boolean(project.latest_version || project.capture_id)],
     ["drafted", "Drafted", Boolean(proposal) || approved],
