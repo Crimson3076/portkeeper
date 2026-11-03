@@ -123,6 +123,23 @@ class ReleaseUpdateTests(unittest.TestCase):
             self.engine.dismiss_review(project["id"], "0" * 32)
 
 
+class PatchRefusalTests(unittest.TestCase):
+    DEFINITION = {"revision": 1, "downloads": {"linux": {"asset_pattern": "^Port-v1-Linux\\.zip$", "platform": "linux"}}}
+
+    def capture(self, version, names):
+        return {"id": version, "version": version, "assets": [{"name": n} for n in names]}
+
+    def test_no_patch_when_two_new_files_look_like_the_old_one(self):
+        old = self.capture("v1", ["Port-v1-Linux.zip"])
+        new = self.capture("v2", ["Port-v2-Linux.zip", "Port-v3-Linux.zip"])
+        self.assertIsNone(release_updates.propose_patch(self.DEFINITION, old, new, {}, targets=["linux"]))
+
+    def test_no_patch_when_the_new_name_differs_by_more_than_a_version(self):
+        old = self.capture("v1", ["Port-v1-Linux.zip"])
+        new = self.capture("v2", ["Port-v2-Steam.zip"])
+        self.assertIsNone(release_updates.propose_patch(self.DEFINITION, old, new, {}, targets=["linux"]))
+
+
 class DiffHelperTests(unittest.TestCase):
     def test_normalize_replaces_version_strings(self):
         self.assertEqual(release_updates.normalize("gow3-windows-v3.0.0.zip", ["windows-v3.0.0"]), release_updates.normalize("gow3-windows-v2.1.4.zip", ["windows-v2.1.4"]))
