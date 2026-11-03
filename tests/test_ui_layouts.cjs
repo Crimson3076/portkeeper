@@ -36,6 +36,7 @@ async function create(saved, storageBlocked=false, source=fixture) {
         payload={matched:2,matching:source.romm.matching};
       }
     }
+    else if(endpoint==='/api/version'){payload=source.version_info||{version:'0.3.0',commit:null};}
     else if(endpoint==='/api/assistant/models'){const body=JSON.parse(options.body);requests.push({endpoint,body});payload={models:source.agent_model_choices?.[body.provider] || ['provider-model-a','provider-model-b']};}
     else if(endpoint==='/api/assistant/provider'){
       const body=JSON.parse(options.body);requests.push({endpoint,body});source.assistant||={};source.assistant.provider=body.provider;
@@ -669,6 +670,13 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   const css=fs.readFileSync(path.join(base,'static/styles.css'),'utf8');
   assert(!/\.draft-review-dialog\{[^}]*display:flex/.test(css),'A closed review dialog is not rendered in the page flow');
   assert(/dialog\[open\]\{[^}]*position:fixed/.test(css),'Open dialogs are fixed to the viewport');
+  for(const [commit,expected] of [[null,'v0.3.0 (dev)'],['abc1234def5678','v0.3.0 (abc1234)']]){
+    const versioned=JSON.parse(JSON.stringify(fixture));versioned.version_info={version:'0.3.0',commit};
+    dom=await create(null,false,versioned);w=dom.window;d=w.document;await tick();
+    assert.equal(d.getElementById('app-version').textContent,expected,'Footer build label');
+    assert.equal(d.getElementById('about-version').textContent,expected,'Settings build label');
+    dom.window.close();
+  }
   const building=JSON.parse(JSON.stringify(fixture));
   building.jobs=[{id:id(40),project_id:id(2),status:'packaging_linux',stage:'packaging_linux',target:'linux',kind:'build',created_at:'2026-10-11T12:00:00Z',logs:['Packaging the Linux build']}];
   dom=await create(null,false,building);w=dom.window;d=w.document;

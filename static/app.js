@@ -666,7 +666,7 @@ const actionErrors = new Map();
 function actionErrorNode(key) {
   const entry = actionErrors.get(key);
   if (!entry) return null;
-  const dismiss = () => { actionErrors.delete(key); lastRender = null; render(); };
+  const dismiss = () => { actionErrors.delete(key); lastRender = null; lastProjectRender = null; render(); };
   const actions = [];
   if (entry.fix) actions.push(button(entry.fix.label, "button primary small", () => { actionErrors.delete(key); entry.fix.run(); }));
   actions.push(button("Dismiss", "button secondary small", dismiss));
