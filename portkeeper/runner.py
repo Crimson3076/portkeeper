@@ -94,6 +94,13 @@ def read_zip_member(path, member, limit):
     return data
 
 
+def accepted_label(item, path, member):
+    """Label of the accepted revision a ZIP member matches."""
+    limit = item.get("max_bytes", packaging.GIB)
+    match = accepted(item, digest_bytes(read_zip_member(path, member, limit), item.get("normalize")))
+    return match["label"] if match else None
+
+
 def accepted(item, digest):
     for entry in item.get("accepted", []):
         if entry.get("sha1") == digest["sha1"] or entry.get("sha256") == digest["sha256"]:
@@ -285,7 +292,8 @@ class OperationRunner:
                     dirs[:] = sorted(d for d in dirs if not (Path(directory) / d).is_symlink())
                     for name in sorted(files):
                         path = Path(directory) / name
-                        if path.is_symlink() or (expected and path.suffix.lower() != '.pkg') or (not expected and pattern and not pattern.search(name)):
+                        zipped_rom = item.get("normalize") and name.lower().endswith(".zip")
+                        if path.is_symlink() or (expected and path.suffix.lower() != '.pkg') or (not expected and pattern and not zipped_rom and not pattern.search(name)):
                             continue
                         record = {"source": "inputs", "path": path.relative_to(self.engine.input_root).as_posix(), "name": name}
                         try:
@@ -308,10 +316,16 @@ class OperationRunner:
                         if item.get("verify", "hash") != "hash":
                             entry["found"].append({**record, "accepted": "checked during the build", "size": size})
                             continue
+                        if zipped_rom:
+                            member = self.zip_match(path, item)
+                            if member:
+                                entry["found"].append({**record, "member": member, "accepted": accepted_label(item, path, member), "size": size})
+                                continue
                         try:
                             digest = digests(path, item.get("normalize"))
                         except (Invalid, OSError):
-                            entry["rejected"].append({**record, "reason": "not a readable game file"})
+                            if not zipped_rom:
+                                entry["rejected"].append({**record, "reason": "not a readable game file"})
                             continue
                         match = accepted(item, digest)
                         if match:
@@ -428,6 +442,8 @@ class OperationRunner:
             try:
                 stat_result = confined(root, binding["path"]).stat()
                 inputs[item["id"]] = [binding["path"], stat_result.st_size, stat_result.st_mtime_ns]
+                if binding.get("member"):
+                    inputs[item["id"]].append(binding["member"])
                 if ps4.input_expectation(definition, item['id']):
                     inputs[item['id']].append(stat_result.st_ctime_ns)
             except (Invalid, OSError):
