@@ -65,6 +65,35 @@ def normalize_n64(data):
     raise Invalid("The file is not an N64 ROM in .z64, .n64 or .v64 byte order")
 
 
+def digest_bytes(data, normalize=None):
+    """SHA-1 and SHA-256 of in-memory data, matching digests() for the same bytes."""
+    if normalize == "n64_big_endian":
+        data = normalize_n64(data)
+    return {"sha1": hashlib.sha1(data, usedforsecurity=False).hexdigest(), "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+
+
+def zip_members(path, limit):
+    """Regular, unencrypted files inside a ZIP that are small enough to be a game file."""
+    with zipfile.ZipFile(path) as archive:
+        infos = archive.infolist()
+        if len(infos) > MAX_MEMBERS:
+            return []
+        return [i.filename for i in infos if not i.is_dir() and not i.flag_bits & 0x1 and 0 < i.file_size <= limit]
+
+
+def read_zip_member(path, member, limit):
+    """Read one member after checking its declared size and that exactly that many bytes come out."""
+    with zipfile.ZipFile(path) as archive:
+        info = archive.getinfo(member)
+        if info.is_dir() or info.flag_bits & 0x1 or info.file_size > limit:
+            raise Invalid("That archive member cannot be used as a game file")
+        with archive.open(info) as stream:
+            data = stream.read(limit + 1)
+    if len(data) != info.file_size:
+        raise Invalid("The archive member does not match its declared size")
+    return data
+
+
 def accepted(item, digest):
     for entry in item.get("accepted", []):
         if entry.get("sha1") == digest["sha1"] or entry.get("sha256") == digest["sha256"]:
@@ -175,7 +204,8 @@ class OperationRunner:
                 names = dirs if item["kind"] == "directory" else files
                 for name in names:
                     path = Path(directory) / name
-                    if path.is_symlink() or (not expected and pattern and not pattern.search(name)):
+                    zipped_rom = item["kind"] == "file" and item.get("normalize") and name.lower().endswith(".zip")
+                    if path.is_symlink() or (not expected and pattern and not zipped_rom and not pattern.search(name)):
                         continue
                     if item['kind'] == 'directory':
                         preparation = next((op for op in definition['operations'] if op.get('tool') == 'ps4_pkg_extract' and op.get('prepared_input') == input_id), None)
@@ -202,11 +232,32 @@ class OperationRunner:
                             try:
                                 digest = digests(path, item.get("normalize"))
                             except (Invalid, OSError):
-                                continue
-                            if not accepted(item, digest):
+                                digest = None
+                            if digest is None or not accepted(item, digest):
+                                # A ROM may be zipped; look inside for a member whose hash is accepted.
+                                member = self.zip_match(path, item)
+                                if member:
+                                    found.append({"source": source, "path": path.relative_to(root_for).as_posix(), "member": member})
                                 continue
                     found.append({"source": source, "path": path.relative_to(root_for).as_posix()})
         return found
+
+    def zip_match(self, path, item):
+        """Name of the first member of a ZIP whose (normalized) hash is accepted for this input, if any."""
+        if path.suffix.lower() != ".zip" or not item.get("normalize"):
+            return None
+        limit = item.get("max_bytes", packaging.GIB)
+        try:
+            members = zip_members(path, limit)
+        except (OSError, zipfile.BadZipFile):
+            return None
+        for member in members:
+            try:
+                if accepted(item, digest_bytes(read_zip_member(path, member, limit), item.get("normalize"))):
+                    return member
+            except (Invalid, OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError):
+                continue  # Not a ROM, or unreadable: try the next member.
+        return None
 
     def find_files(self, definition):
         """For each declared input: accepted files found, and near misses with the reason they were not used."""
@@ -333,7 +384,16 @@ class OperationRunner:
                 raise Invalid(f"{item['label']} is larger than its declared limit")
             record = {"path": path, "kind": "file", "size": size}
             state = path.stat()
+            member = binding.get("member")
             record['fingerprint'] = {'path': binding['path'], 'size': state.st_size, 'mtime_ns': state.st_mtime_ns}
+            if member:
+                limit = item.get("max_bytes", packaging.GIB)
+                data = read_zip_member(path, member, limit)
+                private = ctx.workspace / "selected-inputs" / input_id
+                private.mkdir(parents=True, exist_ok=True)
+                path = private / slug(Path(member).name or "game")
+                path.write_bytes(data)
+                record.update(path=path, size=len(data))
             if item.get("verify", "hash") == "hash":
                 ctx.stage("verifying_inputs", "Checking " + item["label"])
                 digest = digests(path, item.get("normalize"))
