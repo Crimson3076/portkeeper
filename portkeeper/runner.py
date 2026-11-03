@@ -69,10 +69,10 @@ def normalize_n64(data):
 
 
 def digest_bytes(data, normalize=None):
-    """SHA-1 and SHA-256 of in-memory data, matching digests() for the same bytes."""
+    """MD5, SHA-1 and SHA-256 of in-memory data, matching digests() for the same bytes."""
     if normalize == "n64_big_endian":
         data = normalize_n64(data)
-    return {"sha1": hashlib.sha1(data, usedforsecurity=False).hexdigest(), "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+    return {"md5": hashlib.md5(data, usedforsecurity=False).hexdigest(), "sha1": hashlib.sha1(data, usedforsecurity=False).hexdigest(), "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
 
 
 def zip_members(path, limit):
