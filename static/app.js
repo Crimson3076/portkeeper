@@ -2416,6 +2416,10 @@ function draftCard(project) {
   card.append(el("p", "detail-note", "Investigate first to establish a supported plan. Direct drafting and JSON import remain available below for advanced use. Current instructions stay in use until you approve a definition; optional test builds run in a temporary workspace."));
   card.append(el("p", "field-help", "A draft uses public release facts and is checked locally. You can request a separate model review; approval and packaging tests remain separate steps."));
   if (drafting && (jobActive(drafting) || drafting.status === "failed")) card.append(el("div", "inline-actions", [statusBadge(jobActive(drafting) ? "building" : "failed", jobActive(drafting) ? "Drafting…" : "Draft failed"), el("span", "field-help", drafting.error || (drafting.logs || []).slice(-1)[0] || "")]));
+  if (drafting && drafting.status === "failed" && settings.configured) {
+    const plan = (state.proposals || []).find(item => item.kind === "investigation" && item.project_id === id && item.status === "pending_review");
+    card.append(el("div", "inline-actions draft-retry", button("Retry with corrections", "button primary small", () => retryDraftWithCorrections(id, plan), Boolean(projectActiveJob(project)) || busy.has(`draft-${id}`))), el("p", "field-help", "Runs this draft again and lets the model fix validation errors. Uses up to 3 model requests for this attempt only; your saved setting below is unchanged."));
+  }
   if (drafting?.draft_record_available) card.append(draftingRecordLink(drafting.id));
   const prompt = el("textarea", "assistant-prompt"); prompt.id = `draft-instruction-${id}`; prompt.rows = 2; prompt.placeholder = "Anything the model should know, for example “Windows only” (optional)"; prompt.value = assistantPromptDrafts.get(id) || "";
   prompt.addEventListener("input", () => assistantPromptDrafts.set(id, prompt.value));
@@ -2536,6 +2540,11 @@ function investigateProject(id) {
 }
 function queueDraftFromPlan(id, report) {
   return runAction(`draft-${id}`, `/api/projects/${encodeURIComponent(id)}/draft`, {instruction:(assistantPromptDrafts.get(id) || "").trim(), investigation_id:report.id, prepare_game_files:prepareDraftGameFiles(id), review_model:draftModelReviews.get(id) ?? false, max_calls:draftCorrectionLimits.get(id) ?? 1, test_inputs:investigationInputs.get(id) ?? false}, "Drafting from the reviewed plan. Review the checked definition before approval.");
+}
+function retryDraftWithCorrections(id, report) {
+  const body = {instruction:(assistantPromptDrafts.get(id) || "").trim(), prepare_game_files:prepareDraftGameFiles(id), review_model:draftModelReviews.get(id) ?? false, max_calls:3};
+  if (report) { body.investigation_id = report.id; body.test_inputs = investigationInputs.get(id) ?? false; }
+  return runAction(`draft-${id}`, `/api/projects/${encodeURIComponent(id)}/draft`, body, "Retrying the draft with automatic corrections.");
 }
 function draftingRecordLink(jobId) {
   const node = el("div", "model-responses");
