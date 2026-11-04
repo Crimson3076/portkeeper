@@ -667,6 +667,34 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   assert(d.getElementById('recomp-catalog-status').textContent.includes('not saved yet'));
   assert(d.querySelector('#recomp-catalog-status .error').textContent.includes('Could not refresh'),'The last error is shown');
   dom.window.close();
+  // Game page "About this game" card from catalog metadata.
+  {
+    const info={name:'Banjo Recompiled',display_name:'Banjo-Kazooie Recompiled',url:'https://recomplauncher.com/game/banjo',blurb:'A native port.',needs:'Your own copy of Banjo-Kazooie',features:['60 fps'],tags:['N64'],game:'Banjo-Kazooie',license:'MIT',version:'v1.2',images:{hero:'/api/discovery/image/banjo/hero',logo:'/api/discovery/image/banjo/logo'},about:{summary:'Summary text',genres:['Platformer'],rating:85,developer:'Rare'}};
+    const catalogFixture=JSON.parse(JSON.stringify(fixture));
+    const named=catalogFixture.projects[0], plain=catalogFixture.projects[1];
+    named.recomp_catalog=info;delete named.metadata.game;named.name='BanjoRecomp/BanjoRecomp';
+    plain.recomp_catalog={name:'Minimal Port',url:'https://recomplauncher.com/game/minimal'};
+    Object.assign(catalogFixture.projects[2].metadata,{game:'Explicit Title',filename_prefix:'Explicit',igdb_id:9,romm_rom_id:109});catalogFixture.projects[2].recomp_catalog=info; // explicit game title must win
+    const open=async(index,name)=>{const dm=await create(null,false,catalogFixture);const doc=dm.window.document;[...doc.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes(name)).click();await tick();return dm;};
+    let cdom=await open(0,'Banjo-Kazooie Recompiled');let cd=cdom.window.document;
+    let card=cd.querySelector('.recomp-card');
+    assert(card,'A matched catalog entry renders the About card');
+    assert(card.querySelector('.recomp-hero').getAttribute('src').endsWith('/hero')&&card.querySelector('.recomp-logo'),'Hero and logo render');
+    ['A native port.','You need: Banjo-Kazooie','60 fps','Summary text','85 / 100','Rare','MIT','v1.2'].forEach(t=>assert(card.textContent.includes(t),`Card shows ${t}`));
+    assert(card.querySelector('a[href="https://recomplauncher.com/game/banjo"]'),'Credit links to Recomp Launcher');
+    cdom.window.close();
+    cdom=await open(1,'Bloodborne');cd=cdom.window.document;
+    card=cd.querySelector('.recomp-card');
+    assert(card&&card.textContent.includes('Minimal Port'),'Optional metadata may be absent');
+    assert(!card.querySelector('.recomp-hero')&&!card.querySelector('.recomp-logo')&&!card.querySelector('.detail-facts'),'No artwork or facts when none are supplied');
+    cdom.window.close();
+    cdom=await create(null,false,catalogFixture);cd=cdom.window.document;
+    const titles=[...cd.querySelectorAll('.workspace-game-button')].map(n=>n.textContent);
+    assert(titles.some(t=>t.includes('Banjo-Kazooie Recompiled')),'The catalog title replaces a repo-style name');
+    assert(titles.some(t=>t.includes('Explicit Title')),'An explicit game title is preserved over the catalog title');
+    cdom.window.close();
+    const noCatalog=await create();assert(!noCatalog.window.document.querySelector('.recomp-card'),'No card without catalog data');noCatalog.window.close();
+  }
   dom=await create(null,false,{...fixture,projects:[],artifacts:[]});assert(dom.window.document.getElementById('project-grid').textContent.includes('first game'));dom.window.close();
   // First-run guidance: broker explanation, checklist, review panel, inline progress.
   dom=await create();w=dom.window;d=w.document;
