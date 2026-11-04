@@ -63,7 +63,9 @@ def supported_hashes(profile_id="shipwright"):
 def ensure_release(profile_id, version, commit=None):
     record = profile(profile_id)
     if str(version).removeprefix("v") != record["tested_release"]:
-        raise Invalid("This release has been preserved, but its profile has not been tested. Build the verified 9.3.0 release or update the profile first.")
+        shown = str(version).removeprefix("v")
+        raise Invalid(f"Version {shown} is out and hasn't been tested yet. {record['tested_release']} is the version that works. "
+                      f"Build {record['tested_release']}, or update the build profile first.")
     if commit is not None and commit != record["source_commit"]:
         raise Invalid("Release source commit differs from the verified profile; build is blocked")
     return record

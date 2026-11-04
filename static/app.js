@@ -17,7 +17,7 @@ let state = { projects: [], jobs: [], artifacts: [], notifications: [], profiles
 let recipes = [];
 let profiles = [];
 let activityView = "jobs";
-let librarySearch = "", libraryPlatform = "", libraryStage = "";
+let librarySearch = "", libraryPlatform = "", libraryStage = "", libraryHidden = false, libraryScroll = null;
 let libraryLayout = ["workspace", "collection", "list"].includes(readPreference("portkeeper.library-layout")) ? readPreference("portkeeper.library-layout") : "workspace";
 let workspaceProjectId = readPreference("portkeeper.selected-game");
 const rommImports = new Map();
@@ -222,25 +222,59 @@ function repoLink(repo) {
   if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo || "")) { node.href = `https://github.com/${repo}`; node.target = "_blank"; node.rel = "noopener noreferrer"; }
   return node;
 }
-function gameInitials(project) { return String(project.name || "P").split(/\s+/).map((word) => word[0]).filter(Boolean).slice(0, 2).join("").toUpperCase() || "P"; }
+function plural(count, one, many) { return count === 1 ? one : many; }
+// The title the app knows (from the linked game identity) beats the repository-style project name.
+function gameTitle(project) { const game = project.metadata?.game; return typeof game === "string" && game.trim() ? game.trim() : project.name; }
+// An explicit choice always wins; otherwise a name ending in "test" or "acceptance" is treated as a test game.
+function isHiddenGame(project) { return typeof project.hidden === "boolean" ? project.hidden : [project.name, gameTitle(project)].some((name) => /\b(test|acceptance|fixture)\s*$/i.test(String(name || ""))); }
+function setHidden(project, hidden) { return runAction(`hidden-${project.id}`, `/api/projects/${encodeURIComponent(project.id)}/hidden`, { hidden }, hidden ? "Game hidden from the main library. Use Include hidden to see it." : "Game is back in the main library."); }
+function gameInitials(project) { return String(gameTitle(project) || "P").split(/\s+/).map((word) => word[0]).filter(Boolean).slice(0, 2).join("").toUpperCase() || "P"; }
 function coverPlaceholder(project, className) {
   const node = el("span", `cover-placeholder ${className}`, gameInitials(project));
-  node.setAttribute("role", "img"); node.setAttribute("aria-label", `${project.name} (no cover art)`);
+  node.setAttribute("role", "img"); node.setAttribute("aria-label", `${gameTitle(project)} (no cover art)`);
   return node;
 }
 // A user-chosen cover wins; otherwise the server uses the linked or title-matched RomM entry and caches it.
 // With placeholder set, a game without a cover gets a neutral tile with its initials instead of nothing.
+const COVER_MISS_KEY = "portkeeper.cover-misses", COVER_MISS_MS = 60 * 60 * 1000;
+let coverMisses = null;
+function loadCoverMisses() {
+  if (coverMisses) return coverMisses;
+  coverMisses = new Map();
+  try { Object.entries(JSON.parse(readPreference(COVER_MISS_KEY) || "{}")).forEach(([key, at]) => { if (Number.isFinite(at)) coverMisses.set(key, at); }); } catch (_) { /* start empty */ }
+  return coverMisses;
+}
+function coverMissed(key) {
+  const at = loadCoverMisses().get(key);
+  if (at !== undefined && Date.now() - at < COVER_MISS_MS) return true;
+  if (at !== undefined) coverMisses.delete(key);
+  return false;
+}
+// A missing cover is remembered for an hour, or until the key changes (a new RomM match or chosen artwork).
+function rememberCoverMiss(key) {
+  const misses = loadCoverMisses(); misses.set(key, Date.now());
+  misses.forEach((at, other) => { if (Date.now() - at >= COVER_MISS_MS) misses.delete(other); });
+  savePreference(COVER_MISS_KEY, JSON.stringify(Object.fromEntries(misses)));
+}
 function projectCover(project, className, placeholder = false, onLoad = null) {
   const metadata = project.metadata || {};
   const custom = metadata.cover_policy === "custom" && metadata.url_cover;
   if (!custom && !metadata.romm_rom_id && (project.demo || !rommReady())) return placeholder ? coverPlaceholder(project, className) : null;
-  const image = el("img", className);
   const version = custom ? `art=${encodeURIComponent(metadata.url_cover.slice(-80))}` : `rom=${encodeURIComponent(metadata.romm_rom_id || "match")}`;
+  const missKey = `${project.id}?${version}`;
+  if (coverMissed(missKey)) return placeholder ? coverPlaceholder(project, className) : null;
+  const image = el("img", className);
+  image.dataset.coverKey = missKey;
   image.src = `/api/projects/${encodeURIComponent(project.id)}/cover?${version}`;
-  image.alt = `${project.name} cover art`;
+  image.alt = `${gameTitle(project)} cover art`;
   image.loading = "lazy"; image.decoding = "async";
   if (onLoad) image.addEventListener("load", () => onLoad(custom ? "user" : "romm"), {once: true});
-  image.addEventListener("error", () => { if (placeholder) image.replaceWith(coverPlaceholder(project, className)); else image.remove(); }, {once: true});
+  image.addEventListener("error", () => {
+    rememberCoverMiss(missKey);
+    // Other copies of this cover already on the page do not need to wait for their own 404.
+    document.querySelectorAll("img[data-cover-key]").forEach((other) => { if (other !== image && other.dataset.coverKey === missKey) other.dispatchEvent(new Event("error")); });
+    if (placeholder) image.replaceWith(coverPlaceholder(project, className)); else image.remove();
+  }, {once: true});
   return image;
 }
 function projectSource(project) { return project.demo ? el("span", "repo-link", "Synthetic sample files") : repoLink(project.repo); }
@@ -257,7 +291,7 @@ function libraryGames() {
     const related = relatedProjects(project); related.forEach((item) => seen.add(item.id));
     games.push(related.find((item) => !/ windows$/i.test(item.name)) || project);
   });
-  return games.sort((a,b) => a.name.localeCompare(b.name));
+  return games.sort((a,b) => gameTitle(a).localeCompare(gameTitle(b)));
 }
 function projectArtifacts(id) {
   const ids = new Set(relatedProjects(projectById(id)).map((project) => String(project.id)));
@@ -288,13 +322,14 @@ function downloadDetails(artifact, rom) {
   const revision = details.package_revision;
   const revisionLabel = typeof revision === "string" && /^nvidiafix\d+$/.test(revision) ? `Portkeeper fix ${revision.match(/\d+$/)[0]}` : Number.isInteger(revision) ? `Package revision ${revision}${details.definition ? ` · definition ${details.definition.id} r${details.definition.revision}` : ""}` : revision;
   const section = el("div", "download-details");
-  section.append(el("p", "package-revision", `${version ? `Upstream ${version}` : "Upstream version: Unknown"} · ${revisionLabel || "Package revision: Unknown"}`));
+  const known = [version ? `Upstream ${version}` : "", revisionLabel || ""].filter(Boolean);
+  if (known.length) section.append(el("p", "package-revision", known.join(" · ")));
   const text = value => typeof value === "string" ? value : Array.isArray(value) ? value.filter(item => typeof item === "string").join("; ") : "";
   const summary = rom?.summary || "";
   const requirements = text(details.requirements) || text(details.dependencies) || summary.split(/(?<=[.!?])\s+/).filter(sentence => /\b(requires?|needs?|writable|Windows 10|Python 3|Vulkan 1)\b/i.test(sentence)).join(" ");
   const changes = text(details.changes) || (revision ? text(details.validation) || review?.notes : "");
   const issues = text(details.known_issues) || text(details.limitations) || (review?.result === "failed" ? review.notes : "");
-  [["What changed", changes], ["Requirements", requirements], ["Known issues", issues]].forEach(([label, value]) => section.append(el("p", "download-detail-line", [el("strong", "", `${label}: `), value || "Unknown — not recorded for this download."])));
+  [["What changed", changes], ["Requirements", requirements], ["Known issues", issues]].forEach(([label, value]) => { if (value) section.append(el("p", "download-detail-line", [el("strong", "", `${label}: `), value])); });
   const fileNames = [...Object.keys(details.files || {}), ...(details.recipe?.expected_files || [])];
   const launcher = fileNames.find(name => typeof name === "string" && /(?:^|\/)(?:launch[^/]*\.(?:sh|cmd|bat))$/i.test(name));
   const launch = text(details.launch_instructions) || text(details.launch?.instructions) || (launcher ? `Extract the complete ZIP to a writable folder, then run ${launcher}. See the included README for saves, settings and dependencies.` : "") || (rom?.summary || "").split(/(?<=[.!?])\s+/).filter(sentence => /\b(extract|run|saves|settings)\b/i.test(sentence)).join(" ");
@@ -457,13 +492,25 @@ function renderLibrary() {
   const workspaceActive = libraryLayout === "workspace" && ["library", "project"].includes(route.page);
   const retainedMain = workspaceActive && projectPageElement.parentElement.classList.contains("workspace-game-main") && projectPageElement.parentElement.parentElement === grid ? projectPageElement.parentElement : null;
   if (!retainedMain) restoreProjectPage();
-  const games = libraryGames();
+  const everyGame = libraryGames();
+  const hiddenGames = everyGame.filter(isHiddenGame);
+  // A hidden game stays reachable while it is open, so hiding it does not yank the page away.
+  const games = libraryHidden ? everyGame : everyGame.filter((game) => !isHiddenGame(game) || (route.page === "project" && relatedProjects(game).some((member) => member.id === route.projectId)));
+  $("library-hidden-field").hidden = !hiddenGames.length && !libraryHidden;
+  $("library-hidden-count").textContent = hiddenGames.length ? `(${hiddenGames.length})` : "";
+  $("library-hidden").checked = libraryHidden;
   $("library-page").dataset.layout = libraryLayout;
+  // On a phone only one of the list and the selected game shows; the route decides which.
+  $("library-page").dataset.mobileView = route.page === "project" ? "game" : "list";
   games.forEach((project) => { void loadImports(project); });
   $("summary-projects").textContent = games.length;
-  $("summary-artifacts").textContent = games.reduce((count, project) => count + new Set([...projectArtifacts(project.id).map((artifact) => artifact.target), ...importedPackages(project).map((rom) => rom.platform_slug === "win" ? "windows" : "linux")]).size, 0);
+  const platformDownloads = games.reduce((count, project) => count + new Set([...projectArtifacts(project.id).map((artifact) => artifact.target), ...importedPackages(project).map((rom) => rom.platform_slug === "win" ? "windows" : "linux")]).size, 0);
+  $("summary-artifacts").textContent = platformDownloads;
+  $("summary-artifacts-label").textContent = plural(platformDownloads, "platform download", "platform downloads");
   const attention = games.filter(gameNeedsAttention).length;
   $("summary-attention").textContent = attention;
+  $("summary-attention-label").textContent = plural(attention, "needs", "need");
+  $("summary-projects-label").textContent = plural(games.length, "game", "games");
   $("attention-summary").classList.toggle("attention-active", attention > 0);
   if (!retainedMain) grid.replaceChildren(); grid.className = `project-grid layout-${libraryLayout}`;
   if (workspaceActive) $("library-page").hidden = false;
@@ -481,7 +528,7 @@ function renderLibrary() {
   const matches = games.filter((project) => {
     const hasPackages = hasDownloads(project);
     const needsAttention = gameNeedsAttention(project);
-    return `${project.name} ${project.repo || ""}`.toLowerCase().includes(librarySearch.toLowerCase()) && (!libraryPlatform || gameTargets(project).includes(libraryPlatform)) && (!libraryStage || (libraryStage === "packages" ? hasPackages : libraryStage === "source" ? project.recipe?.mode === "capture" : needsAttention));
+    return `${gameTitle(project)} ${project.name} ${project.repo || ""}`.toLowerCase().includes(librarySearch.toLowerCase()) && (!libraryPlatform || gameTargets(project).includes(libraryPlatform)) && (!libraryStage || (libraryStage === "packages" ? hasPackages : libraryStage === "source" ? project.recipe?.mode === "capture" : needsAttention));
   });
   $("library-results").textContent = `${matches.length} of ${games.length} games`;
   if (!matches.length && retainedMain) { restoreProjectPage(); grid.replaceChildren(); }
@@ -496,11 +543,14 @@ function renderLibrary() {
       const choose = button("", "workspace-game-button", () => { workspaceProjectId = project.id; savePreference("portkeeper.selected-game", project.id); navigateProject(project.id); });
       choose.setAttribute("aria-pressed", String(project.id === selected.id));
       choose.append(projectCover(project, "workspace-game-cover", true));
-      choose.append(el("span", "", [el("strong", "", project.name), el("small", "", gameAvailability(project))]));
+      choose.append(el("span", "", [el("strong", "", gameTitle(project)), el("small", "", gameAvailability(project))]));
       sidebar.append(choose);
     });
     if (retainedMain) grid.querySelector(".workspace-game-list").replaceWith(sidebar);
-    else grid.append(sidebar, el("div", "workspace-game-main", projectPageElement));
+    else {
+      const back = el("a", "mobile-back", "← All games"); back.href = "#library";
+      grid.append(sidebar, el("div", "workspace-game-main", [back, projectPageElement]));
+    }
     projectPageElement.hidden = false; renderProject(); return;
   }
   projectPageElement.hidden = route.page !== "project";
@@ -508,7 +558,7 @@ function renderLibrary() {
     const artifacts = projectArtifacts(project.id);
     const newest = artifacts[0];
     const good = artifacts.find((artifact) => knownGood(artifact, project));
-    const title = button(project.name, "project-name", () => navigateProject(project.id));
+    const title = button(gameTitle(project), "project-name", () => navigateProject(project.id));
     const avatar = el("div", "project-avatar", gameInitials(project));
     const cover = projectCover(project, "project-cover-thumb");
     if (cover) {
@@ -660,9 +710,9 @@ function render() {
   // Moving the game pane while rebuilding the library also drops browser focus.
   const content = $("project-content"), active = document.activeElement;
   const focusedDisclosure = content.contains(active) && active.tagName === "SUMMARY" ? {view: content.dataset.viewKey, key: active.parentElement.dataset.disclosureKey} : null;
-  $("nav-project-count").textContent = libraryGames().length;
+  $("nav-project-count").textContent = libraryGames().filter((game) => libraryHidden || !isHiddenGame(game)).length;
   const unread = state.notifications.filter(notificationUnread).length;
-  [$("nav-notification-count"), $("inbox-count")].forEach((node) => { node.textContent = unread; node.hidden = !unread; });
+  $("inbox-count").textContent = unread; $("inbox-count").hidden = !unread;
   renderLibrary(); renderActivity(); renderSettings();
   if (route.page === "project") renderProject();
   if ($("inbox-dialog").open) renderNotifications($("inbox-content"));
@@ -776,7 +826,7 @@ function renderProject() {
   document.querySelectorAll("[data-project-tab]").forEach((node) => { const selected = node.dataset.projectTab === route.tab; node.classList.toggle("selected", selected); node.setAttribute("aria-selected", String(selected)); node.tabIndex = selected ? 0 : -1; });
   content.setAttribute("aria-labelledby", `project-${route.tab}-tab`);
   if (!project) { heading.append(el("div", "", [el("h1", "", "Game unavailable"), el("p", "", "Return to the library to choose a game.")])); return; }
-  const title = el("div", "project-title-detail", [el("h1", "", project.name), projectSource(project), el("div", "project-targets", gameTargets(project).map(targetPill))]);
+  const title = el("div", "project-title-detail", [el("h1", "", gameTitle(project)), projectSource(project), el("div", "project-targets", gameTargets(project).map(targetPill))]);
   const cover = projectCover(project, "project-hero-cover", true, (source) => {
     if (source !== "romm" || !project.id) return;
     const note = document.getElementById("cover-source-note");
@@ -1363,6 +1413,9 @@ function renderAdvanced(project, content, openJobs) {
   if (project.packaging && !project.demo && !["recipe", "profile"].includes(project.packaging.runner)) stack.append(draftCard(project));
   stack.append(packagingInstructions(project));
   stack.append(retentionCard(project), preservationCard(project));
+  stack.append(el("section", "detail-card", [el("h2", "", "Library listing"), el("p", "field-help", `Project name: ${project.name}${project.repo ? ` · Repository: ${project.repo}` : ""}`),
+    el("p", "field-help", "Test games are hidden from the main library. Nothing is deleted, built or published differently."),
+    button(isHiddenGame(project) ? "Show in the main library" : "Mark as test / hidden game", "button secondary small", () => setHidden(project, !isHiddenGame(project)), busy.has(`hidden-${project.id}`))]));
   stack.append(button("Edit game metadata link", "button secondary", () => openMetadata(project.id)));
   if (project.packaging?.runner === "recipe") {
     const assistant = el("section", "detail-card", [el("h2", "", "Draft packaging instructions with Ollama"), el("p", "detail-note", project.profile ? "A local model can draft notes for this verified profile. Its reviewed build instructions remain fixed; proposals are reviewed before saving." : "Describe a required change or a build error. A local model can draft a proposal; you review the JSON before saving it.")]);
@@ -2219,19 +2272,19 @@ const BROKER_EXPLANATION = "A worker broker is a separate, isolated service that
 function gameChecklist(project, proposal, packages, inRomm, untested) {
   const approved = Boolean((project.packaging && project.packaging.runner !== "capture") || project.profile || project.autonomous_recipe || project.demo);
   const steps = [
-    ["saved", "Saved", Boolean(project.latest_version || project.capture_id)],
-    ["drafted", "Drafted", Boolean(proposal) || approved],
-    ["approved", "Approved", approved],
-    ["built", "Built", packages.length > 0],
-    ["tested", "Tested", packages.length > 0 && !untested.length],
-    ["in_romm", "In RomM", packages.length > 0 && inRomm.length === packages.length]];
+    ["saved", "Downloaded", Boolean(project.latest_version || project.capture_id), "The game's release has been downloaded and kept safe."],
+    ["drafted", "Setup written", Boolean(proposal) || approved, "Steps for turning the release into a playable download have been written."],
+    ["approved", "Approved", approved, "You have reviewed those steps and accepted them."],
+    ["built", "Built", packages.length > 0, "A playable download has been made for each platform."],
+    ["tested", "Tested", packages.length > 0 && !untested.length, "Someone has started or played each download and recorded how it went."],
+    ["in_romm", "In RomM", packages.length > 0 && inRomm.length === packages.length, "The downloads have been sent to your RomM library."]];
   const current = steps.findIndex(([, , done]) => !done);
   const list = el("ol", "game-checklist");
   list.setAttribute("aria-label", "Progress for this game");
-  steps.forEach(([key, label, done], index) => {
+  steps.forEach(([key, label, done, tip], index) => {
     const state_ = done ? "done" : index === current ? "current" : "todo";
     const item = el("li", "", [el("span", "mark", done ? "\u2713" : index === current ? "\u2192" : "\u25cb"), label]);
-    item.dataset.step = key; item.dataset.state = state_;
+    item.dataset.step = key; item.dataset.state = state_; item.title = tip;
     if (state_ === "current") item.setAttribute("aria-current", "step");
     list.append(item);
   });
@@ -3024,8 +3077,15 @@ document.querySelectorAll('[role="tablist"]').forEach((list) => list.addEventLis
   if (event.key === "End") next = tabs.length - 1;
   if (next !== null) { event.preventDefault(); tabs[next].focus(); tabs[next].click(); }
 }));
-window.addEventListener("hashchange", () => { renderRoute(); lastRender = null; render(); window.scrollTo(0, 0); });
-[ ["library-search", "input"], ["library-platform", "change"], ["library-stage", "change"] ].forEach(([id, event]) => $(id).addEventListener(event, () => { librarySearch = $("library-search").value.trim(); libraryPlatform = $("library-platform").value; libraryStage = $("library-stage").value; renderLibrary(); }));
+window.addEventListener("hashchange", () => {
+  // Opening a game starts at its top; coming back to the list returns to where the list was left.
+  const before = route.page, saved = window.scrollY;
+  renderRoute(); lastRender = null; render();
+  if (before === "library" && route.page === "project") libraryScroll = saved;
+  window.scrollTo(0, route.page === "library" && before === "project" && libraryScroll !== null ? libraryScroll : 0);
+  if (route.page !== "project") libraryScroll = route.page === "library" ? libraryScroll : null;
+});
+[ ["library-search", "input"], ["library-platform", "change"], ["library-stage", "change"], ["library-hidden", "change"] ].forEach(([id, event]) => $(id).addEventListener(event, () => { librarySearch = $("library-search").value.trim(); libraryPlatform = $("library-platform").value; libraryStage = $("library-stage").value; libraryHidden = $("library-hidden").checked; renderLibrary(); }));
 renderRoute(); render();
 Promise.allSettled([refresh(), loadCatalog()]);
 setInterval(() => { if (!document.hidden) refresh(); }, 3000);

@@ -15,11 +15,12 @@ const project = (n,name,prefix,profile=null) => ({id:id(n),name,repo:'example/ga
 const fixture = {projects:[project(1,'Ship of Harkinian','Ship', 'shipwright'),project(2,'Bloodborne','Bloodborne'),project(3,'Bloodborne Windows','Bloodborne')],artifacts:[{id:id(4),project_id:id(1),version:'9.3',target:'linux',sha256:'build-signature',validation_level:'launch_checked',created_at:'2026-10-11T12:00:00Z'}],jobs:[],notifications:[],summary:{projects:3,artifacts:1},settings:{},runner:{},romm:{url:'https://romm.example',has_token:true,configured:true,connected:true},assistant:{}};
 const imports = prefix => ['linux','win'].map((platform,n) => ({id:200+n+(prefix==='Bloodborne'?10:0),name:prefix+' portable',platform_slug:platform,summary:prefix==='Bloodborne'&&platform==='linux'?'Experimental: Linux startup failed.':'Testing notes retained',package_signature:prefix+'-'+platform,files:[{name:prefix+'-v1-'+platform+'.zip'}]}));
 const requests=[];
-async function create(saved, storageBlocked=false, source=fixture) {
+async function create(saved, storageBlocked=false, source=fixture, prefs={}) {
   const errors=[];
   const dom=new JSDOM(fs.readFileSync(path.join(base,'static/index.html'),'utf8'),{url:'http://localhost:8787',runScripts:'outside-only',pretendToBeVisual:true});
   const w=dom.window;w.scrollTo=()=>{};w.setInterval=callback=>{w.pollRefresh=callback;return 0;};w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;};
   if(saved)w.localStorage.setItem('portkeeper.library-layout',saved);
+  Object.entries(prefs).forEach(([key,value])=>w.localStorage.setItem(key,value));
   if(storageBlocked)Object.defineProperty(w,'localStorage',{get(){throw new Error('Storage unavailable');}});
   w.addEventListener('error',e=>errors.push(e.error));
   w.fetch=async (endpoint, options={})=>{
@@ -798,5 +799,109 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   d.querySelector('.project-hero-cover').dispatchEvent(new w.Event('load'));
   assert(d.getElementById('cover-source-note').hidden,'A user-chosen cover is never labelled as RomM');
   dom.window.close();
+  // Issue #82: phone list/detail, hidden games, unknown rows, cover misses, pluralization, one count, step labels.
+  const romm={url:'https://romm.example',has_token:true,configured:true,connected:true};
+  const lib=(n,name,extra={})=>({id:id(n),name,repo:'e/'+n,targets:['linux'],recipe:{mode:'capture'},status:'archived',metadata:{},...extra});
+  const mixed=blank({romm,no_imports:true,assistant:{configured:true},projects:[
+    lib(31,'Zelda'),lib(32,'Starship test'),lib(33,'sm64coopdx automation acceptance'),lib(34,'gow3_pc',{metadata:{game:'God of War III'}}),
+    lib(35,'Manual test',{hidden:false}),lib(36,'Plain',{hidden:true})]});
+  dom=await create(null,false,mixed);w=dom.window;d=w.document;
+  const listed=()=>[...d.querySelectorAll('.workspace-game-button strong')].map(n=>n.textContent);
+  assert.deepStrictEqual(listed(),['God of War III','Manual test','Zelda'],'Test games are hidden by default; an explicit choice wins; the display title replaces the slug');
+  assert(!d.getElementById('library-hidden-field').hidden&&d.getElementById('library-hidden-count').textContent==='(3)','Include hidden shows how many are hidden');
+  assert.equal(d.getElementById('summary-projects').textContent,'3');
+  const includeHidden=d.getElementById('library-hidden');includeHidden.checked=true;includeHidden.dispatchEvent(new w.Event('change'));
+  assert.deepStrictEqual(listed(),['God of War III','Manual test','Plain','sm64coopdx automation acceptance','Starship test','Zelda'],'Include hidden brings every game back');
+  assert.equal(mixed.projects.length,6,'Nothing is deleted');
+  d.querySelector('.workspace-game-button').click();await tick();
+  assert(d.getElementById('project-heading').textContent.includes('God of War III'),'The game page uses the display title');
+  w.location.hash='#project/'+id(36)+'/advanced';await tick();await tick();
+  const advanced=d.getElementById('project-content').textContent;
+  assert(advanced.includes('Project name: Plain'),'The project name stays in Advanced');
+  const hideButton=[...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Show in the main library');
+  assert(hideButton,'A hidden game offers to come back');
+  hideButton.click();await tick();
+  dom.window.close();
+  // Hiding calls the API and does not remove the game.
+  const hideCalls=[];
+  dom=await create(null,false,mixed);w=dom.window;d=w.document;
+  const realFetch=w.fetch;w.fetch=async(endpoint,options={})=>{if(endpoint.endsWith('/hidden')){hideCalls.push({endpoint,body:JSON.parse(options.body)});return {ok:true,status:200,json:async()=>({})};}return realFetch(endpoint,options);};
+  w.location.hash='#project/'+id(31)+'/advanced';await tick();await tick();
+  [...d.querySelectorAll('#project-content button')].find(n=>n.textContent==='Mark as test / hidden game').click();await tick();
+  assert.deepStrictEqual(hideCalls,[{endpoint:`/api/projects/${id(31)}/hidden`,body:{hidden:true}}]);
+  dom.window.close();
+  // Phone: the route decides whether the list or the game shows, and Back returns to the same scroll position.
+  dom=await create(null,false,mixed);w=dom.window;d=w.document;
+  const scrolls=[];w.scrollTo=(x,y)=>scrolls.push(y);
+  assert.equal(d.getElementById('library-page').dataset.mobileView,'list','The library route shows the list');
+  const back=d.querySelector('.workspace-game-main .mobile-back');
+  assert(back&&back.textContent==='← All games'&&back.getAttribute('href')==='#library','A visible All games control sits above the game');
+  Object.defineProperty(w,'scrollY',{value:640,configurable:true});
+  d.querySelector('.workspace-game-button').click();await tick();await tick();
+  assert.equal(d.getElementById('library-page').dataset.mobileView,'game','Opening a game shows the game, not the list');
+  assert.equal(scrolls.at(-1),0,'and starts at its top');
+  Object.defineProperty(w,'scrollY',{value:0,configurable:true});
+  w.location.hash='#library';await tick();await tick();
+  assert.equal(d.getElementById('library-page').dataset.mobileView,'list');
+  assert.equal(scrolls.at(-1),640,'Back to the list restores its scroll position');
+  assert(stylesheet.includes('[data-mobile-view="game"] .workspace-game-list{display:none}')&&stylesheet.includes('[data-mobile-view="list"] .workspace-game-main{display:none}'),'Narrow widths hide whichever of list and game is not chosen');
+  assert(/@media\(max-width:800px\)\{[^@]*\.mobile-back\{display:inline-flex/.test(stylesheet.replace(/\n/g,'')),'The All games control only shows on phones');
+  dom.window.close();
+  // Unknown rows are hidden; a block with nothing known is not shown.
+  const known=JSON.parse(JSON.stringify(fixture));
+  known.artifacts[0].manifest={version:'9.3',package_revision:2,changes:'Fixed the launcher.'};
+  dom=await create(null,false,known);w=dom.window;d=w.document;
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Ship')).click();await tick();await tick();
+  let details=d.querySelector('.download-details').textContent;
+  assert(details.includes('Package revision 2')&&details.includes('What changed: Fixed the launcher.'),'Known values still show: '+details);
+  assert(!/Unknown/.test(details)&&!details.includes('Requirements:')&&!details.includes('Known issues:'),'Unknown rows are hidden: '+details);
+  dom.window.close();
+  const blankDetails=JSON.parse(JSON.stringify(fixture));blankDetails.artifacts[0].version='';
+  dom=await create(null,false,blankDetails);w=dom.window;d=w.document;
+  [...d.querySelectorAll('.workspace-game-button')].find(n=>n.textContent.includes('Ship')).click();await tick();await tick();
+  assert(!/Unknown|not recorded for this download/.test(d.querySelector('.download-details').textContent)&&!d.querySelector('.package-revision'),'With nothing known there is no revision line and no placeholder rows');
+  dom.window.close();
+  // Missing covers are requested once, remembered, and shown as a placeholder without re-requesting.
+  const missing=blank({romm,no_imports:true,assistant:{configured:true},projects:[lib(41,'Perfect Dark')]});
+  dom=await create(null,false,missing);w=dom.window;d=w.document;
+  let tileCovers=()=>[...d.querySelectorAll('img[src*="/cover?"]')];
+  assert.equal(tileCovers().length>0,true,'The first load asks for the cover');
+  tileCovers().forEach(n=>n.dispatchEvent(new w.Event('error')));
+  assert.equal(tileCovers().length,0,'A miss is replaced by the placeholder');
+  assert(w.localStorage.getItem('portkeeper.cover-misses').includes(id(41)),'The miss is remembered across page loads');
+  w.pollRefresh?.();w.location.hash='#project/'+id(41)+'/overview';await tick();await tick();
+  assert.equal(tileCovers().length,0,'Re-rendering and opening the game do not request it again');
+  assert(d.querySelector('.project-hero-cover.cover-placeholder'),'The game page shows the placeholder');
+  const misses=JSON.parse(w.localStorage.getItem('portkeeper.cover-misses'));
+  const missKey=Object.keys(misses)[0];
+  dom.window.close();
+  // A miss older than an hour is retried; a fresh one is not.
+  dom=await create(null,false,missing,{'portkeeper.cover-misses':JSON.stringify({[missKey]:Date.now()-5*60*1000})});w=dom.window;d=w.document;
+  assert.equal(tileCovers().length,0,'A recent miss from an earlier page load is not requested again');
+  assert(d.querySelector('.workspace-game-cover.cover-placeholder'),'and shows the placeholder straight away');
+  dom.window.close();
+  dom=await create(null,false,missing,{'portkeeper.cover-misses':JSON.stringify({[missKey]:Date.now()-2*60*60*1000})});w=dom.window;d=w.document;
+  assert(tileCovers().length>0,'A miss older than an hour is tried again');
+  dom.window.close();
+  // Pluralization and a single notification count.
+  const one=blank({romm,no_imports:true,assistant:{configured:true},projects:[lib(51,'Solo',{last_error:'boom'})],notifications:[{id:'n1',title:'x',unread:true},{id:'n2',title:'y',unread:true}]});
+  dom=await create(null,false,one);w=dom.window;d=w.document;
+  assert.equal(d.getElementById('attention-summary').textContent.trim(),'1 needs attention','One game needs attention');
+  assert.equal(d.getElementById('summary-projects-label').textContent,'game','1 game is singular');assert.equal(d.getElementById('summary-artifacts-label').textContent,'platform downloads','0 downloads is plural');
+  assert(!d.getElementById('nav-notification-count'),'The sidebar no longer repeats the inbox count');
+  assert.equal(d.getElementById('inbox-count').textContent,'2','The count lives in the Inbox button only');
+  dom.window.close();
+  const two=blank({romm,no_imports:true,assistant:{configured:true},projects:[lib(52,'A',{last_error:'x'}),lib(53,'B',{last_error:'y'})]});
+  dom=await create(null,false,two);w=dom.window;d=w.document;
+  assert.equal(d.getElementById('attention-summary').textContent.trim(),'2 need attention');
+  dom.window.close();
+  // Plain-language progress steps with a tooltip each.
+  dom=await create();w=dom.window;d=w.document;
+  d.querySelector('.workspace-game-button').click();await tick();await tick();
+  const steps=[...d.querySelectorAll('.game-checklist li')];
+  assert.deepStrictEqual(steps.map(n=>n.textContent.replace(/^[^A-Za-z]+/,'')),['Downloaded','Setup written','Approved','Built','Tested','In RomM']);
+  assert(steps.every(n=>n.title.length>10),'Every step explains itself in a tooltip');
+  dom.window.close();
+  assert(stylesheet.includes('@media(min-width:761px){.app-shell{background:linear-gradient'),'The sidebar colour fills the full page height');
   console.log('UI layouts passed: add a game, next step, drafting settings, default workspace, saved preferences, collection/list switching, grouped platforms, RomM imports, correct counts, game selection, deep links, filters, empty state and blocked storage.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
