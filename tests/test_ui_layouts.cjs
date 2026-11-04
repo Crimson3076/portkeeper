@@ -69,7 +69,7 @@ async function create(saved, storageBlocked=false, source=fixture, prefs={}) {
     else if(endpoint.startsWith('/api/github/lookup?'))payload=source.platform_lookup || {repository:'example/game',version:'v1',assets:['game-linux.zip','game-windows.zip'],platforms:['linux','windows'],platform_detection:{suggested_targets:['linux','windows'],platforms:[{id:'linux',label:'Linux',packaging_supported:true,evidence:[{kind:'release',detail:'game-linux.zip',source:'Release files'}]},{id:'windows',label:'Windows',packaging_supported:true,evidence:[{kind:'documentation',detail:'Windows build instructions',source:'README.md'}]},{id:'android',label:'Android',packaging_supported:false,evidence:[{kind:'documentation',detail:'Android build instructions',source:'README.md'}]}]}};
     else if(endpoint==='/api/catalog/games')payload={games:source.catalog_games || [{id:'banjo-recompiled',name:'Banjo Recompiled',targets:['linux','windows'],runner:'operations',needs:[{label:'Banjo-Kazooie (USA) 1.0 N64 ROM'}],first_run:{mode:'preloaded',text:'Your ROM is placed where Banjo looks for it.'},in_library:null}],romm_connected:true};
     else if(endpoint==='/api/discovery'||endpoint==='/api/discovery/refresh'){requests.push({endpoint,body:options.body?JSON.parse(options.body):null});payload=source.discovery || {entries:[],stale:false,refreshing:false};}
-    else if(endpoint.startsWith('/api/discovery/games?')){requests.push({endpoint});const q=new URL(endpoint,w.location.href).searchParams;const all=source.discovery_games||[];const text=(q.get('q')||'').toLowerCase();const items=all.filter(i=>(!text||i.name.toLowerCase().includes(text))&&(!q.get('origin')||i.origin===q.get('origin')));payload={items,total:items.length,origins:[...new Set(all.map(i=>i.origin))],systems:['windows','linux','macos'],genres:['Adventure'],count:all.length};}
+    else if(endpoint.startsWith('/api/discovery/games?')){requests.push({endpoint});const q=new URL(endpoint,w.location.href).searchParams;if(source.games_gate)await source.games_gate(q);const all=source.discovery_games||[];const text=(q.get('q')||'').toLowerCase();const items=all.filter(i=>(!text||i.name.toLowerCase().includes(text))&&(!q.get('origin')||i.origin===q.get('origin')));payload={items,total:items.length,origins:[...new Set(all.map(i=>i.origin))],systems:['windows','linux','macos'],genres:['Adventure'],count:all.length};}
     else if(endpoint.match(/^\/api\/discovery\/games\/[^/]+\/romm$/)){requests.push({endpoint});payload={checked:true,owned:true,title:'Banjo-Kazooie',matches:[{id:3,name:'Banjo-Kazooie',platform:'N64'}]};}
     else if(endpoint==='/api/discovery/resolve'){requests.push({endpoint,body:JSON.parse(options.body)});payload=source.discovery_resolution || {url:'https://recomplauncher.com/games/new-port',repositories:[{repository:'example/new-port',url:'https://github.com/example/new-port'}]};}
     else if(endpoint==='/api/catalog/games/banjo-recompiled/files')payload={inputs:[{id:'rom',label:'Banjo-Kazooie (USA) 1.0 N64 ROM',kind:'file',required:true,accepted:['USA 1.0'],found:[{path:'n64/roms/Banjo-Kazooie (USA).z64',name:'Banjo-Kazooie (USA).z64',accepted:'USA 1.0'}],rejected:[]}]};
@@ -627,6 +627,46 @@ async function tick(){await new Promise(resolve=>setTimeout(resolve,15));}
   assert(d.getElementById('game-discovery').textContent.includes('Could not refresh'));
   assert(d.querySelector('a[href="https://recomplauncher.com"]'),'The reference website stays accessible when the catalog is unavailable');
   assert(d.querySelector('.game-pick.custom'),'Manual addition stays available');dom.window.close();
+  // A slow older search response must not replace newer results.
+  const gates={};
+  discoveryFixture.discovery={source:'Recomp Launcher',count:2,updated:'2026-11-03',stale:false,refreshing:false};
+  discoveryFixture.discovery_games=[
+    {id:'banjo',name:'Banjo Recompiled',origin:'n64',repository:'BanjoRecomp/BanjoRecomp',systems:['windows'],has_cover:false,in_library:null,known:true},
+    {id:'zelda',name:'Zelda Port',origin:'n64',repository:'example/zelda',systems:['windows'],has_cover:false,in_library:null,known:false}];
+  dom=await create(null,false,discoveryFixture);w=dom.window;d=w.document;
+  d.getElementById('add-project').click();await tick();await tick();[...d.querySelectorAll('#add-game-content button')].find(n=>n.textContent==='Browse all Recomp games').click();await tick();await tick();
+  discoveryFixture.games_gate=q=>q.get('q')==='ban'?new Promise(resolve=>{gates.ban=resolve;}):null;
+  const raceSearch=d.getElementById('discovery-search');
+  raceSearch.value='ban';raceSearch.dispatchEvent(new w.Event('input'));await new Promise(r=>setTimeout(r,250));
+  raceSearch.value='zel';raceSearch.dispatchEvent(new w.Event('input'));await new Promise(r=>setTimeout(r,250));await tick();
+  assert(gates.ban,'The older search request is pending');
+  assert.deepEqual([...d.querySelectorAll('.discovery-result')].map(n=>n.textContent.includes('Zelda Port')),[true]);
+  gates.ban();await tick();await tick();
+  assert.equal(d.querySelectorAll('.discovery-result').length,1,'A late older response is discarded');
+  assert(d.querySelector('.discovery-result').textContent.includes('Zelda Port'),'The newest search results stay on screen');
+  delete discoveryFixture.games_gate;dom.window.close();
+  // Settings → Catalog card: status load, refresh, button state and error display.
+  discoveryFixture.discovery={source:'Recomp Launcher',count:2,updated:'2026-11-03',skipped:1,stale:false,refreshing:false};
+  dom=await create(null,false,discoveryFixture);w=dom.window;d=w.document;
+  const catalogStatus=()=>d.getElementById('recomp-catalog-status').textContent;
+  const catalogBefore=requests.length;
+  d.querySelector('[data-settings-tab="catalog"]').click();await tick();await tick();
+  assert.equal(requests.slice(catalogBefore).filter(r=>r.endpoint==="/api/discovery").length,1,'Opening the tab loads the status once');
+  assert(catalogStatus().includes('Recomp catalog: 2 games, updated 2026-11-03'));
+  assert(catalogStatus().includes('1 malformed entries were ignored'));
+  assert.equal(d.getElementById('recomp-catalog-refresh').disabled,false);
+  d.getElementById('recomp-catalog-refresh').click();
+  assert.equal(d.getElementById('recomp-catalog-refresh').disabled,true,'Refresh is disabled while running');
+  await tick();await tick();
+  assert.deepEqual(requests.at(-1),{endpoint:'/api/discovery/refresh',body:{force:true}});
+  assert.equal(d.getElementById('recomp-catalog-refresh').disabled,false,'Refresh is re-enabled afterwards');
+  dom.window.close();
+  discoveryFixture.discovery={count:0,stale:true,refreshing:false,error:'Could not refresh the Recomp catalog. The last saved copy is still available.'};
+  dom=await create(null,false,discoveryFixture);w=dom.window;d=w.document;
+  d.querySelector('[data-settings-tab="catalog"]').click();await tick();await tick();
+  assert(d.getElementById('recomp-catalog-status').textContent.includes('not saved yet'));
+  assert(d.querySelector('#recomp-catalog-status .error').textContent.includes('Could not refresh'),'The last error is shown');
+  dom.window.close();
   dom=await create(null,false,{...fixture,projects:[],artifacts:[]});assert(dom.window.document.getElementById('project-grid').textContent.includes('first game'));dom.window.close();
   // First-run guidance: broker explanation, checklist, review panel, inline progress.
   dom=await create();w=dom.window;d=w.document;

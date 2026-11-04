@@ -2053,7 +2053,9 @@ async function loadDiscovery(refresh = false, poll = false) {
     let status = await api(refresh ? "/api/discovery/refresh" : "/api/discovery", refresh ? {method: "POST", body: {force: true}} : {});
     if (!refresh && !poll && status.stale && !status.refreshing) status = await api("/api/discovery/refresh", {method: "POST", body: {force: false}});
     session.discovery = status;
-    session.discoveryList = await api(`/api/discovery/games?${discoveryQueryString(session)}`);
+    const seq = session.discoverySeq = (session.discoverySeq || 0) + 1;
+    const list = await api(`/api/discovery/games?${discoveryQueryString(session)}`);
+    if (session.discoverySeq === seq) session.discoveryList = list;
     if (status.refreshing) setTimeout(() => {
       if (addGame === session && session.discoveryOpen && session.step === "pick" && $("add-game-dialog").open) void loadDiscovery(false, true);
     }, 3000);
@@ -2062,7 +2064,8 @@ async function loadDiscovery(refresh = false, poll = false) {
 }
 async function reloadDiscoveryList() {
   const session = addGame; if (!session) return;
-  try { const list = await api(`/api/discovery/games?${discoveryQueryString(session)}`); if (addGame === session) { session.discoveryList = list; renderDiscoveryResults(); } }
+  const seq = session.discoverySeq = (session.discoverySeq || 0) + 1;
+  try { const list = await api(`/api/discovery/games?${discoveryQueryString(session)}`); if (addGame === session && session.discoverySeq === seq) { session.discoveryList = list; renderDiscoveryResults(); } }
   catch (error) { if (addGame === session) { session.discoveryError = error.message; renderDiscovery(); } }
 }
 function renderDiscovery() {
