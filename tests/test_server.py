@@ -235,6 +235,19 @@ class HttpIntegrationTests(unittest.TestCase):
         # Unknown capture: the engine rejects it and the route answers 400.
         self.assertEqual(self.request('POST', route, {})[0], 400)
 
+    def test_hidden_route_marks_and_unmarks_a_game_without_deleting_it(self):
+        project = self.engine.create_project({'name': 'Fixture', 'repo': 'example/game', 'targets': ['windows']})
+        route = f'/api/projects/{project["id"]}/hidden'
+        status, _, body = self.request('POST', route, {'hidden': True})
+        self.assertEqual(status, 200, body.decode())
+        self.assertIs(json.loads(body)['hidden'], True)
+        self.assertIs(self.engine.store.get('projects', project['id'])['hidden'], True)
+        self.assertEqual(self.request('POST', route, {'hidden': False})[0], 200)
+        self.assertIs(self.engine.store.get('projects', project['id'])['hidden'], False)
+        for bad in ({}, {'hidden': 'yes'}, {'hidden': True, 'name': 'x'}):
+            self.assertEqual(self.request('POST', route, bad)[0], 400)
+        self.assertEqual(len(self.engine.store.all('projects')), 1)
+
     def test_draft_prompt_passes_game_file_preference_and_rejects_non_boolean(self):
         project = self.engine.create_project({'name': 'Fixture', 'repo': 'example/game', 'targets': ['windows']})
         route = f'/api/projects/{project["id"]}/draft-prompt'

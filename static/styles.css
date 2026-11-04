@@ -100,3 +100,12 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .workspace-game-cover.cover-placeholder{font-size:13px}.project-hero-cover.cover-placeholder{font-size:24px}
 .choice-card.disabled{opacity:.75;border-style:dashed}
 .onboarding-steps .done b{background:var(--green);color:#11171b}
+.mobile-back{display:none}.check-filter{display:flex!important;align-items:center;gap:8px;flex:0 0 auto!important;min-width:0!important;padding-bottom:10px;white-space:nowrap}.check-filter input{width:auto!important}.check-filter[hidden]{display:none!important}
+@media(min-width:761px){.app-shell{background:linear-gradient(to right,#151d21 179px,var(--border) 179px,var(--border) 180px,transparent 180px)}}
+@media(max-width:800px){
+#library-page[data-layout="workspace"][data-mobile-view="game"]>:not(#project-grid){display:none}
+#library-page[data-layout="workspace"][data-mobile-view="game"] .workspace-game-list{display:none}
+#library-page[data-layout="workspace"][data-mobile-view="list"] .workspace-game-main{display:none}
+.mobile-back{display:inline-flex;align-items:center;min-height:44px;margin:4px 0 0;color:var(--cyan);font-weight:600;text-decoration:none}
+.mobile-back:hover,.mobile-back:focus-visible{text-decoration:underline}
+}

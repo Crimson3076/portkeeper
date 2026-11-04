@@ -724,6 +724,13 @@ class Engine:
             identity["url_cover"] = payload.get("url_cover")
         return self.update_project(project_id, {"metadata": identity})
 
+    def set_hidden(self, project_id, payload):
+        """Mark a game as a test/hidden game (or show it again). Nothing is deleted or rebuilt."""
+        if not isinstance(payload, dict) or set(payload) != {"hidden"} or not isinstance(payload["hidden"], bool):
+            raise Invalid("Send {\"hidden\": true} or {\"hidden\": false}")
+        self.store.get("projects", project_id)
+        return self.store.update("projects", project_id, hidden=payload["hidden"])
+
     def choose_cover(self, project_id, payload):
         """Apply one picked cover to every Linux and Windows import of this project in RomM."""
         project = self.store.get("projects", project_id)

@@ -19,6 +19,8 @@ class ProfileTests(unittest.TestCase):
         for version, commit in [('9.3.1', None), ('9.3.0', 'a' * 40)]:
             with self.assertRaises(Invalid):
                 ensure_release('shipwright', version, commit)
+        with self.assertRaisesRegex(Invalid, r"Version 9\.3\.1 is out and hasn't been tested yet\. 9\.3\.0 is the version that works"):
+            ensure_release('shipwright', 'v9.3.1')
         with self.assertRaises(Invalid):
             profile('unknown')
 

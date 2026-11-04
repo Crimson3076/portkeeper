@@ -280,6 +280,8 @@ class Handler(BaseHTTPRequestHandler):
                         self.json(404, {"error": "No RomM entry or Recomp catalog cover matches this game"})
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/cover", path) and method == "POST":
                 self.json(200, self.engine.choose_cover(path.split("/")[3], self.body()))
+            elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/hidden", path) and method == "POST":
+                self.json(200, self.engine.set_hidden(path.split("/")[3], self.body()))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/metadata-link", path) and method == "POST":
                 self.json(200, self.engine.link_metadata(path.split("/")[3], self.body()))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/check", path) and method == "POST":
