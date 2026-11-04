@@ -1,4 +1,34 @@
-# Recomp Launcher integration work log — 2026-10-27
+# Recomp Launcher integration work log
+
+## 2026-11-03 — public catalog replaces the HTML adapter
+
+The site publishes structured data at `https://recomplauncher.com/pc-catalog.json`
+(`catalogVersion` 1, 674 games when verified), so the HTML-scraping adapter below
+was removed and replaced. See [DISCOVERY.md](DISCOVERY.md).
+
+- Daily conditional sync (ETag / Last-Modified, 15 s timeout, 8 MiB cap), last good
+  copy kept, malformed entries dropped, status and Refresh in Settings.
+- Artwork cached by the server: `cover` as the fallback library/add-dialog cover
+  (never over a user-chosen or RomM cover), `hero`/`logo` on the game page.
+- Add a game browser: search, console/system/genre filters, popularity/newest/name
+  sorting, library marking and a best-effort RomM ownership check.
+- Game page metadata (blurb, features/tags, needs, IGDB summary/genres/rating) and
+  catalog titles shown for games named after a repository (display only).
+- Release file hints from `assets`/`files` (suggestions and an extra checksum value
+  only) and read-only `recomplauncher.json` hints (`start`, `prepare`, `folders`,
+  `saves`), validated and treated as untrusted.
+- Removed: HTML parser, `/top` list cache and activity log (`recomp-launcher*.json`
+  are no longer read). `POST /api/discovery/resolve` now accepts a catalog `id` or a
+  `/game/<id>` page URL.
+- Tests use a trimmed fixture with deliberately malformed entries, plus image
+  caching, RomM matching, 304 handling and site-down behaviour. Not yet done:
+  automatic application of hints during packaging (hints are shown in the custom
+  game flow only) and live-site validation from CI.
+
+---
+
+# Earlier work log (superseded) — 2026-10-27
+
 
 Requested scope: integrate `https://recomplauncher.com/top` as an easier source
 of port references, document the work, test it and push an update. No live NAS

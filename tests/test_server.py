@@ -74,7 +74,12 @@ class HttpIntegrationTests(unittest.TestCase):
         with patch.object(self.engine.discovery, 'fetch') as fetch:
             status, _, body = self.request('GET', '/api/discovery')
             self.assertEqual(status, 200)
-            self.assertEqual(json.loads(body)['entries'], [])
+            self.assertEqual(json.loads(body)['count'], 0)
+            fetch.assert_not_called()
+            status, _, body = self.request('GET', '/api/discovery/games?sort=name')
+            self.assertEqual((status, json.loads(body)['items']), (200, []))
+            self.assertEqual(self.request('GET', '/api/discovery/games?sort=bogus')[0], 400)
+            self.assertEqual(self.request('GET', '/api/discovery/image/soh/cover')[0], 400)
             fetch.assert_not_called()
         with patch.object(self.engine.discovery, 'start_refresh', return_value={'refreshing': True}) as refresh:
             self.assertEqual(self.request('POST', '/api/discovery/refresh', {})[0], 202)
@@ -83,12 +88,36 @@ class HttpIntegrationTests(unittest.TestCase):
             self.assertEqual(self.request('POST', '/api/discovery/refresh', {}, {'Origin': 'https://other.test'})[0], 400)
             self.assertEqual(refresh.call_count, 1)
         with patch.object(self.engine.discovery, 'resolve', return_value={'repositories': []}) as resolve:
-            self.assertEqual(self.request('POST', '/api/discovery/resolve', {'url': '/games/zelda'})[0], 200)
-            resolve.assert_called_once_with({'url': '/games/zelda'})
+            self.assertEqual(self.request('POST', '/api/discovery/resolve', {'url': '/game/zelda'})[0], 200)
+            resolve.assert_called_once_with({'url': '/game/zelda'})
             self.assertEqual(self.request('POST', '/api/discovery/resolve', {}, {'Origin': 'https://other.test'})[0], 400)
             self.assertEqual(resolve.call_count, 1)
         self.assertEqual(self.request('POST', '/api/discovery/resolve', {'url': 'http://localhost/secrets'})[0], 400)
         self.assertEqual(self.engine.store.all('projects'), [])
+
+    def test_project_cover_falls_back_to_catalog_artwork_and_never_overrides_a_choice(self):
+        from test_discovery import catalog_json, PNG
+        discovery = self.engine.discovery
+        discovery._write('recomp-catalog.json', {'schema': 1, 'fetched_at': '2026-11-03T00:00:00+00:00', 'apps': __import__('portkeeper.discovery', fromlist=['x']).parse_catalog(catalog_json())[0]})
+        project = {'id': 'b' * 32, 'name': 'HarbourMasters/Shipwright', 'repo': 'HarbourMasters/Shipwright', 'targets': ['linux']}
+        self.engine.store.put('projects', project)
+        fetched = []
+        def fake(url, *args, **kwargs):
+            fetched.append(url)
+            return 200, {'content_type': 'image/png'}, PNG
+        with patch.object(discovery, 'fetch', side_effect=fake), patch.object(self.engine.romm, 'matched_cover', side_effect=Invalid('none')):
+            status, headers, body = self.request('GET', '/api/projects/' + project['id'] + '/cover')
+            self.assertEqual((status, body), (200, PNG))
+            self.assertEqual(fetched, ['https://recompstore.com/img/soh-cover.png'])
+            # RomM art wins over the catalog when RomM has a match.
+            with patch.object(self.engine.romm, 'matched_cover', return_value=('image/png', b'romm', 1)):
+                self.assertEqual(self.request('GET', '/api/projects/' + project['id'] + '/cover')[2], b'romm')
+            status, _, body = self.request('GET', '/api/discovery/image/soh/cover')
+            self.assertEqual((status, body), (200, PNG))
+            self.assertEqual(len(fetched), 1)  # served from the cache; the browser never contacts the site
+        with patch.object(self.engine.romm, 'matched_cover', side_effect=Invalid('none')):
+            self.engine.store.put('projects', {**project, 'id': 'c' * 32, 'repo': 'other/none'})
+            self.assertEqual(self.request('GET', '/api/projects/' + 'c' * 32 + '/cover')[0], 404)
 
     def test_unpair_requires_same_origin_json(self):
         with patch.object(self.engine.automation, 'unpair', return_value={}) as unpair:
