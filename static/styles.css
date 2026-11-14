@@ -53,7 +53,10 @@
 .discovery-panel{border-top:1px solid var(--border);padding-top:16px;margin-top:16px}
 .discovery-panel h3{font-size:15px}.discovery-panel input{width:100%;margin-top:10px}
 .discovery-results{display:grid;gap:8px;max-height:360px;overflow:auto;padding:2px}
-.discovery-result{display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid var(--border);border-radius:8px;padding:12px;overflow-wrap:anywhere}
+.discovery-filters{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.discovery-filters select{flex:1 1 130px}
+.discovery-cover{width:48px;height:64px;object-fit:cover;border-radius:4px;flex-shrink:0}
+.recomp-hero{width:100%;max-height:220px;object-fit:cover;border-radius:8px}.recomp-logo{max-width:220px;max-height:80px;margin:8px 0}
+.discovery-result{display:flex;gap:12px;align-items:center;justify-content:space-between;gap:12px;border:1px solid var(--border);border-radius:8px;padding:12px;overflow-wrap:anywhere}
 .discovery-result>div:first-child{min-width:0}.discovery-result strong{font-size:14px}.discovery-result .inline-actions{flex-shrink:0}
 @media(max-width:600px){.discovery-result{align-items:flex-start;flex-direction:column}}
 .setup-panel{border:1px solid var(--border);border-radius:10px;padding:14px 16px;background:#1a242a;display:grid;gap:9px;margin-bottom:12px;min-width:0}

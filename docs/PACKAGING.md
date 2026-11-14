@@ -240,12 +240,12 @@ or to the local library folder.
 
 ## Catalog
 
-For more projects, **Add a game → Discover more ports** reads references from
-[Recomp Launcher](https://recomplauncher.com/top). You can also paste one of its
+For more projects, **Add a game → Browse all Recomp games** lists the public
+[Recomp Launcher catalog](https://recomplauncher.com/pc-catalog.json). You can also paste one of its
 game pages into Custom game. Existing packaging steps are reused when a
 repository matches; unfamiliar projects go through upstream investigation and
 your chosen setup method. Reference listings do not establish platform support
-or packaging verification. See [discovery behavior, local JSON records and
+or packaging verification. See [catalog behavior, local records and
 current limitations](DISCOVERY.md).
 
 The GitHub catalog (`catalog/projects.json` and `catalog/definitions/`) is fetched daily from

@@ -1,98 +1,61 @@
-# Finding ports with Recomp Launcher
+# The Recomp catalog (Recomp Launcher)
 
-**Add a game → Discover more ports** opens references from
-[Recomp Launcher's top list](https://recomplauncher.com/top). Search by project
-name or repository, follow **Reference**, or choose a project to investigate.
-The normal catalog and Custom game work independently of the reference site.
+Portkeeper reads Recomp Launcher's public catalog,
+[`pc-catalog.json`](https://recomplauncher.com/pc-catalog.json), for artwork,
+descriptions and a browsable list of games. It replaces the earlier approach of
+parsing the site's HTML.
 
-- A matching repository with existing Portkeeper packaging steps opens the
-  existing setup flow. A game already in your library opens that game.
-- A new repository opens Custom game and reads its upstream release, README and
-  linked build guides. Choose automatic setup, a model draft, your own chat,
-  manual packaging steps, or release preservation, just as for a pasted GitHub URL.
-- You can also paste a Recomp Launcher game page into Custom game's project
-  field. Portkeeper reads its explicit GitHub links. If it links to several
-  repositories, choose the game engine or port; an extraction tool is not
-  necessarily the game. No repository is guessed from a title.
-- Game data requirements, supported operating systems, packaging checks and
-  gameplay verification come from upstream evidence and the existing build
-  workflow. A listing is not a working recipe or a verified playable package.
-  Discovery itself uses no LLM calls or model budget.
+## What you get
 
-## Refreshes and local records
+- **Settings → Advanced → Catalog** shows "Recomp catalog: N games, updated
+  <date>", a **Refresh catalog** button and the last error, if any.
+- **Add a game → Browse all Recomp games**: search every catalog game, filter by
+  console, system and genre, and sort by popularity, newest or name. Cards show
+  the cover, the port, the original game, the console and supported systems.
+  Games already in your library are marked. **RomM?** looks for the original
+  console + title in your RomM library (best effort: it only tells you; it never
+  selects a file). Choosing a game continues into the normal setup flow: a
+  reviewed Portkeeper recipe if one exists, otherwise the upstream lookup.
+- **Artwork**: a game with no cover of its own and none from RomM uses the
+  catalog `cover`; the game page can show `hero` and `logo`. Images are
+  downloaded by the Portkeeper server into its cache (the browser never contacts
+  the site) and a cover you chose is never overwritten.
+- **Game page**: title, description, features/tags, "You need: …", IGDB summary,
+  genres and rating for games whose GitHub repository matches a catalog entry.
+  A game that shows a repository name is displayed with the catalog title; its
+  stored name is unchanged.
+- **Release file hints**: when you look up a repository, catalog `assets`/`files`
+  patterns suggest which release file belongs to each system, with the catalog
+  `sha256` shown as an extra comparison value.
+- **Setup manifest**: if the upstream repository ships a `recomplauncher.json`
+  (see the [schema](https://recomplauncher.com/schema/recomplauncher.json)), its
+  `start`, `prepare`, `folders` and `saves` are read at the release commit and
+  shown as hints. They are untrusted: only simple relative paths and short strings
+  are kept, and nothing is executed from them.
 
-Opening the normal game picker makes no reference-site requests. Expanding
-**Discover more ports** reads a saved list, then requests a background refresh
-if that list is missing or more than 24 hours old. Automatic retries wait at
-least an hour after an attempt, including across app restarts. **Refresh list**
-can retry sooner, with a one-minute minimum between attempts. Concurrent
-refresh requests share one background request.
+## Trust and limits
 
-Each refresh reads `/top` once, without crawling every game page. A detail page
-is read only when selected or pasted. The last successful list stays available
-when the site is offline, returns no readable entries or changes its layout.
-The panel shows the saved date and last refresh failure. A failed lookup never
-changes an existing project or starts a build. Browse the website and paste the
-actual upstream GitHub repository if the importer cannot read a page.
+- Plain HTTPS GET to `recomplauncher.com`, with a User-Agent naming Portkeeper.
+  No credentials, cookies or scripts; redirects stay on the site's hosts. Image
+  hosts are limited to `recomplauncher.com` and `recompstore.com`.
+- The catalog is fetched at most once a day (and on demand from Settings or the
+  browser), using `ETag`/`If-Modified-Since`. A 15 second timeout and an 8 MiB
+  cap apply (images: 5 MiB, PNG/JPEG/WebP only). Failed attempts are retried at
+  most hourly, including across restarts.
+- Each entry is validated; malformed entries (bad id, no name, duplicates, unknown
+  systems, bad checksums or image hosts) are dropped and counted.
+- The last good copy is always kept. If the site is down or returns something
+  unexpected, browsing, artwork and metadata keep working from that copy, and
+  Portkeeper's own reviewed catalog is unaffected.
+- Catalog data is never trusted for platform support, launch commands or
+  verification status; the repository's release and Portkeeper's own checks decide.
 
-These small, editable JSON files live in `<data-dir>/catalog/`:
+## Stored files (small, in the `catalog` metadata folder)
 
 | File | Contents |
 | --- | --- |
-| `recomp-launcher.json` | Up to 100 project names, explicit reference/repository URLs, and the successful fetch time |
-| `recomp-launcher-status.json` | Last attempt time and refresh error |
-| `recomp-launcher-events.json` | Last 30 successful/failed refreshes and resolved-page references |
+| `recomp-catalog.json` | Validated entries, the update date, validators (ETag/Last-Modified) |
+| `recomp-catalog-status.json` | Last attempt time and refresh error |
+| `images/` | Cached artwork (`.img` plus its content type) |
 
-New custom projects retain a `discovery_source` reference in SQLite. Advanced
-shows its source link. This attribution is distinct from recipe provenance and
-verification. URLs lose query strings/fragments. Event records contain public
-references and repository names, never owned file paths, game bytes, account
-credentials or model responses. These records fit the metadata backup policy;
-no source archives or game files are downloaded into appdata by discovery.
-
-## Import contract and limits
-
-The adapter reads semantic HTML links/cards/headings. It accepts explicit
-GitHub repository links, including release/tree links normalized to the
-repository, and same-site game/detail links. Navigation, footer, scripts and
-style content are ignored. Duplicate repositories are collapsed, the site's
-listing order is retained, and importing stops at 100 entries. It does not
-infer projects from social links or invent an undocumented API endpoint.
-
-The client is separate from the GitHub artifact downloader. Only HTTPS pages
-on `recomplauncher.com` and `www.recomplauncher.com` may be read, and redirects
-stay on those hosts. No account token, ambient proxy credentials, cookies,
-remote JavaScript or artwork is used. Requests time out after 15 seconds,
-HTML responses are limited to 2 MiB, and deeply nested/oversized HTML trees
-are rejected. The app renders imported names as plain text. GitHub artifact
-download permissions are unchanged.
-
-This is an experimental HTML adapter, not an official API integration or a
-complete mirror of the website. Client-rendered lists without readable HTML,
-non-GitHub upstreams and unrecognized layouts require the website/manual
-repository route. No pagination or additional rankings are fetched.
-
-## Validation and known limitation
-
-The implementation was tested with synthetic HTML contract fixtures covering
-listing imports, details, ambiguous repositories, navigation filtering,
-duplicates, unsafe links, size limits and failed refreshes. HTTP tests check
-origin protection; browser interaction tests cover search, source links,
-upstream-derived platforms, ambiguous choices and the offline fallback.
-
-**Live compatibility with Recomp Launcher's current markup has not been
-verified.** On the implementation date the cloud environment's outbound proxy
-rejected this domain (`CONNECT 403`), and the production-style direct client
-could not resolve it. No authoritative public source repository or official
-API contract for this website was established. The similarly named desktop
-launcher found during research was not assumed to be the website's source.
-The tests are deliberately labelled contract fixtures, not live snapshots.
-If the actual site uses different markup, update `portkeeper/discovery.py`
-with a sanitized public-page fixture; retain the last-good-cache behavior.
-
-To test the actual page from a local installation without starting the app or
-opening its database, run `python -m portkeeper.discovery`. To inspect a detail
-page's upstream references, run
-`python -m portkeeper.discovery --resolve --page https://recomplauncher.com/games/EXAMPLE`
-using a real page URL from the website. These commands print only public
-reference JSON and use a temporary directory that is removed on exit.
+The earlier `recomp-launcher*.json` files are no longer used and can be deleted.

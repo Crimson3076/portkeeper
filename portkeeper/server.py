@@ -200,6 +200,15 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(force, bool):
                     raise Invalid('force must be true or false')
                 self.json(202, self.engine.discovery.start_refresh(force=force))
+            elif method == 'GET' and path == '/api/discovery/games':
+                query = {k: v[0] for k, v in urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).items()}
+                self.json(200, self.engine.discovery.browse(query))
+            elif re.fullmatch(r'/api/discovery/games/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}', path) and method == 'GET':
+                self.json(200, self.engine.discovery.detail(path.split('/')[4]))
+            elif re.fullmatch(r'/api/discovery/games/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/romm', path) and method == 'GET':
+                self.json(200, self.engine.discovery.romm_match(path.split('/')[4]))
+            elif re.fullmatch(r'/api/discovery/image/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[a-z]+', path) and method == 'GET':
+                self.image(*self.engine.discovery.image(path.split('/')[4], path.split('/')[5]), source='recomp-catalog')
             elif method == 'POST' and path == '/api/discovery/resolve':
                 self.json(200, self.engine.discovery.resolve(self.body()))
             elif re.fullmatch(r"/api/catalog/games/[a-z0-9][a-z0-9_.-]{0,63}/files", path) and method == "POST":
@@ -243,16 +252,32 @@ class Handler(BaseHTTPRequestHandler):
                 if metadata.get("cover_policy") == "custom" and metadata.get("url_cover"):
                     # A cover the user chose always wins and is never replaced by a RomM match.
                     self.image(*self.engine.romm.artwork_preview(metadata["url_cover"]), source="user")
-                elif rom_id:
-                    self.image(*self.engine.romm.cover(rom_id), source="romm")
                 else:
-                    slugs = [{"windows": "win"}.get(target, target) for target in project.get("targets") or []]
-                    try:
-                        content_type, body, _ = self.engine.romm.matched_cover(project["id"], metadata.get("game") or project["name"], slugs)
-                    except Invalid:
-                        self.json(404, {"error": "No RomM entry with a cover matches this game"})
+                    found = None
+                    if rom_id:
+                        try:
+                            found = (*self.engine.romm.cover(rom_id), "romm")
+                        except Invalid:
+                            pass
                     else:
-                        self.image(content_type, body, source="romm")
+                        slugs = [{"windows": "win"}.get(target, target) for target in project.get("targets") or []]
+                        try:
+                            content_type, body, _ = self.engine.romm.matched_cover(project["id"], metadata.get("game") or project["name"], slugs)
+                            found = (content_type, body, "romm")
+                        except Invalid:
+                            pass
+                    if not found:
+                        # No cover of the user's or RomM's: fall back to the Recomp catalog artwork.
+                        recomp = self.engine.discovery.for_repository(project.get("repo"))
+                        try:
+                            if recomp and "cover" in recomp["images"]:
+                                found = (*self.engine.discovery.image(recomp["id"], "cover"), "recomp-catalog")
+                        except Invalid:
+                            pass
+                    if found:
+                        self.image(*found[:2], source=found[2])
+                    else:
+                        self.json(404, {"error": "No RomM entry or Recomp catalog cover matches this game"})
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/cover", path) and method == "POST":
                 self.json(200, self.engine.choose_cover(path.split("/")[3], self.body()))
             elif re.fullmatch(r"/api/projects/[a-f0-9]{32}/hidden", path) and method == "POST":
